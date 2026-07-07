@@ -73,7 +73,3 @@ See `SECURITY.md` for reporting guidance.
 - Inline AI completion and inline review markers are not exposed until the editor has real inline behavior.
 - Anthropic-compatible and Gemini provider adapters are listed as future provider types but are not implemented.
 - Manual UI verification is still needed for exact cursor/caret alignment across macOS text rendering configurations.
-
-## License
-
-No open-source license has been selected yet. Until a license is added, all rights are reserved by the repository owner.
