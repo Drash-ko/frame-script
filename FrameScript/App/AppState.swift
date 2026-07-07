@@ -87,6 +87,7 @@ final class AppState {
         self.dependencies = dependencies
         self.templates = Self.mergedTemplates(builtIns: templates, customTemplates: Self.loadCustomTemplates())
         self.windowState.isSidebarVisible = settingsStore.settings.windowPreferences.sidebarDefaultVisible
+        self.projectStore.setSegmentSplitMode(settingsStore.settings.generalPreferences.defaultSplitMode)
     }
 
     func configure(modelContext: ModelContext, existingProjects: [FrameProject]) {
@@ -96,6 +97,8 @@ final class AppState {
             restoreLastProjectOnLaunch: settings.generalPreferences.restoreLastProjectOnLaunch && !settings.generalPreferences.showProjectBrowserOnLaunch,
             wordsPerMinute: settings.editorPreferences.wordsPerMinute
         )
+        projectStore.setSegmentSplitMode(settings.generalPreferences.defaultSplitMode)
+        projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
         if editorState.selectedSceneID == nil {
             editorState.selectedSceneID = project.scenes.first?.id
         }
@@ -204,6 +207,7 @@ final class AppState {
             sceneNameResolver: { [weak self] name in self?.localizedTemplateSceneName(name) ?? name }
         )
         projectStore.openProject(project, fileURL: nil, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: true)
+        projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
         editorState.selectedSceneID = project.scenes.sortedByOrder.first?.id
         editorState.selectedMode = .script
         editorState.isFocusModeEnabled = false
@@ -213,6 +217,7 @@ final class AppState {
     func openDemoProject() {
         let project = SampleData.demoProject(language: currentLanguage)
         projectStore.openProject(project, fileURL: nil, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: true)
+        projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
         editorState.selectedSceneID = project.scenes.sortedByOrder.first?.id
     }
 
@@ -231,6 +236,7 @@ final class AppState {
         do {
             let project = try FrameScriptFileStore.read(from: url)
             projectStore.openProject(project, fileURL: url, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
+            projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
             editorState.selectedSceneID = project.scenes.sortedByOrder.first?.id
         } catch {
             presentError(localized("error.openProject"), details: error.localizedDescription)
@@ -340,7 +346,17 @@ final class AppState {
     }
 
     func touchProject() {
+        projectStore.setSegmentSplitMode(settings.generalPreferences.defaultSplitMode)
         projectStore.touch(wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+        scheduleAutosaveIfNeeded()
+    }
+
+    func rebuildProductionSegments(markUnsaved: Bool = true) {
+        projectStore.synchronizeTextSegments(
+            splitMode: settings.generalPreferences.defaultSplitMode,
+            wordsPerMinute: settings.editorPreferences.wordsPerMinute,
+            markUnsaved: markUnsaved
+        )
         scheduleAutosaveIfNeeded()
     }
 
@@ -533,7 +549,7 @@ final class AppState {
     }
 
     func resetSidebarWidth() {
-        settings.windowPreferences.sidebarWidth = 230
+        settings.windowPreferences.sidebarWidth = AppSettings.defaults.windowPreferences.sidebarWidth
     }
 
     func chooseDefaultExportFolder() {
@@ -794,11 +810,16 @@ final class ProjectStore {
     private(set) var hasUnsavedFileChanges = false
     private let recentProjectsKey = "FrameScript.recentProjectPaths"
     private(set) var recentProjectURLs: [URL] = []
+    private var segmentSplitMode: SegmentType = AppSettings.defaults.generalPreferences.defaultSplitMode
 
     init(project: FrameProject = SampleData.defaultProject) {
         self.project = project
         recentProjectURLs = UserDefaults.standard.stringArray(forKey: recentProjectsKey)?.map(URL.init(fileURLWithPath:)) ?? []
         recalculateDurations(wordsPerMinute: AppSettings.defaults.editorPreferences.wordsPerMinute)
+    }
+
+    func setSegmentSplitMode(_ splitMode: SegmentType) {
+        segmentSplitMode = splitMode
     }
 
     func configure(
@@ -967,16 +988,13 @@ final class ProjectStore {
 
     func makeScene(order: Int, title: String) -> Scene {
         let id = UUID()
-        let segmentID = UUID()
         return Scene(
             id: id,
             order: order,
             sectionType: .custom,
             title: title,
             scriptText: "",
-            textSegments: [
-                TextSegment(id: segmentID, sceneID: id, order: 0, sourceText: "", segmentType: .paragraph)
-            ]
+            textSegments: []
         )
     }
 
@@ -1087,7 +1105,7 @@ final class ProjectStore {
     }
 
     func touch(wordsPerMinute: Int) {
-        synchronizeSelectedSceneText()
+        synchronizeTextSegments(splitMode: segmentSplitMode, wordsPerMinute: wordsPerMinute, markUnsaved: false)
         recalculateDurations(wordsPerMinute: wordsPerMinute)
         project.updatedAt = Date()
         saveState = .autosaving
@@ -1097,24 +1115,72 @@ final class ProjectStore {
     }
 
     private func prepareForSave(wordsPerMinute: Int) {
-        synchronizeSelectedSceneText()
+        synchronizeTextSegments(splitMode: segmentSplitMode, wordsPerMinute: wordsPerMinute, markUnsaved: false)
         recalculateDurations(wordsPerMinute: wordsPerMinute)
         project.updatedAt = Date()
         saveState = .autosaving
         try? modelContext?.save()
     }
 
-    private func synchronizeSelectedSceneText() {
+    func synchronizeTextSegments(splitMode: SegmentType, wordsPerMinute: Int, markUnsaved: Bool = true) {
+        segmentSplitMode = splitMode
         for scene in project.scenes {
-            if scene.textSegments.isEmpty {
-                scene.textSegments = [
-                    TextSegment(sceneID: scene.id, order: 0, sourceText: scene.scriptText, segmentType: .paragraph)
-                ]
-            } else if let first = scene.textSegments.sortedByOrder.first {
-                first.sourceText = scene.scriptText
-                first.timingEstimate = scene.estimatedDuration
-            }
+            synchronizeTextSegments(for: scene, splitMode: splitMode, wordsPerMinute: wordsPerMinute)
         }
+        recalculateDurations(wordsPerMinute: wordsPerMinute)
+        project.updatedAt = Date()
+        try? modelContext?.save()
+        if markUnsaved {
+            hasUnsavedFileChanges = true
+            saveState = .edited
+        }
+    }
+
+    private func synchronizeTextSegments(for scene: Scene, splitMode: SegmentType, wordsPerMinute: Int) {
+        let texts = TextSegmenter.segmentTexts(in: scene.scriptText, splitMode: splitMode)
+        let oldSegments = scene.textSegments.sortedByOrder
+        let oldSegmentsByID = Dictionary(uniqueKeysWithValues: oldSegments.map { ($0.id, $0) })
+        var unusedOldSegments = oldSegments
+        var oldToNewIDs: [UUID: UUID] = [:]
+        var nextSegments: [TextSegment] = []
+
+        for (index, text) in texts.enumerated() {
+            let normalizedText = TextSegmenter.normalized(text)
+            let exactIndex = unusedOldSegments.firstIndex {
+                $0.segmentType == splitMode && TextSegmenter.normalized($0.sourceText) == normalizedText
+            }
+            let fallbackIndex = exactIndex ?? unusedOldSegments.firstIndex { $0.order == index }
+            let segment = fallbackIndex.flatMap { unusedOldSegments.remove(at: $0) }
+                ?? TextSegment(sceneID: scene.id, order: index, sourceText: text, segmentType: splitMode)
+
+            let oldID = segment.id
+            segment.sceneID = scene.id
+            segment.order = index
+            segment.sourceText = text
+            segment.segmentType = splitMode
+            segment.timingEstimate = DurationEstimator.estimate(text: text, wordsPerMinute: wordsPerMinute)
+            oldToNewIDs[oldID] = segment.id
+            nextSegments.append(segment)
+        }
+
+        let nearestSegmentID: (UUID) -> UUID? = { oldID in
+            guard let oldOrder = oldSegmentsByID[oldID]?.order, !nextSegments.isEmpty else {
+                return nextSegments.first?.id
+            }
+            return nextSegments.min { abs($0.order - oldOrder) < abs($1.order - oldOrder) }?.id
+        }
+
+        let validIDs = Set(nextSegments.map(\.id))
+        for item in scene.bRollItems {
+            guard let linkedID = item.linkedSegmentID, !validIDs.contains(linkedID) else { continue }
+            item.linkedSegmentID = oldToNewIDs[linkedID] ?? nearestSegmentID(linkedID)
+        }
+        for item in scene.editingItems {
+            guard let linkedID = item.linkedSegmentID, !validIDs.contains(linkedID) else { continue }
+            item.linkedSegmentID = oldToNewIDs[linkedID] ?? nearestSegmentID(linkedID)
+        }
+
+        scene.textSegments = nextSegments
     }
 
     private func recalculateDurations(wordsPerMinute: Int) {
@@ -1205,6 +1271,69 @@ enum SaveState: String {
     case saved = "Saved"
     case edited = "Edited"
     case autosaving = "Saving..."
+}
+
+enum TextSegmenter {
+    static func segmentTexts(in text: String, splitMode: SegmentType) -> [String] {
+        switch splitMode {
+        case .scene:
+            let trimmed = trimmed(text)
+            return trimmed.isEmpty ? [] : [trimmed]
+        case .paragraph:
+            return text
+                .components(separatedBy: CharacterSet.newlines)
+                .map(trimmed)
+                .filter { !$0.isEmpty }
+        case .sentence:
+            return sentenceTexts(in: text)
+        }
+    }
+
+    static func normalized(_ text: String) -> String {
+        trimmed(text)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .lowercased()
+    }
+
+    private static func sentenceTexts(in text: String) -> [String] {
+        var sentences: [String] = []
+        var current = ""
+        var previousWasTerminator = false
+        let terminators = CharacterSet(charactersIn: ".!?…")
+        let closers = CharacterSet(charactersIn: "\"'»”’)]}")
+
+        for scalar in text.unicodeScalars {
+            current.unicodeScalars.append(scalar)
+            if terminators.contains(scalar) {
+                previousWasTerminator = true
+                continue
+            }
+            if previousWasTerminator, closers.contains(scalar) {
+                continue
+            }
+            if previousWasTerminator, CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                appendTrimmed(current, to: &sentences)
+                current = ""
+                previousWasTerminator = false
+                continue
+            }
+            previousWasTerminator = false
+        }
+
+        appendTrimmed(current, to: &sentences)
+        return sentences
+    }
+
+    private static func appendTrimmed(_ text: String, to sentences: inout [String]) {
+        let value = trimmed(text)
+        if !value.isEmpty {
+            sentences.append(value)
+        }
+    }
+
+    private static func trimmed(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 extension Array where Element == Scene {

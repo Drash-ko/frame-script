@@ -7,6 +7,7 @@ struct ScriptEditorView: View {
     @FocusState private var editorFocused: Bool
     @State private var notesExpanded = false
     @State private var didApplyInitialNotesVisibility = false
+    @State private var didManuallyToggleNotes = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -38,7 +39,13 @@ struct ScriptEditorView: View {
             }
             .textCursor()
 
-            DisclosureGroup(isExpanded: $notesExpanded) {
+            DisclosureGroup(isExpanded: Binding(
+                get: { notesExpanded },
+                set: {
+                    notesExpanded = $0
+                    didManuallyToggleNotes = true
+                }
+            )) {
                 MultilineField(
                     placeholder: appState.localized("script.notesPlaceholder"),
                     text: $scene.notes,
@@ -66,6 +73,10 @@ struct ScriptEditorView: View {
         .onChange(of: scene.scriptText) { _, _ in appState.touchProject() }
         .onChange(of: scene.title) { _, _ in appState.touchProject() }
         .onChange(of: scene.notes) { _, _ in appState.touchProject() }
+        .onChange(of: appState.settings.editorPreferences.defaultNotesVisibility) { _, newValue in
+            guard !didManuallyToggleNotes else { return }
+            notesExpanded = !appState.isFocusModeEnabled && newValue == .expanded
+        }
     }
 
     private var sceneHeader: some View {
@@ -89,8 +100,8 @@ struct ScriptEditorView: View {
                     }
                 }
 
-                if scene.sectionType != .custom {
-                    Label(appState.displayName(scene.sectionType), systemImage: "tag")
+                if shouldShowSectionTag {
+                    Label("\(appState.localized("script.templateSection")): \(appState.displayName(scene.sectionType))", systemImage: "tag")
                         .labelStyle(.titleAndIcon)
                         .font(.system(size: 12))
                         .foregroundStyle(theme.tertiaryText)
@@ -103,6 +114,14 @@ struct ScriptEditorView: View {
 
     private var wordCount: Int {
         scene.scriptText.split { $0.isWhitespace || $0.isNewline }.count
+    }
+
+    private var shouldShowSectionTag: Bool {
+        guard !appState.settings.windowPreferences.reducedChromeMode,
+              scene.sectionType != .custom else {
+            return false
+        }
+        return scene.title.trimmingCharacters(in: .whitespacesAndNewlines).localizedCaseInsensitiveCompare(appState.displayName(scene.sectionType)) != .orderedSame
     }
 
     private func applyInitialNotesVisibility() {

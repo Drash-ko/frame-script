@@ -4,41 +4,43 @@ struct EditingEditorView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     @Bindable var scene: Scene
-    @State private var isTemplatePickerPresented = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 EditorModeHeader(
                     title: scene.title,
-                    subtitle: appState.localized("editing.linkedSubtitle"),
-                    sourceText: scene.scriptText
+                    subtitle: appState.localized("editing.linkedSubtitle")
                 )
 
-                if scene.editingItems.isEmpty {
-                    EmptyModeState(
-                        title: appState.localized("editing.emptyTitle"),
-                        message: appState.localized("editing.emptyMessage"),
-                        actionTitle: appState.localized("editing.addItem"),
-                        action: { isTemplatePickerPresented = true }
-                    )
+                if scene.scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    EmptyProductionState(message: appState.localized("editing.writeScriptFirst"))
                 } else {
-                    VStack(spacing: 14) {
-                        ForEach(scene.editingItems) { item in
-                            EditingItemEditor(
-                                item: item,
-                                duplicateAction: { duplicateItem(item) },
-                                deleteAction: { deleteItem(item) }
+                    VStack(spacing: 16) {
+                        ForEach(scene.textSegments.sortedByOrder) { segment in
+                            EditingSegmentBlock(
+                                segment: segment,
+                                items: items(for: segment),
+                                addEmptyAction: { addEmptyItem(linkedTo: segment.id) },
+                                addPresetAction: { addItem(from: $0, linkedTo: segment.id) },
+                                duplicateAction: duplicateItem,
+                                deleteAction: deleteItem
                             )
                         }
                     }
 
-                    Button(appState.localized("editing.addItem")) {
-                        isTemplatePickerPresented = true
+                    let unlinked = unlinkedItems
+                    if !unlinked.isEmpty {
+                        ProductionUnlinkedBlock(title: appState.localized("production.unlinked")) {
+                            ForEach(unlinked) { item in
+                                EditingItemEditor(
+                                    item: item,
+                                    duplicateAction: { duplicateItem(item) },
+                                    deleteAction: { deleteItem(item) }
+                                )
+                            }
+                        }
                     }
-                    .buttonStyle(.cursorPlain)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(theme.secondaryText)
                 }
             }
             .frame(maxWidth: 820, alignment: .leading)
@@ -47,22 +49,43 @@ struct EditingEditorView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(theme.editorSurface)
-        .confirmationDialog(appState.localized("editing.templatePickerTitle"), isPresented: $isTemplatePickerPresented) {
-            ForEach(EditingTemplatePreset.allCases) { preset in
-                Button(preset.title(appState: appState)) {
-                    addItem(from: preset)
-                }
-            }
-            Button(appState.localized("project.unsaved.cancel"), role: .cancel) {}
+        .onAppear {
+            appState.rebuildProductionSegments(markUnsaved: false)
         }
         .onChange(of: scene.editingItems.count) { _, _ in appState.touchProject() }
     }
 
-    private func addItem(from preset: EditingTemplatePreset) {
+    private func items(for segment: TextSegment) -> [EditingItem] {
+        scene.editingItems.filter { $0.linkedSegmentID == segment.id }
+    }
+
+    private var unlinkedItems: [EditingItem] {
+        let validIDs = Set(scene.textSegments.map(\.id))
+        return scene.editingItems.filter { item in
+            guard let linkedID = item.linkedSegmentID else { return true }
+            return !validIDs.contains(linkedID)
+        }
+    }
+
+    private func addEmptyItem(linkedTo segmentID: UUID) {
         scene.editingItems.append(
             EditingItem(
                 id: UUID(),
-                linkedSegmentID: scene.textSegments.first?.id,
+                linkedSegmentID: segmentID,
+                templateType: "",
+                cutStyle: "",
+                transition: "",
+                subtitleStyle: ""
+            )
+        )
+        appState.touchProject()
+    }
+
+    private func addItem(from preset: EditingTemplatePreset, linkedTo segmentID: UUID) {
+        scene.editingItems.append(
+            EditingItem(
+                id: UUID(),
+                linkedSegmentID: segmentID,
                 templateType: preset.title(appState: appState),
                 cutStyle: preset.cutStyle(appState: appState),
                 transition: preset.transition(appState: appState),
@@ -127,6 +150,76 @@ private enum EditingTemplatePreset: String, CaseIterable, Identifiable {
     @MainActor func musicCue(appState: AppState) -> String { appState.localized("editing.template.\(rawValue).musicCue") }
     @MainActor func graphics(appState: AppState) -> String { appState.localized("editing.template.\(rawValue).graphics") }
     @MainActor func notes(appState: AppState) -> String { appState.localized("editing.template.\(rawValue).notes") }
+}
+
+private struct EditingSegmentBlock: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.frameTheme) private var theme
+    let segment: TextSegment
+    let items: [EditingItem]
+    let addEmptyAction: () -> Void
+    let addPresetAction: (EditingTemplatePreset) -> Void
+    let duplicateAction: (EditingItem) -> Void
+    let deleteAction: (EditingItem) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(appState.localized("production.scriptSegment"))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(theme.tertiaryText)
+                Text(segment.sourceText)
+                    .font(.system(size: 14))
+                    .foregroundStyle(theme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if items.isEmpty {
+                Text(appState.localized("editing.segmentEmpty"))
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.secondaryText)
+            } else {
+                VStack(spacing: 12) {
+                    ForEach(items) { item in
+                        EditingItemEditor(
+                            item: item,
+                            duplicateAction: { duplicateAction(item) },
+                            deleteAction: { deleteAction(item) }
+                        )
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    addEmptyAction()
+                } label: {
+                    Label(appState.localized("editing.addEmpty"), systemImage: "plus")
+                }
+                .buttonStyle(.cursorPlain)
+
+                Menu(appState.localized("production.usePreset")) {
+                    ForEach(EditingTemplatePreset.allCases) { preset in
+                        Button(preset.title(appState: appState)) {
+                            addPresetAction(preset)
+                        }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            .font(.system(size: 13, weight: .medium))
+        }
+        .padding(16)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(theme.cardBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(theme.divider, lineWidth: 1)
+                )
+        }
+    }
 }
 
 private struct EditingItemEditor: View {

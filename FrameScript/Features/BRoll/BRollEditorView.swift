@@ -4,41 +4,43 @@ struct BRollEditorView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     @Bindable var scene: Scene
-    @State private var isTemplatePickerPresented = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 EditorModeHeader(
                     title: scene.title,
-                    subtitle: appState.localized("broll.linkedSubtitle"),
-                    sourceText: scene.scriptText
+                    subtitle: appState.localized("broll.linkedSubtitle")
                 )
 
-                if scene.bRollItems.isEmpty {
-                    EmptyModeState(
-                        title: appState.localized("broll.emptyTitle"),
-                        message: appState.localized("broll.emptyMessage"),
-                        actionTitle: appState.localized("broll.addItem"),
-                        action: { isTemplatePickerPresented = true }
-                    )
+                if scene.scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    EmptyProductionState(message: appState.localized("broll.writeScriptFirst"))
                 } else {
-                    VStack(spacing: 14) {
-                        ForEach(scene.bRollItems) { item in
-                            BRollItemEditor(
-                                item: item,
-                                duplicateAction: { duplicateItem(item) },
-                                deleteAction: { deleteItem(item) }
+                    VStack(spacing: 16) {
+                        ForEach(scene.textSegments.sortedByOrder) { segment in
+                            BRollSegmentBlock(
+                                segment: segment,
+                                items: items(for: segment),
+                                addEmptyAction: { addEmptyItem(linkedTo: segment.id) },
+                                addPresetAction: { addItem(from: $0, linkedTo: segment.id) },
+                                duplicateAction: duplicateItem,
+                                deleteAction: deleteItem
                             )
                         }
                     }
 
-                    Button(appState.localized("broll.addItem")) {
-                        isTemplatePickerPresented = true
+                    let unlinked = unlinkedItems
+                    if !unlinked.isEmpty {
+                        ProductionUnlinkedBlock(title: appState.localized("production.unlinked")) {
+                            ForEach(unlinked) { item in
+                                BRollItemEditor(
+                                    item: item,
+                                    duplicateAction: { duplicateItem(item) },
+                                    deleteAction: { deleteItem(item) }
+                                )
+                            }
+                        }
                     }
-                    .buttonStyle(.cursorPlain)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(theme.secondaryText)
                 }
             }
             .frame(maxWidth: 820, alignment: .leading)
@@ -47,22 +49,43 @@ struct BRollEditorView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .background(theme.editorSurface)
-        .confirmationDialog(appState.localized("broll.templatePickerTitle"), isPresented: $isTemplatePickerPresented) {
-            ForEach(BRollTemplatePreset.allCases) { preset in
-                Button(preset.title(appState: appState)) {
-                    addItem(from: preset)
-                }
-            }
-            Button(appState.localized("project.unsaved.cancel"), role: .cancel) {}
+        .onAppear {
+            appState.rebuildProductionSegments(markUnsaved: false)
         }
         .onChange(of: scene.bRollItems.count) { _, _ in appState.touchProject() }
     }
 
-    private func addItem(from preset: BRollTemplatePreset) {
+    private func items(for segment: TextSegment) -> [BRollItem] {
+        scene.bRollItems.filter { $0.linkedSegmentID == segment.id }
+    }
+
+    private var unlinkedItems: [BRollItem] {
+        let validIDs = Set(scene.textSegments.map(\.id))
+        return scene.bRollItems.filter { item in
+            guard let linkedID = item.linkedSegmentID else { return true }
+            return !validIDs.contains(linkedID)
+        }
+    }
+
+    private func addEmptyItem(linkedTo segmentID: UUID) {
         scene.bRollItems.append(
             BRollItem(
                 id: UUID(),
-                linkedSegmentID: scene.textSegments.first?.id,
+                linkedSegmentID: segmentID,
+                templateType: "",
+                sourceType: .custom,
+                descriptionText: "",
+                status: .idea
+            )
+        )
+        appState.touchProject()
+    }
+
+    private func addItem(from preset: BRollTemplatePreset, linkedTo segmentID: UUID) {
+        scene.bRollItems.append(
+            BRollItem(
+                id: UUID(),
+                linkedSegmentID: segmentID,
                 templateType: preset.title(appState: appState),
                 sourceType: preset.sourceType,
                 descriptionText: preset.description(appState: appState),
@@ -142,6 +165,76 @@ private enum BRollTemplatePreset: String, CaseIterable, Identifiable {
     @MainActor func framing(appState: AppState) -> String { appState.localized("broll.template.\(rawValue).framing") }
     @MainActor func motion(appState: AppState) -> String { appState.localized("broll.template.\(rawValue).motion") }
     @MainActor func notes(appState: AppState) -> String { appState.localized("broll.template.\(rawValue).notes") }
+}
+
+private struct BRollSegmentBlock: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.frameTheme) private var theme
+    let segment: TextSegment
+    let items: [BRollItem]
+    let addEmptyAction: () -> Void
+    let addPresetAction: (BRollTemplatePreset) -> Void
+    let duplicateAction: (BRollItem) -> Void
+    let deleteAction: (BRollItem) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(appState.localized("production.scriptSegment"))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(theme.tertiaryText)
+                Text(segment.sourceText)
+                    .font(.system(size: 14))
+                    .foregroundStyle(theme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if items.isEmpty {
+                Text(appState.localized("broll.segmentEmpty"))
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.secondaryText)
+            } else {
+                VStack(spacing: 12) {
+                    ForEach(items) { item in
+                        BRollItemEditor(
+                            item: item,
+                            duplicateAction: { duplicateAction(item) },
+                            deleteAction: { deleteAction(item) }
+                        )
+                    }
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    addEmptyAction()
+                } label: {
+                    Label(appState.localized("broll.addEmpty"), systemImage: "plus")
+                }
+                .buttonStyle(.cursorPlain)
+
+                Menu(appState.localized("production.usePreset")) {
+                    ForEach(BRollTemplatePreset.allCases) { preset in
+                        Button(preset.title(appState: appState)) {
+                            addPresetAction(preset)
+                        }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            }
+            .font(.system(size: 13, weight: .medium))
+        }
+        .padding(16)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(theme.cardBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(theme.divider, lineWidth: 1)
+                )
+        }
+    }
 }
 
 private struct BRollItemEditor: View {

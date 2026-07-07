@@ -5,7 +5,6 @@ struct EditorModeHeader: View {
     @Environment(\.frameTheme) private var theme
     let title: String
     let subtitle: String
-    let sourceText: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -16,22 +15,52 @@ struct EditorModeHeader: View {
                     .font(.system(size: 13))
                     .foregroundStyle(theme.secondaryText)
             }
+        }
+    }
+}
 
-            Text(sourceText.isEmpty ? appState.localized("editor.noScriptText") : sourceText)
-                .font(.system(size: 14))
+struct EmptyProductionState: View {
+    @Environment(\.frameTheme) private var theme
+    let message: String
+
+    var body: some View {
+        Text(message)
+            .font(.system(size: 14))
+            .foregroundStyle(theme.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(theme.background.opacity(0.45))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(theme.divider, lineWidth: 1)
+                    )
+            }
+    }
+}
+
+struct ProductionUnlinkedBlock<Content: View>: View {
+    @Environment(\.frameTheme) private var theme
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(theme.secondaryText)
-                .lineLimit(5)
-                .padding(.vertical, 12)
-                .padding(.horizontal, 14)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background {
+            content
+        }
+        .padding(16)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(theme.background.opacity(0.35))
+                .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(theme.background.opacity(0.55))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(theme.divider, lineWidth: 1)
-                        )
-                }
+                        .stroke(theme.divider, lineWidth: 1)
+                )
         }
     }
 }

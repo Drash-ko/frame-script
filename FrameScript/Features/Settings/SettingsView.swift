@@ -51,7 +51,7 @@ struct SettingsRootView: View {
             }
             .background(theme.windowBackground)
         }
-        .frame(width: 880, height: 610)
+        .frame(minWidth: 720, idealWidth: 880, maxWidth: 1040, minHeight: 520, idealHeight: 610, maxHeight: 760)
         .background(theme.windowBackground)
         .foregroundStyle(theme.primaryText)
         .onAppear {
@@ -116,7 +116,10 @@ private struct GeneralSettings: View {
     @Binding var settings: AppSettings
 
     var body: some View {
-        SettingsSection(title: appState.localized("settings.general")) {
+        SettingsSection(title: appState.localized("settings.general"), resetAction: {
+            settings.generalPreferences = AppSettings.defaults.generalPreferences
+            appState.rebuildProductionSegments()
+        }) {
             SettingsRow(appState.localized("settings.language"), help: appState.localized("help.language")) {
                 Picker("", selection: $settings.generalPreferences.language) {
                     ForEach(AppLanguage.allCases) { language in
@@ -178,14 +181,6 @@ private struct GeneralSettings: View {
                 .frame(width: 180)
             }
 
-            SettingsRow(appState.localized("settings.defaultSplit"), help: appState.localized("help.defaultSplit")) {
-                Picker("", selection: $settings.generalPreferences.defaultSplitMode) {
-                    ForEach(SegmentType.allCases) { Text(appState.displayName($0)).tag($0) }
-                }
-                .labelsHidden()
-                .frame(width: 180)
-            }
-
             SettingsRow(appState.localized("settings.confirmDelete"), help: appState.localized("help.confirmDelete")) {
                 Toggle("", isOn: $settings.generalPreferences.confirmBeforeDeleting)
                     .labelsHidden()
@@ -206,7 +201,13 @@ private struct AppearanceSettings: View {
     @Binding var settings: AppSettings
 
     var body: some View {
-        SettingsSection(title: appState.localized("settings.appearance")) {
+        SettingsSection(title: appState.localized("settings.appearance"), resetAction: {
+            settings.theme = AppSettings.defaults.theme
+            settings.accentColor = AppSettings.defaults.accentColor
+            settings.windowPreferences = AppSettings.defaults.windowPreferences
+            settings.editorPreferences.showFooterShortcuts = AppSettings.defaults.editorPreferences.showFooterShortcuts
+            settings.editorPreferences.showAIReviewPanel = AppSettings.defaults.editorPreferences.showAIReviewPanel
+        }) {
             SettingsRow(appState.localized("settings.theme"), help: appState.localized("help.theme")) {
                 Picker("", selection: $settings.theme) {
                     ForEach(AppearanceTheme.allCases) { option in
@@ -231,7 +232,7 @@ private struct AppearanceSettings: View {
                 HStack(spacing: 10) {
                     Stepper("\(Int(settings.windowPreferences.sidebarWidth)) pt", value: $settings.windowPreferences.sidebarWidth, in: 180...420, step: 10)
                     Button(appState.localized("settings.resetSidebar")) {
-                        settings.windowPreferences.sidebarWidth = 230
+                        settings.windowPreferences.sidebarWidth = AppSettings.defaults.windowPreferences.sidebarWidth
                     }
                     .clickableCursor()
                 }
@@ -276,7 +277,23 @@ private struct EditorSettings: View {
     @Binding var settings: AppSettings
 
     var body: some View {
-        SettingsSection(title: appState.localized("settings.editor")) {
+        SettingsSection(title: appState.localized("settings.editor"), resetAction: {
+            let defaults = AppSettings.defaults.editorPreferences
+            settings.editorPreferences.wordsPerMinute = defaults.wordsPerMinute
+            settings.editorPreferences.fontSize = defaults.fontSize
+            settings.editorPreferences.editorWidth = defaults.editorWidth
+            settings.editorPreferences.lineHeight = defaults.lineHeight
+            settings.editorPreferences.typewriterMode = defaults.typewriterMode
+            settings.editorPreferences.focusParagraph = defaults.focusParagraph
+            settings.editorPreferences.spellcheck = defaults.spellcheck
+            settings.editorPreferences.smartQuotes = defaults.smartQuotes
+            settings.editorPreferences.markdownLite = defaults.markdownLite
+            settings.editorPreferences.showWordCount = defaults.showWordCount
+            settings.editorPreferences.showSceneDuration = defaults.showSceneDuration
+            settings.editorPreferences.defaultNotesVisibility = defaults.defaultNotesVisibility
+            settings.generalPreferences.defaultSplitMode = AppSettings.defaults.generalPreferences.defaultSplitMode
+            appState.rebuildProductionSegments()
+        }) {
             SettingsRow(appState.localized("settings.wordsPerMinute"), help: appState.localized("help.wordsPerMinute")) {
                 Stepper("\(settings.editorPreferences.wordsPerMinute)", value: $settings.editorPreferences.wordsPerMinute, in: 90...230)
             }
@@ -313,6 +330,17 @@ private struct EditorSettings: View {
                     .labelsHidden()
             }
 
+            SettingsRow(appState.localized("settings.defaultSplit"), help: appState.localized("help.defaultSplit")) {
+                Picker("", selection: $settings.generalPreferences.defaultSplitMode) {
+                    ForEach(SegmentType.allCases) { Text(appState.displayName($0)).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 180)
+                .onChange(of: settings.generalPreferences.defaultSplitMode) { _, _ in
+                    appState.rebuildProductionSegments()
+                }
+            }
+
             SettingsRow(appState.localized("settings.defaultNotesVisibility"), help: appState.localized("help.defaultNotesVisibility")) {
                 Picker("", selection: $settings.editorPreferences.defaultNotesVisibility) {
                     ForEach(NotesDefaultVisibility.allCases) { option in
@@ -345,7 +373,9 @@ private struct TemplateSettings: View {
     var body: some View {
         @Bindable var settingsStore = appState.settingsStore
 
-        SettingsSection(title: appState.localized("settings.templates")) {
+        SettingsSection(title: appState.localized("settings.templates"), resetAction: {
+            settingsStore.settings.generalPreferences.defaultNewProjectTemplate = AppSettings.defaults.generalPreferences.defaultNewProjectTemplate
+        }) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -571,7 +601,12 @@ private struct AISettings: View {
     }
 
     var body: some View {
-        SettingsSection(title: appState.localized("settings.ai")) {
+        SettingsSection(title: appState.localized("settings.ai"), resetAction: {
+            settings.aiPreferences = AppSettings.defaults.aiPreferences
+            apiKey = ""
+            status = ""
+            loadAPIKey()
+        }) {
             SettingsRow(appState.localized("settings.provider"), help: appState.localized("help.provider")) {
                 Picker("", selection: $settings.aiPreferences.provider) {
                     ForEach(AIProviderKind.allCases) { provider in
@@ -638,9 +673,16 @@ private struct AISettings: View {
             }
 
             SettingsRow(appState.localized("settings.privacyMode"), help: appState.localized("help.privacyMode")) {
-                Toggle("", isOn: $settings.aiPreferences.privacyMode)
-                    .labelsHidden()
-                    .disabled(providerDisabled)
+                VStack(alignment: .trailing, spacing: 6) {
+                    Toggle("", isOn: $settings.aiPreferences.privacyMode)
+                        .labelsHidden()
+                        .disabled(providerDisabled)
+                    Text(appState.localized("settings.privacyModeExplanation"))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 360, alignment: .trailing)
+                }
             }
         }
         .task { loadAPIKey() }
@@ -745,7 +787,9 @@ private struct VoiceSettings: View {
     }
 
     var body: some View {
-        SettingsSection(title: appState.localized("settings.voice")) {
+        SettingsSection(title: appState.localized("settings.voice"), resetAction: {
+            settings.voicePreferences = AppSettings.defaults.voicePreferences
+        }) {
             SettingsRow(appState.localized("settings.provider"), help: appState.localized("help.voiceProvider")) {
                 Picker("", selection: $settings.voicePreferences.provider) {
                     ForEach(VoiceProviderKind.allCases) { Text(appState.displayName($0)).tag($0) }
@@ -815,7 +859,9 @@ private struct ExportSettings: View {
     @Binding var settings: AppSettings
 
     var body: some View {
-        SettingsSection(title: appState.localized("settings.export")) {
+        SettingsSection(title: appState.localized("settings.export"), resetAction: {
+            settings.exportPreferences = AppSettings.defaults.exportPreferences
+        }) {
             SettingsRow(appState.localized("settings.defaultFormat"), help: appState.localized("help.defaultFormat")) {
                 Picker("", selection: $settings.exportPreferences.defaultFormat) {
                     ForEach(ExportFormat.allCases) { Text(appState.displayName($0)).tag($0) }
@@ -895,15 +941,32 @@ private struct AdvancedSettings: View {
 }
 
 private struct SettingsSection<Content: View>: View {
+    @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     let title: String
+    var resetAction: (() -> Void)?
     @ViewBuilder var content: Content
+
+    init(title: String, resetAction: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.resetAction = resetAction
+        self.content = content()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(title)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(theme.primaryText)
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text(title)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(theme.primaryText)
+                Spacer()
+                if let resetAction {
+                    Button(appState.localized("settings.resetSection"), action: resetAction)
+                        .font(.system(size: 12))
+                        .buttonStyle(.borderless)
+                        .clickableCursor()
+                }
+            }
 
             VStack(spacing: 0) {
                 content

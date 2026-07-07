@@ -40,28 +40,25 @@ struct AppRootView: View {
 struct AppShellView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
+    @State private var sidebarDragStartWidth: Double?
 
     var body: some View {
         @Bindable var windowState = appState.windowState
         @Bindable var settingsStore = appState.settingsStore
         let sidebarWidth = settingsStore.settings.windowPreferences.sidebarWidth
-        let reducedChrome = settingsStore.settings.windowPreferences.reducedChromeMode
         let hidesSidebarForFocus = appState.isFocusModeEnabled
             && appState.settings.windowPreferences.focusModeBehavior == .hidePanels
 
         VStack(spacing: 0) {
             TopToolbar()
 
-            HSplitView {
+            HStack(spacing: 0) {
                 if appState.isSidebarVisible && !hidesSidebarForFocus {
                     SceneSidebar()
-                        .frame(
-                            minWidth: 180,
-                            idealWidth: sidebarWidth,
-                            maxWidth: 420
-                        )
-                        .background(SidebarWidthReader(width: $settingsStore.settings.windowPreferences.sidebarWidth))
+                        .frame(width: sidebarWidth)
                         .transition(.move(edge: .leading).combined(with: .opacity))
+
+                    SidebarResizeHandle(width: $settingsStore.settings.windowPreferences.sidebarWidth, dragStartWidth: $sidebarDragStartWidth)
                 }
 
                 HStack(spacing: 0) {
@@ -79,7 +76,7 @@ struct AppShellView: View {
                 .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            if appState.settings.editorPreferences.showFooterShortcuts && !reducedChrome && !appState.isFocusModeEnabled {
+            if appState.settings.editorPreferences.showFooterShortcuts && !appState.isFocusModeEnabled {
                 Divider()
                     .overlay(theme.divider)
                 FooterShortcutBar()
@@ -117,24 +114,33 @@ struct AppShellView: View {
     }
 }
 
-private struct SidebarWidthReader: View {
+private struct SidebarResizeHandle: View {
+    @Environment(\.frameTheme) private var theme
     @Binding var width: Double
+    @Binding var dragStartWidth: Double?
 
     var body: some View {
-        GeometryReader { proxy in
-            Color.clear
-                .onAppear { persist(proxy.size.width) }
-                .onChange(of: proxy.size.width) { _, newValue in
-                    persist(newValue)
-                }
-        }
-    }
-
-    private func persist(_ value: Double) {
-        let clamped = min(420, max(180, value))
-        if abs(width - clamped) > 0.5 {
-            width = clamped
-        }
+        Rectangle()
+            .fill(theme.divider)
+            .frame(width: 1)
+            .overlay {
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: 8)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { value in
+                                let start = dragStartWidth ?? width
+                                dragStartWidth = start
+                                width = min(420, max(180, start + value.translation.width))
+                            }
+                            .onEnded { _ in
+                                dragStartWidth = nil
+                            }
+                    )
+            }
+            .cursor(.resizeLeftRight)
     }
 }
 
@@ -274,27 +280,34 @@ private struct TemplatePickerView: View {
                     .font(.system(size: 18, weight: .semibold))
                     .padding(.bottom, 8)
 
-                ForEach(templates) { template in
-                    Button {
-                        selectedTemplateID = template.id
-                    } label: {
-                        HStack {
-                            Text(appState.displayName(template))
-                                .font(.system(size: 13, weight: selectedTemplate?.id == template.id ? .semibold : .regular))
-                            Spacer()
-                        }
-                        .frame(maxWidth: .infinity)
-                        .contentShape(Rectangle())
-                        .foregroundStyle(selectedTemplate?.id == template.id ? theme.primaryText : theme.secondaryText)
-                        .padding(.horizontal, 10)
-                        .frame(height: 32)
-                        .background {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(selectedTemplate?.id == template.id ? theme.accentSoft.opacity(0.62) : Color.clear)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        ForEach(templates) { template in
+                            Button {
+                                selectedTemplateID = template.id
+                            } label: {
+                                HStack {
+                                    Text(appState.displayName(template))
+                                        .font(.system(size: 13, weight: selectedTemplate?.id == template.id ? .semibold : .regular))
+                                        .lineLimit(2)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: 8)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .contentShape(Rectangle())
+                                .foregroundStyle(selectedTemplate?.id == template.id ? theme.primaryText : theme.secondaryText)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(selectedTemplate?.id == template.id ? theme.accentSoft.opacity(0.62) : Color.clear)
+                                }
+                            }
+                            .buttonStyle(.cursorPlain)
                         }
                     }
-                    .buttonStyle(.cursorPlain)
                 }
+                .frame(maxHeight: .infinity)
 
                 Spacer()
 
@@ -306,7 +319,7 @@ private struct TemplatePickerView: View {
                 .buttonStyle(.cursorPlain)
             }
             .padding(18)
-            .frame(width: 240, alignment: .topLeading)
+            .frame(minWidth: 210, idealWidth: 240, maxWidth: 300, alignment: .topLeading)
             .background(theme.panelBackground)
 
             Divider()
@@ -316,6 +329,8 @@ private struct TemplatePickerView: View {
                 if let selectedTemplate {
                     Text(appState.displayName(selectedTemplate))
                         .font(.system(size: 24, weight: .semibold))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     QuietField(appState.localized("newProject.name")) {
                         TextField(appState.localized("project.untitled"), text: $projectName)
@@ -323,29 +338,33 @@ private struct TemplatePickerView: View {
                             .focused($isNameFocused)
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(appState.localized("templates.structure"))
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(theme.secondaryText)
-
-                        if selectedTemplate.structureDefinition.isEmpty {
-                            Text(appState.localized("templates.blankStructure"))
-                                .font(.system(size: 14))
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(appState.localized("templates.structure"))
+                                .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(theme.secondaryText)
-                        } else {
-                            ForEach(Array(selectedTemplate.structureDefinition.enumerated()), id: \.offset) { index, sceneName in
-                                HStack(spacing: 10) {
-                                    Text(String(format: "%02d", index + 1))
-                                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                                        .foregroundStyle(theme.tertiaryText)
-                                        .frame(width: 28, alignment: .leading)
-                                    Text(selectedTemplate.builtIn ? appState.localizedTemplateSceneName(sceneName) : sceneName)
-                                        .font(.system(size: 14))
-                                        .foregroundStyle(theme.primaryText)
+
+                            if selectedTemplate.structureDefinition.isEmpty {
+                                Text(appState.localized("templates.blankStructure"))
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(theme.secondaryText)
+                            } else {
+                                ForEach(Array(selectedTemplate.structureDefinition.enumerated()), id: \.offset) { index, sceneName in
+                                    HStack(alignment: .top, spacing: 10) {
+                                        Text(String(format: "%02d", index + 1))
+                                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                                            .foregroundStyle(theme.tertiaryText)
+                                            .frame(width: 28, alignment: .leading)
+                                        Text(selectedTemplate.builtIn ? appState.localizedTemplateSceneName(sceneName) : sceneName)
+                                            .font(.system(size: 14))
+                                            .foregroundStyle(theme.primaryText)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    .padding(.vertical, 5)
                                 }
-                                .padding(.vertical, 5)
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
 
                     Spacer()
@@ -368,11 +387,11 @@ private struct TemplatePickerView: View {
                 }
             }
             .padding(24)
-            .frame(width: 420, height: 420, alignment: .topLeading)
+            .frame(minWidth: 360, idealWidth: 430, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(theme.windowBackground)
         }
         .foregroundStyle(theme.primaryText)
-        .frame(width: 660, height: 420)
+        .frame(minWidth: 620, idealWidth: 700, maxWidth: 860, minHeight: 430, idealHeight: 500, maxHeight: 680)
         .onAppear {
             selectedTemplateID = selectedTemplateID ?? templates.first?.id
             projectName = projectName.isEmpty ? appState.localized("project.untitled") : projectName
