@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager / Xcode build output
+.build/
+.swiftpm/
+DerivedData/
+build/
+
+# Xcode user-local state
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+
+# Local configuration and secrets
+.env
+.env.*
+*.pem
+*.key
+*.p8
+*.p12
+*.mobileprovision
+
+# Generated repository dumps
+repomix-output.md

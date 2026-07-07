@@ -1,0 +1,1052 @@
+import AVFoundation
+import SwiftUI
+
+struct SettingsView: View {
+    var body: some View {
+        SettingsRootView()
+    }
+}
+
+struct SettingsRootView: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.frameTheme) private var theme
+    @State private var selectedTab: SettingsTab = .general
+
+    var body: some View {
+        @Bindable var settingsStore = appState.settingsStore
+
+        HStack(spacing: 0) {
+            SettingsSidebar(selectedTab: $selectedTab)
+                .frame(width: 190)
+
+            Divider()
+                .overlay(theme.divider)
+
+            ScrollView {
+                Group {
+                    switch selectedTab {
+                    case .general:
+                        GeneralSettings(settings: $settingsStore.settings)
+                    case .appearance:
+                        AppearanceSettings(settings: $settingsStore.settings)
+                    case .editor:
+                        EditorSettings(settings: $settingsStore.settings)
+                    case .templates:
+                        TemplateSettings()
+                    case .ai:
+                        AISettings(settings: $settingsStore.settings)
+                    case .voice:
+                        VoiceSettings(settings: $settingsStore.settings)
+                    case .export:
+                        ExportSettings(settings: $settingsStore.settings)
+                    case .advanced:
+                        AdvancedSettings(
+                            resetAction: appState.settingsStore.reset,
+                            clearRecentsAction: appState.clearRecentProjects
+                        )
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .background(theme.windowBackground)
+        }
+        .frame(width: 880, height: 610)
+        .background(theme.windowBackground)
+        .foregroundStyle(theme.primaryText)
+        .onAppear {
+            selectedTab = appState.windowState.requestedSettingsTab
+        }
+        .onChange(of: appState.windowState.requestedSettingsTab) { _, newValue in
+            selectedTab = newValue
+        }
+    }
+}
+
+private struct SettingsSidebar: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.frameTheme) private var theme
+    @Binding var selectedTab: SettingsTab
+    @State private var hoveredTab: SettingsTab?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(SettingsTab.allCases) { tab in
+                Button {
+                    selectedTab = tab
+                } label: {
+                    Label(tab.title(appState: appState), systemImage: tab.icon)
+                        .font(.system(size: 13, weight: selectedTab == tab ? .semibold : .regular))
+                        .foregroundStyle(selectedTab == tab ? theme.primaryText : theme.secondaryText)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .contentShape(Rectangle())
+                        .background {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(sidebarFill(for: tab))
+                        }
+                }
+                .frame(maxWidth: .infinity)
+                .buttonStyle(.cursorPlain)
+                .help(tab.title(appState: appState))
+                .onHover { hoveredTab = $0 ? tab : nil }
+            }
+
+            Spacer()
+        }
+        .padding(12)
+        .background(theme.panelBackground)
+    }
+
+    private func sidebarFill(for tab: SettingsTab) -> Color {
+        if selectedTab == tab {
+            return theme.accentSoft.opacity(0.72)
+        }
+        if hoveredTab == tab {
+            return theme.hover
+        }
+        return .clear
+    }
+}
+
+private struct GeneralSettings: View {
+    @Environment(AppState.self) private var appState
+    @Binding var settings: AppSettings
+
+    var body: some View {
+        SettingsSection(title: appState.localized("settings.general")) {
+            SettingsRow(appState.localized("settings.language"), help: appState.localized("help.language")) {
+                Picker("", selection: $settings.generalPreferences.language) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 180)
+            }
+
+            SettingsRow(appState.localized("settings.showBrowserLaunch"), help: appState.localized("help.showBrowserLaunch")) {
+                Toggle("", isOn: $settings.generalPreferences.showProjectBrowserOnLaunch)
+                    .labelsHidden()
+                    .onChange(of: settings.generalPreferences.showProjectBrowserOnLaunch) { _, newValue in
+                        if newValue {
+                            settings.generalPreferences.restoreLastProjectOnLaunch = false
+                        }
+                    }
+            }
+
+            SettingsRow(appState.localized("settings.restoreLast"), help: appState.localized("help.restoreLast")) {
+                Toggle("", isOn: $settings.generalPreferences.restoreLastProjectOnLaunch)
+                    .labelsHidden()
+                    .disabled(settings.generalPreferences.showProjectBrowserOnLaunch)
+                    .onChange(of: settings.generalPreferences.restoreLastProjectOnLaunch) { _, newValue in
+                        if newValue {
+                            settings.generalPreferences.showProjectBrowserOnLaunch = false
+                        }
+                    }
+            }
+
+            SettingsRow(appState.localized("settings.autosave"), help: appState.localized("help.autosave")) {
+                Toggle("", isOn: $settings.generalPreferences.autosaveEnabled)
+                    .labelsHidden()
+            }
+
+            SettingsRow(appState.localized("settings.autosaveInterval"), help: appState.localized("help.autosaveInterval")) {
+                Stepper("\(settings.generalPreferences.autosaveIntervalSeconds)s", value: $settings.generalPreferences.autosaveIntervalSeconds, in: 5...120, step: 5)
+                    .disabled(!settings.generalPreferences.autosaveEnabled)
+            }
+
+            SettingsRow(appState.localized("settings.defaultTemplate"), help: appState.localized("help.defaultTemplate")) {
+                Picker("", selection: $settings.generalPreferences.defaultNewProjectTemplate) {
+                    ForEach(appState.scriptTemplates()) { template in
+                        Text(appState.displayName(template)).tag(template.name)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 220)
+            }
+
+            SettingsRow(appState.localized("settings.blankProjectStart"), help: appState.localized("help.blankProjectStart")) {
+                Picker("", selection: $settings.generalPreferences.blankProjectStart) {
+                    ForEach(BlankProjectStart.allCases) { option in
+                        Text(blankProjectStartTitle(option)).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 180)
+            }
+
+            SettingsRow(appState.localized("settings.defaultSplit"), help: appState.localized("help.defaultSplit")) {
+                Picker("", selection: $settings.generalPreferences.defaultSplitMode) {
+                    ForEach(SegmentType.allCases) { Text(appState.displayName($0)).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 180)
+            }
+
+            SettingsRow(appState.localized("settings.confirmDelete"), help: appState.localized("help.confirmDelete")) {
+                Toggle("", isOn: $settings.generalPreferences.confirmBeforeDeleting)
+                    .labelsHidden()
+            }
+        }
+    }
+
+    private func blankProjectStartTitle(_ option: BlankProjectStart) -> String {
+        switch option {
+        case .noScenes: appState.localized("blank.noScenes")
+        case .oneEmptyScene: appState.localized("blank.oneEmptyScene")
+        }
+    }
+}
+
+private struct AppearanceSettings: View {
+    @Environment(AppState.self) private var appState
+    @Binding var settings: AppSettings
+
+    var body: some View {
+        SettingsSection(title: appState.localized("settings.appearance")) {
+            SettingsRow(appState.localized("settings.theme"), help: appState.localized("help.theme")) {
+                Picker("", selection: $settings.theme) {
+                    ForEach(AppearanceTheme.allCases) { option in
+                        Text(appState.displayName(option)).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 160)
+            }
+
+            SettingsRow(appState.localized("settings.accent"), help: appState.localized("help.accent")) {
+                AccentPicker(selection: $settings.accentColor)
+                    .frame(width: 190)
+            }
+
+            SettingsRow(appState.localized("settings.sidebarDefault"), help: appState.localized("help.sidebarDefault")) {
+                Toggle("", isOn: $settings.windowPreferences.sidebarDefaultVisible)
+                    .labelsHidden()
+            }
+
+            SettingsRow(appState.localized("settings.sidebarWidth"), help: appState.localized("help.sidebarWidth")) {
+                HStack(spacing: 10) {
+                    Stepper("\(Int(settings.windowPreferences.sidebarWidth)) pt", value: $settings.windowPreferences.sidebarWidth, in: 180...420, step: 10)
+                    Button(appState.localized("settings.resetSidebar")) {
+                        settings.windowPreferences.sidebarWidth = 230
+                    }
+                    .clickableCursor()
+                }
+            }
+
+            SettingsRow(appState.localized("settings.footerShortcuts"), help: appState.localized("help.footerShortcuts")) {
+                Toggle("", isOn: $settings.editorPreferences.showFooterShortcuts)
+                    .labelsHidden()
+            }
+
+            SettingsRow(appState.localized("settings.aiPanel"), help: appState.localized("help.aiPanel")) {
+                Toggle("", isOn: $settings.editorPreferences.showAIReviewPanel)
+                    .labelsHidden()
+            }
+
+            SettingsRow(appState.localized("settings.reducedChrome"), help: appState.localized("help.reducedChrome")) {
+                Toggle("", isOn: $settings.windowPreferences.reducedChromeMode)
+                    .labelsHidden()
+            }
+
+            SettingsRow(appState.localized("settings.focusBehavior"), help: appState.localized("help.focusBehavior")) {
+                Picker("", selection: $settings.windowPreferences.focusModeBehavior) {
+                    ForEach(FocusModeBehavior.allCases) { Text(appState.displayName($0)).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 180)
+            }
+        }
+    }
+
+    private func themeTitle(_ option: AppearanceTheme) -> String {
+        switch option {
+        case .system: appState.localized("theme.system")
+        case .light: appState.localized("theme.light")
+        case .dark: appState.localized("theme.dark")
+        }
+    }
+}
+
+private struct EditorSettings: View {
+    @Environment(AppState.self) private var appState
+    @Binding var settings: AppSettings
+
+    var body: some View {
+        SettingsSection(title: appState.localized("settings.editor")) {
+            SettingsRow(appState.localized("settings.wordsPerMinute"), help: appState.localized("help.wordsPerMinute")) {
+                Stepper("\(settings.editorPreferences.wordsPerMinute)", value: $settings.editorPreferences.wordsPerMinute, in: 90...230)
+            }
+
+            SettingsRow(appState.localized("settings.fontSize"), help: appState.localized("help.fontSize")) {
+                ValueSlider(value: $settings.editorPreferences.fontSize, range: 16...30, suffix: " pt", precision: 0)
+            }
+
+            SettingsRow(appState.localized("settings.editorWidth"), help: appState.localized("help.editorWidth")) {
+                ValueSlider(value: $settings.editorPreferences.editorWidth, range: 560...980, suffix: " pt", precision: 0)
+            }
+
+            SettingsRow(appState.localized("settings.lineHeight"), help: appState.localized("help.lineHeight")) {
+                ValueSlider(value: $settings.editorPreferences.lineHeight, range: 1.2...1.8, suffix: "x", precision: 2)
+            }
+
+            SettingsRow(appState.localized("settings.spellcheck"), help: appState.localized("help.spellcheck")) {
+                Toggle("", isOn: $settings.editorPreferences.spellcheck)
+                    .labelsHidden()
+            }
+
+            SettingsRow(appState.localized("settings.smartQuotes"), help: appState.localized("help.smartQuotes")) {
+                Toggle("", isOn: $settings.editorPreferences.smartQuotes)
+                    .labelsHidden()
+            }
+
+            SettingsRow(appState.localized("settings.wordCount"), help: appState.localized("help.wordCount")) {
+                Toggle("", isOn: $settings.editorPreferences.showWordCount)
+                    .labelsHidden()
+            }
+
+            SettingsRow(appState.localized("settings.sceneDuration"), help: appState.localized("help.sceneDuration")) {
+                Toggle("", isOn: $settings.editorPreferences.showSceneDuration)
+                    .labelsHidden()
+            }
+
+            SettingsRow(appState.localized("settings.defaultNotesVisibility"), help: appState.localized("help.defaultNotesVisibility")) {
+                Picker("", selection: $settings.editorPreferences.defaultNotesVisibility) {
+                    ForEach(NotesDefaultVisibility.allCases) { option in
+                        Text(notesVisibilityTitle(option)).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 160)
+            }
+        }
+    }
+
+    private func notesVisibilityTitle(_ option: NotesDefaultVisibility) -> String {
+        switch option {
+        case .collapsed: appState.localized("notes.collapsed")
+        case .expanded: appState.localized("notes.expanded")
+        }
+    }
+}
+
+private struct TemplateSettings: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.frameTheme) private var theme
+    @State private var selectedTemplateID: UUID?
+
+    private var selectedTemplate: FrameTemplate? {
+        appState.scriptTemplates().first { $0.id == selectedTemplateID } ?? appState.scriptTemplates().first
+    }
+
+    var body: some View {
+        @Bindable var settingsStore = appState.settingsStore
+
+        SettingsSection(title: appState.localized("settings.templates")) {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(appState.scriptTemplates()) { template in
+                            Button {
+                                selectedTemplateID = template.id
+                            } label: {
+                                HStack {
+                                    Text(appState.displayName(template))
+                                        .font(.system(size: 13, weight: selectedTemplate?.id == template.id ? .semibold : .regular))
+                                    Spacer()
+                                    if template.builtIn {
+                                        Text(appState.localized("templates.builtIn"))
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(theme.tertiaryText)
+                                    }
+                                }
+                                .foregroundStyle(selectedTemplate?.id == template.id ? theme.primaryText : theme.secondaryText)
+                                .padding(.horizontal, 10)
+                                .frame(height: 30)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(selectedTemplate?.id == template.id ? theme.accentSoft.opacity(0.58) : Color.clear)
+                                }
+                            }
+                            .buttonStyle(.cursorPlain)
+                        }
+
+                        Button {
+                            appState.createCustomTemplate()
+                            selectedTemplateID = appState.scriptTemplates().last?.id
+                        } label: {
+                            Label(appState.localized("templates.create"), systemImage: "plus")
+                        }
+                        .buttonStyle(.cursorPlain)
+                        .padding(.top, 6)
+                    }
+                    .frame(width: 210, alignment: .topLeading)
+
+                    Divider()
+                        .overlay(theme.divider)
+
+                    if let template = selectedTemplate {
+                        TemplateDetailEditor(
+                            template: template,
+                            defaultTemplate: $settingsStore.settings.generalPreferences.defaultNewProjectTemplate
+                        )
+                        .id(template.id)
+                    }
+                }
+            }
+            .padding(14)
+        }
+        .onAppear {
+            selectedTemplateID = selectedTemplateID ?? appState.scriptTemplates().first?.id
+        }
+    }
+}
+
+private struct TemplateDetailEditor: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.frameTheme) private var theme
+    @State private var draft: FrameTemplate
+    @Binding var defaultTemplate: String
+
+    init(template: FrameTemplate, defaultTemplate: Binding<String>) {
+        _draft = State(initialValue: template)
+        _defaultTemplate = defaultTemplate
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                if draft.builtIn {
+                    Text(appState.displayName(draft))
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10)
+                        .frame(height: 34)
+                } else {
+                    TextField(appState.localized("templates.name"), text: $draft.name)
+                        .textFieldStyle(QuietTextFieldStyle())
+                }
+
+                Button(appState.localized("templates.duplicate")) {
+                    appState.duplicateTemplate(draft)
+                }
+                .clickableCursor()
+
+                Button(appState.localized("templates.setDefault")) {
+                    defaultTemplate = draft.name
+                }
+                .disabled(defaultTemplate == draft.name)
+                .clickableCursor(enabled: defaultTemplate != draft.name)
+
+                if !draft.builtIn {
+                    Button(appState.localized("templates.delete"), role: .destructive) {
+                        appState.deleteTemplate(draft)
+                    }
+                    .clickableCursor()
+                }
+            }
+
+            if draft.builtIn {
+                Text(appState.localized("templates.readOnlyHint"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.secondaryText)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(appState.localized("templates.structure"))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(theme.secondaryText)
+
+                if draft.structureDefinition.isEmpty {
+                    Text(appState.localized("templates.blankStructure"))
+                        .font(.system(size: 13))
+                        .foregroundStyle(theme.tertiaryText)
+                }
+
+                ForEach(Array(draft.structureDefinition.enumerated()), id: \.offset) { index, _ in
+                    HStack(spacing: 8) {
+                        if draft.builtIn {
+                            Text(appState.localizedTemplateSceneName(draft.structureDefinition[index]))
+                                .font(.system(size: 13))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10)
+                                .frame(height: 34)
+                        } else {
+                            TextField(appState.localized("templates.sceneName"), text: bindingForScene(at: index))
+                                .textFieldStyle(QuietTextFieldStyle())
+                        }
+
+                        EditorIconButton(
+                            systemName: "arrow.up",
+                            accessibilityLabel: appState.localized("scene.moveUp"),
+                            action: { moveScene(from: index, by: -1) }
+                        )
+                        .disabled(draft.builtIn || index == 0)
+
+                        EditorIconButton(
+                            systemName: "arrow.down",
+                            accessibilityLabel: appState.localized("scene.moveDown"),
+                            action: { moveScene(from: index, by: 1) }
+                        )
+                        .disabled(draft.builtIn || index == draft.structureDefinition.count - 1)
+
+                        EditorIconButton(
+                            systemName: "trash",
+                            accessibilityLabel: appState.localized("scene.delete"),
+                            role: .destructive,
+                            action: { removeScene(at: index) }
+                        )
+                        .disabled(draft.builtIn)
+                    }
+                }
+
+                Button {
+                    draft.structureDefinition.append(appState.localized("templates.defaultScene"))
+                    saveDraft()
+                } label: {
+                    Label(appState.localized("templates.addScene"), systemImage: "plus")
+                }
+                .buttonStyle(.cursorPlain)
+                .disabled(draft.builtIn)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .onChange(of: draft) { _, _ in saveDraft() }
+        .onChange(of: draft.name) { oldValue, newValue in
+            if defaultTemplate == oldValue {
+                defaultTemplate = newValue
+            }
+        }
+    }
+
+    private func bindingForScene(at index: Int) -> Binding<String> {
+        Binding(
+            get: {
+                guard draft.structureDefinition.indices.contains(index) else { return "" }
+                return draft.structureDefinition[index]
+            },
+            set: { newValue in
+                guard draft.structureDefinition.indices.contains(index) else { return }
+                draft.structureDefinition[index] = newValue
+            }
+        )
+    }
+
+    private func moveScene(from index: Int, by delta: Int) {
+        let nextIndex = index + delta
+        guard draft.structureDefinition.indices.contains(index),
+              draft.structureDefinition.indices.contains(nextIndex) else { return }
+        draft.structureDefinition.swapAt(index, nextIndex)
+        saveDraft()
+    }
+
+    private func removeScene(at index: Int) {
+        guard draft.structureDefinition.indices.contains(index) else { return }
+        draft.structureDefinition.remove(at: index)
+        saveDraft()
+    }
+
+    private func saveDraft() {
+        guard !draft.builtIn else { return }
+        draft.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? appState.localized("templates.untitled")
+            : draft.name
+        appState.updateTemplate(draft)
+    }
+}
+
+private struct AISettings: View {
+    @Environment(AppState.self) private var appState
+    @Binding var settings: AppSettings
+    @State private var apiKey = ""
+    @State private var hasStoredKey = false
+    @State private var status = ""
+    @State private var isTesting = false
+
+    private var providerDisabled: Bool {
+        settings.aiPreferences.provider == .disabled
+    }
+
+    var body: some View {
+        SettingsSection(title: appState.localized("settings.ai")) {
+            SettingsRow(appState.localized("settings.provider"), help: appState.localized("help.provider")) {
+                Picker("", selection: $settings.aiPreferences.provider) {
+                    ForEach(AIProviderKind.allCases) { provider in
+                        Text(appState.displayName(provider)).tag(provider)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 220)
+            }
+
+            SettingsRow(appState.localized("settings.model"), help: appState.localized("help.model")) {
+                TextField("", text: $settings.aiPreferences.model)
+                    .textFieldStyle(QuietTextFieldStyle())
+                    .frame(width: 260)
+                    .disabled(providerDisabled)
+            }
+
+            SettingsRow(appState.localized("settings.baseURL"), help: appState.localized("help.baseURL")) {
+                TextField(defaultBaseURL(for: settings.aiPreferences.provider), text: $settings.aiPreferences.baseURL)
+                    .textFieldStyle(QuietTextFieldStyle())
+                    .frame(width: 300)
+                    .disabled(providerDisabled)
+            }
+
+            SettingsRow(appState.localized("settings.apiKey"), help: appState.localized("help.apiKey")) {
+                VStack(alignment: .trailing, spacing: 8) {
+                    HStack(spacing: 8) {
+                        SecureField(hasStoredKey ? appState.localized("settings.keyStored") : appState.localized("settings.keyMissing"), text: $apiKey)
+                            .textFieldStyle(QuietTextFieldStyle())
+                            .frame(width: 240)
+                            .disabled(providerDisabled)
+                        Button(hasStoredKey ? appState.localized("settings.replaceKey") : appState.localized("settings.saveKey")) {
+                            saveAPIKey()
+                        }
+                        .disabled(providerDisabled || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .clickableCursor(enabled: !providerDisabled && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button(appState.localized("settings.deleteKey")) {
+                            deleteAPIKey()
+                        }
+                        .disabled(providerDisabled || !hasStoredKey)
+                        .clickableCursor(enabled: !providerDisabled && hasStoredKey)
+                    }
+
+                    Text(providerDisabled ? appState.localized("settings.notNeeded") : keyStatusText)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            SettingsRow("") {
+                HStack(spacing: 10) {
+                    Button(appState.localized("settings.testConnection")) {
+                        Task { await testConnection() }
+                    }
+                    .disabled(providerDisabled || isTesting)
+                    .clickableCursor(enabled: !providerDisabled && !isTesting)
+
+                    if !status.isEmpty {
+                        Text(status)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            SettingsRow(appState.localized("settings.privacyMode"), help: appState.localized("help.privacyMode")) {
+                Toggle("", isOn: $settings.aiPreferences.privacyMode)
+                    .labelsHidden()
+                    .disabled(providerDisabled)
+            }
+        }
+        .task { loadAPIKey() }
+        .onChange(of: settings.aiPreferences.provider) { _, _ in
+            apiKey = ""
+            status = ""
+            loadAPIKey()
+            if settings.aiPreferences.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                settings.aiPreferences.baseURL = defaultBaseURL(for: settings.aiPreferences.provider)
+            }
+        }
+    }
+
+    private var keyStatusText: String {
+        hasStoredKey ? appState.localized("settings.keyStored") : appState.localized("settings.keyNotStored")
+    }
+
+    private func accountName() -> String {
+        settings.aiPreferences.provider.rawValue
+    }
+
+    private func loadAPIKey() {
+        let stored = (try? KeychainStore.readAPIKey(account: accountName())) ?? ""
+        hasStoredKey = !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func saveAPIKey() {
+        do {
+            try KeychainStore.saveAPIKey(apiKey, account: accountName())
+            apiKey = ""
+            hasStoredKey = true
+            status = appState.localized("settings.keySaved")
+        } catch {
+            status = appState.localized("settings.keyInvalid")
+        }
+    }
+
+    private func deleteAPIKey() {
+        KeychainStore.deleteAPIKey(account: accountName())
+        apiKey = ""
+        hasStoredKey = false
+        status = appState.localized("settings.keyNotStored")
+    }
+
+    private func testConnection() async {
+        guard !providerDisabled else {
+            status = appState.localized("settings.aiDisabled")
+            return
+        }
+        guard settings.aiPreferences.provider == .openAICompatible || settings.aiPreferences.provider == .openRouter else {
+            status = appState.localized("settings.unsupported")
+            return
+        }
+        guard hasStoredKey || !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            status = appState.localized("settings.keyMissing")
+            return
+        }
+        if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            saveAPIKey()
+        }
+
+        isTesting = true
+        status = appState.localized("settings.testing")
+        defer { isTesting = false }
+
+        do {
+            _ = try await OpenAICompatibleLLMProvider().complete(request: LLMRequest(
+                task: .autocomplete,
+                provider: settings.aiPreferences.provider,
+                baseURL: settings.aiPreferences.baseURL,
+                systemPrompt: "Reply with OK.",
+                userPrompt: "OK",
+                model: settings.aiPreferences.model,
+                temperature: 0,
+                maxTokens: 4
+            ))
+            status = appState.localized("settings.success")
+        } catch {
+            status = "\(appState.localized("settings.failed")): \(error.localizedDescription)"
+        }
+    }
+
+    private func defaultBaseURL(for provider: AIProviderKind) -> String {
+        switch provider {
+        case .openRouter:
+            "https://openrouter.ai/api/v1"
+        case .openAICompatible:
+            "https://api.openai.com/v1"
+        case .disabled, .anthropicCompatible, .gemini:
+            ""
+        }
+    }
+}
+
+private struct VoiceSettings: View {
+    @Environment(AppState.self) private var appState
+    @Binding var settings: AppSettings
+    @State private var synthesizer = AVSpeechSynthesizer()
+
+    private var voices: [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices().sorted { $0.name < $1.name }
+    }
+
+    var body: some View {
+        SettingsSection(title: appState.localized("settings.voice")) {
+            SettingsRow(appState.localized("settings.provider"), help: appState.localized("help.voiceProvider")) {
+                Picker("", selection: $settings.voicePreferences.provider) {
+                    ForEach(VoiceProviderKind.allCases) { Text(appState.displayName($0)).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 220)
+            }
+
+            SettingsRow(appState.localized("settings.systemVoice"), help: appState.localized("help.systemVoice")) {
+                Picker("", selection: $settings.voicePreferences.voiceIdentifier) {
+                    Text(appState.localized("settings.default")).tag("")
+                    ForEach(voices, id: \.identifier) { voice in
+                        Text("\(voice.name) (\(voice.language))").tag(voice.identifier)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 300)
+            }
+
+            SettingsRow(appState.localized("settings.speed"), help: appState.localized("help.voiceSpeed")) {
+                ValueSlider(value: $settings.voicePreferences.speed, range: 0.7...1.4, suffix: "x", precision: 2)
+            }
+
+            SettingsRow(appState.localized("settings.pitch"), help: appState.localized("help.voicePitch")) {
+                ValueSlider(value: $settings.voicePreferences.pitch, range: 0.7...1.4, suffix: "x", precision: 2)
+            }
+
+            SettingsRow(appState.localized("settings.usePauses"), help: appState.localized("help.usePauses")) {
+                Toggle("", isOn: $settings.voicePreferences.pausesEnabled)
+                    .labelsHidden()
+            }
+
+            SettingsRow(appState.localized("settings.exportAudioFormat"), help: appState.localized("help.exportAudioFormat")) {
+                Text(appState.localized("voiceover.exportUnavailable"))
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+
+            SettingsRow("") {
+                HStack {
+                    Button(appState.localized("settings.previewVoice"), action: previewVoice)
+                        .clickableCursor()
+                    Button(appState.localized("settings.stop")) { synthesizer.stopSpeaking(at: .immediate) }
+                        .clickableCursor()
+                }
+            }
+        }
+    }
+
+    private func previewVoice() {
+        synthesizer.stopSpeaking(at: .immediate)
+        let preview = settings.voicePreferences.pausesEnabled
+            ? appState.localized("voice.previewText")
+            : appState.localized("voice.previewText").components(separatedBy: CharacterSet(charactersIn: ".,;:!?")).joined(separator: " ")
+        let utterance = AVSpeechUtterance(string: preview)
+        utterance.rate = Float(0.5 * settings.voicePreferences.speed)
+        utterance.pitchMultiplier = Float(settings.voicePreferences.pitch)
+        if !settings.voicePreferences.voiceIdentifier.isEmpty {
+            utterance.voice = AVSpeechSynthesisVoice(identifier: settings.voicePreferences.voiceIdentifier)
+        }
+        synthesizer.speak(utterance)
+    }
+}
+
+private struct ExportSettings: View {
+    @Environment(AppState.self) private var appState
+    @Binding var settings: AppSettings
+
+    var body: some View {
+        SettingsSection(title: appState.localized("settings.export")) {
+            SettingsRow(appState.localized("settings.defaultFormat"), help: appState.localized("help.defaultFormat")) {
+                Picker("", selection: $settings.exportPreferences.defaultFormat) {
+                    ForEach(ExportFormat.allCases) { Text(appState.displayName($0)).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 220)
+            }
+
+            SettingsRow(appState.localized("settings.timestamps"), help: appState.localized("help.timestamps")) {
+                Toggle("", isOn: $settings.exportPreferences.includeTimestamps).labelsHidden()
+            }
+            SettingsRow(appState.localized("settings.sectionNames"), help: appState.localized("help.sectionNames")) {
+                Toggle("", isOn: $settings.exportPreferences.includeSectionNames).labelsHidden()
+            }
+            SettingsRow(appState.localized("settings.includeBRoll"), help: appState.localized("help.includeBRoll")) {
+                Toggle("", isOn: $settings.exportPreferences.includeBRoll).labelsHidden()
+            }
+            SettingsRow(appState.localized("settings.includeEditing"), help: appState.localized("help.includeEditing")) {
+                Toggle("", isOn: $settings.exportPreferences.includeEditingNotes).labelsHidden()
+            }
+            SettingsRow(appState.localized("settings.includeAI"), help: appState.localized("help.includeAI")) {
+                Toggle("", isOn: $settings.exportPreferences.includeAINotes).labelsHidden()
+            }
+            SettingsRow(appState.localized("settings.teleprompter"), help: appState.localized("help.teleprompter")) {
+                Toggle("", isOn: $settings.exportPreferences.teleprompterFormatting).labelsHidden()
+            }
+            SettingsRow(appState.localized("settings.exportFolder"), help: appState.localized("help.exportFolder")) {
+                HStack(spacing: 8) {
+                    Text(settings.exportPreferences.defaultExportFolder.isEmpty ? appState.localized("settings.noExportFolder") : settings.exportPreferences.defaultExportFolder)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(width: 260, alignment: .trailing)
+
+                    Button(appState.localized("settings.chooseFolder")) {
+                        appState.chooseDefaultExportFolder()
+                    }
+                    .clickableCursor()
+
+                    Button(appState.localized("settings.clearFolder")) {
+                        appState.clearDefaultExportFolder()
+                    }
+                    .disabled(settings.exportPreferences.defaultExportFolder.isEmpty)
+                    .clickableCursor(enabled: !settings.exportPreferences.defaultExportFolder.isEmpty)
+                }
+            }
+        }
+    }
+}
+
+private struct AdvancedSettings: View {
+    @Environment(AppState.self) private var appState
+    let resetAction: () -> Void
+    let clearRecentsAction: () -> Void
+
+    var body: some View {
+        SettingsSection(title: appState.localized("settings.advanced")) {
+            SettingsRow(appState.localized("settings.reset"), help: appState.localized("help.resetSettings")) {
+                Button(appState.localized("settings.reset"), action: resetAction)
+                    .clickableCursor()
+            }
+            SettingsRow(appState.localized("settings.clearRecents"), help: appState.localized("help.clearRecents")) {
+                Button(appState.localized("settings.clearRecents"), action: clearRecentsAction)
+                    .clickableCursor()
+            }
+            SettingsRow(appState.localized("settings.clearKeys"), help: appState.localized("help.clearKeys")) {
+                Button(appState.localized("settings.clearKeys")) {
+                    for provider in AIProviderKind.allCases {
+                        KeychainStore.deleteAPIKey(account: provider.rawValue)
+                    }
+                }
+                .clickableCursor()
+            }
+        }
+    }
+}
+
+private struct SettingsSection<Content: View>: View {
+    @Environment(\.frameTheme) private var theme
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(theme.primaryText)
+
+            VStack(spacing: 0) {
+                content
+            }
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(theme.cardBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(theme.divider, lineWidth: 1)
+                    )
+            }
+        }
+    }
+}
+
+private struct SettingsRow<Content: View>: View {
+    @Environment(\.frameTheme) private var theme
+    let title: String
+    let help: String?
+    @ViewBuilder var content: Content
+
+    init(_ title: String, help: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.help = help
+        self.content = content()
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            row(axis: .horizontal)
+            row(axis: .vertical)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(theme.divider)
+                .frame(height: 1)
+                .padding(.leading, 14)
+        }
+    }
+
+    @ViewBuilder
+    private func row(axis: Axis) -> some View {
+        if axis == .horizontal {
+            HStack(alignment: .center, spacing: 16) {
+                label
+                    .frame(width: 250, alignment: .leading)
+
+                content
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                label
+                content
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var label: some View {
+        HStack(spacing: 6) {
+            if !title.isEmpty {
+                Text(title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let help {
+                SettingsInfoButton(text: help)
+            }
+        }
+    }
+}
+
+struct SettingsInfoButton: View {
+    @Environment(\.frameTheme) private var theme
+    let text: String
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented.toggle()
+        } label: {
+            Image(systemName: "info.circle")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(theme.secondaryText)
+                .frame(width: 18, height: 18)
+        }
+        .buttonStyle(.cursorPlain)
+        .help(text)
+        .accessibilityLabel(text)
+        .popover(isPresented: $isPresented, arrowEdge: .trailing) {
+            Text(text)
+                .font(.system(size: 13))
+                .foregroundStyle(theme.primaryText)
+                .padding(12)
+                .frame(width: 240, alignment: .leading)
+                .background(theme.cardBackground)
+        }
+    }
+}
+
+private struct ValueSlider: View {
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let suffix: String
+    let precision: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Slider(value: $value, in: range)
+                .frame(width: 180)
+            Text(formattedValue)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .monospacedDigit()
+                .frame(width: 58, alignment: .trailing)
+        }
+    }
+
+    private var formattedValue: String {
+        "\(String(format: "%.\(precision)f", value))\(suffix)"
+    }
+}
+
+struct AccentPicker: View {
+    @Environment(AppState.self) private var appState
+    @Binding var selection: AccentPalette
+
+    var body: some View {
+        Picker("", selection: $selection) {
+            ForEach(AccentPalette.allCases) { accent in
+                HStack {
+                    Circle()
+                        .fill(accent.color)
+                        .frame(width: 10, height: 10)
+                    Text(appState.displayName(accent))
+                }
+                .tag(accent)
+            }
+        }
+        .labelsHidden()
+    }
+}
