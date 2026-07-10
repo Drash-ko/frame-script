@@ -52,7 +52,7 @@ struct FrameScriptApp: App {
             Button(appState.localized("menu.newProject")) { appState.requestNewProject() }
                 .keyboardShortcut("n", modifiers: .command)
             Button(appState.localized("menu.newProjectFromTemplate")) {
-                appState.requestNewProject(template: appState.scriptTemplates().first { !$0.isBlank })
+                appState.requestNewProject(showsTemplateBrowser: true)
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
             Menu(appState.localized("welcome.newFromTemplate")) {

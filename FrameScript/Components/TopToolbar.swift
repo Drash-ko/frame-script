@@ -7,9 +7,8 @@ struct TopToolbar: View {
 
     var body: some View {
         @Bindable var editorState = appState.editorState
-        let reducedChrome = appState.settings.windowPreferences.reducedChromeMode
 
-        HStack(spacing: reducedChrome ? 12 : 18) {
+        HStack(spacing: 14) {
             Menu {
                 Button(appState.localized("project.rename")) { appState.renameProject() }
                 Button(appState.localized("project.save")) { appState.saveProject() }
@@ -50,49 +49,95 @@ struct TopToolbar: View {
                 .foregroundStyle(theme.secondaryText)
                 .monospacedDigit()
 
-            Button {
-                appState.exportProject()
-            } label: {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 14, weight: .medium))
-            }
-            .buttonStyle(.cursorPlain)
-            .foregroundStyle(theme.secondaryText)
-            .help(appState.localized("project.export"))
+            HStack(spacing: 5) {
+                toolbarButton(
+                    systemName: "square.and.arrow.up",
+                    help: appState.localized("project.export"),
+                    action: appState.exportProject
+                )
 
-            Button {
-                appState.windowState.isVoiceoverPresented = true
-            } label: {
-                Image(systemName: "waveform")
-                    .font(.system(size: 14, weight: .medium))
-            }
-            .buttonStyle(.cursorPlain)
-            .foregroundStyle(theme.secondaryText)
-            .help(appState.localized("voiceover.title"))
+                toolbarDivider
 
-            Button {
-                appState.isCommandPalettePresented = true
-            } label: {
-                Image(systemName: "command")
-                    .font(.system(size: 14, weight: .medium))
-            }
-            .buttonStyle(.cursorPlain)
-            .foregroundStyle(theme.secondaryText)
-            .help(appState.localized("toolbar.commandPalette"))
+                toolbarButton(
+                    systemName: appState.voiceState.isSpeaking ? "stop.fill" : "waveform",
+                    help: appState.localized("voiceover.title")
+                ) {
+                    appState.windowState.isVoiceoverPresented = true
+                }
 
-            Button {
-                appState.openSettings(tab: .general)
-                openSettings()
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 14, weight: .medium))
+                toolbarDivider
+
+                Button {
+                    appState.isFocusModeEnabled.toggle()
+                } label: {
+                    Image(systemName: appState.isFocusModeEnabled ? "viewfinder.circle.fill" : "viewfinder")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 30, height: 30)
+                        .background {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(appState.isFocusModeEnabled ? theme.accentSoft : Color.clear)
+                        }
+                }
+                .buttonStyle(.cursorPlain)
+                .foregroundStyle(appState.isFocusModeEnabled ? theme.accent.color : theme.secondaryText)
+                .help(appState.localized("toolbar.focusMode"))
+
+                toolbarDivider
+
+                Button {
+                    appState.isCommandPalettePresented = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 13, weight: .medium))
+                        Text("⌘K")
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(theme.tertiaryText)
+                            .padding(.horizontal, 4)
+                            .frame(height: 17)
+                            .background {
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(theme.hover)
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                            .stroke(theme.divider, lineWidth: 1)
+                                    }
+                            }
+                    }
+                    .frame(height: 30)
+                }
+                .buttonStyle(.cursorPlain)
+                .foregroundStyle(theme.secondaryText)
+                .help(appState.localized("toolbar.commandPalette"))
+
+                toolbarDivider
+
+                toolbarButton(systemName: "gearshape", help: appState.localized("toolbar.settings")) {
+                    appState.openSettings(tab: .general)
+                    openSettings()
+                }
             }
-            .buttonStyle(.cursorPlain)
-            .foregroundStyle(theme.secondaryText)
-            .help(appState.localized("toolbar.settings"))
         }
-        .padding(.horizontal, reducedChrome ? 14 : 18)
-        .frame(height: reducedChrome ? 50 : 58)
+        .padding(.horizontal, 18)
+        .frame(height: 58)
         .background(theme.background)
+    }
+
+    private func toolbarButton(systemName: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: 30, height: 30)
+        }
+        .buttonStyle(.cursorPlain)
+        .foregroundStyle(theme.secondaryText)
+        .help(help)
+    }
+
+    private var toolbarDivider: some View {
+        Rectangle()
+            .fill(theme.divider)
+            .frame(width: 1, height: 18)
+            .padding(.horizontal, 2)
     }
 }

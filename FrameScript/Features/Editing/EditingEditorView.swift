@@ -13,19 +13,22 @@ struct EditingEditorView: View {
                     subtitle: appState.localized("editing.linkedSubtitle")
                 )
 
-                if scene.scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if scene.scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && scene.editingItems.isEmpty {
                     EmptyProductionState(message: appState.localized("editing.writeScriptFirst"))
                 } else {
-                    VStack(spacing: 16) {
-                        ForEach(scene.textSegments.sortedByOrder) { segment in
-                            EditingSegmentBlock(
-                                segment: segment,
-                                items: items(for: segment),
-                                addEmptyAction: { addEmptyItem(linkedTo: segment.id) },
-                                addPresetAction: { addItem(from: $0, linkedTo: segment.id) },
-                                duplicateAction: duplicateItem,
-                                deleteAction: deleteItem
-                            )
+                    if !scene.textSegments.isEmpty {
+                        VStack(spacing: 16) {
+                            ForEach(scene.textSegments.sortedByOrder) { segment in
+                                EditingSegmentBlock(
+                                    segment: segment,
+                                    allSegments: scene.textSegments.sortedByOrder,
+                                    items: items(for: segment),
+                                    addEmptyAction: { addEmptyItem(linkedTo: segment.id) },
+                                    addPresetAction: { addItem(from: $0, linkedTo: segment.id) },
+                                    duplicateAction: duplicateItem,
+                                    deleteAction: deleteItem
+                                )
+                            }
                         }
                     }
 
@@ -35,6 +38,7 @@ struct EditingEditorView: View {
                             ForEach(unlinked) { item in
                                 EditingItemEditor(
                                     item: item,
+                                    segments: scene.textSegments.sortedByOrder,
                                     duplicateAction: { duplicateItem(item) },
                                     deleteAction: { deleteItem(item) }
                                 )
@@ -156,6 +160,7 @@ private struct EditingSegmentBlock: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     let segment: TextSegment
+    let allSegments: [TextSegment]
     let items: [EditingItem]
     let addEmptyAction: () -> Void
     let addPresetAction: (EditingTemplatePreset) -> Void
@@ -171,6 +176,7 @@ private struct EditingSegmentBlock: View {
                 Text(segment.sourceText)
                     .font(.system(size: 14))
                     .foregroundStyle(theme.primaryText)
+                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -183,6 +189,7 @@ private struct EditingSegmentBlock: View {
                     ForEach(items) { item in
                         EditingItemEditor(
                             item: item,
+                            segments: allSegments,
                             duplicateAction: { duplicateAction(item) },
                             deleteAction: { deleteAction(item) }
                         )
@@ -194,7 +201,13 @@ private struct EditingSegmentBlock: View {
                 Button {
                     addEmptyAction()
                 } label: {
-                    Label(appState.localized("editing.addEmpty"), systemImage: "plus")
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(theme.editingMarker)
+                            .frame(width: 7, height: 7)
+                        Image(systemName: "plus")
+                        Text(appState.localized("editing.addEmpty"))
+                    }
                 }
                 .buttonStyle(.cursorPlain)
 
@@ -210,6 +223,8 @@ private struct EditingSegmentBlock: View {
             }
             .font(.system(size: 13, weight: .medium))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: 136, alignment: .topLeading)
         .padding(16)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -226,17 +241,24 @@ private struct EditingItemEditor: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     @Bindable var item: EditingItem
+    let segments: [TextSegment]
     let duplicateAction: () -> Void
     let deleteAction: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(theme.editingMarker)
+                    .frame(width: 7, height: 7)
+
                 Text(appState.localized("editing.item"))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(theme.secondaryText)
 
                 Spacer()
+
+                linkMenu
 
                 EditorIconButton(
                     systemName: "plus.square.on.square",
@@ -251,39 +273,19 @@ private struct EditingItemEditor: View {
                 )
             }
 
-            HStack(spacing: 12) {
-                TextField(appState.localized("templates.name"), text: $item.templateType)
-                    .textFieldStyle(QuietTextFieldStyle())
-                TextField(appState.localized("editing.cutStyle"), text: $item.cutStyle)
-                    .textFieldStyle(QuietTextFieldStyle())
-                TextField(appState.localized("editing.transition"), text: $item.transition)
-                    .textFieldStyle(QuietTextFieldStyle())
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { editingPrimaryFields }
+                VStack(alignment: .leading, spacing: 12) { editingPrimaryFields }
             }
 
-            HStack(spacing: 12) {
-                QuietField(appState.localized("editing.subtitles")) {
-                    TextField(appState.localized("editing.subtitlesPlaceholder"), text: $item.subtitleStyle)
-                        .textFieldStyle(QuietTextFieldStyle())
-                }
-                QuietField(appState.localized("editing.emphasis")) {
-                    TextField(appState.localized("editing.emphasisPlaceholder"), text: $item.emphasis)
-                        .textFieldStyle(QuietTextFieldStyle())
-                }
-                QuietField(appState.localized("editing.zoom")) {
-                    TextField(appState.localized("editing.zoomPlaceholder"), text: $item.zoom)
-                        .textFieldStyle(QuietTextFieldStyle())
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { editingStyleFields }
+                VStack(alignment: .leading, spacing: 12) { editingStyleFields }
             }
 
-            HStack(spacing: 12) {
-                QuietField(appState.localized("editing.sfx")) {
-                    TextField(appState.localized("editing.sfxPlaceholder"), text: $item.sfx)
-                        .textFieldStyle(QuietTextFieldStyle())
-                }
-                QuietField(appState.localized("editing.musicCue")) {
-                    TextField(appState.localized("editing.musicCuePlaceholder"), text: $item.musicCue)
-                        .textFieldStyle(QuietTextFieldStyle())
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { editingAudioFields }
+                VStack(alignment: .leading, spacing: 12) { editingAudioFields }
             }
 
             QuietField(appState.localized("editing.graphics")) {
@@ -294,6 +296,8 @@ private struct EditingItemEditor: View {
                 MultilineField(placeholder: appState.localized("editing.notesPlaceholder"), text: $item.notes, minHeight: 76)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: 190, alignment: .topLeading)
         .padding(16)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -313,5 +317,84 @@ private struct EditingItemEditor: View {
         .onChange(of: item.musicCue) { _, _ in appState.touchProject() }
         .onChange(of: item.graphics) { _, _ in appState.touchProject() }
         .onChange(of: item.notes) { _, _ in appState.touchProject() }
+    }
+
+    @ViewBuilder
+    private var editingPrimaryFields: some View {
+        QuietField(appState.localized("templates.name")) {
+            TextField(appState.localized("templates.name"), text: $item.templateType)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+        QuietField(appState.localized("editing.cutStyle")) {
+            TextField(appState.localized("editing.cutStyle"), text: $item.cutStyle)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+        QuietField(appState.localized("editing.transition")) {
+            TextField(appState.localized("editing.transition"), text: $item.transition)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+    }
+
+    @ViewBuilder
+    private var editingStyleFields: some View {
+        QuietField(appState.localized("editing.subtitles")) {
+            TextField(appState.localized("editing.subtitlesPlaceholder"), text: $item.subtitleStyle)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+        QuietField(appState.localized("editing.emphasis")) {
+            TextField(appState.localized("editing.emphasisPlaceholder"), text: $item.emphasis)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+        QuietField(appState.localized("editing.zoom")) {
+            TextField(appState.localized("editing.zoomPlaceholder"), text: $item.zoom)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+    }
+
+    @ViewBuilder
+    private var editingAudioFields: some View {
+        QuietField(appState.localized("editing.sfx")) {
+            TextField(appState.localized("editing.sfxPlaceholder"), text: $item.sfx)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+        QuietField(appState.localized("editing.musicCue")) {
+            TextField(appState.localized("editing.musicCuePlaceholder"), text: $item.musicCue)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+    }
+
+    private var linkMenu: some View {
+        Menu {
+            ForEach(Array(segments.enumerated()), id: \.element.id) { index, segment in
+                Button(segmentMenuTitle(index: index, segment: segment)) {
+                    item.linkedSegmentID = segment.id
+                    appState.touchProject()
+                }
+            }
+            Divider()
+            Button(appState.localized("production.unlinked")) {
+                item.linkedSegmentID = nil
+                appState.touchProject()
+            }
+        } label: {
+            Label(linkLabel, systemImage: "link")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var linkLabel: String {
+        guard let linkedID = item.linkedSegmentID,
+              let index = segments.firstIndex(where: { $0.id == linkedID }) else {
+            return appState.localized("production.unlinked")
+        }
+        return String(format: "%02d", index + 1)
+    }
+
+    private func segmentMenuTitle(index: Int, segment: TextSegment) -> String {
+        let preview = segment.sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clipped = preview.count > 42 ? "\(preview.prefix(42))..." : preview
+        return "\(String(format: "%02d", index + 1)) \(clipped)"
     }
 }

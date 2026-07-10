@@ -22,36 +22,44 @@ struct SettingsRootView: View {
             Divider()
                 .overlay(theme.divider)
 
-            ScrollView {
-                Group {
-                    switch selectedTab {
-                    case .general:
-                        GeneralSettings(settings: $settingsStore.settings)
-                    case .appearance:
-                        AppearanceSettings(settings: $settingsStore.settings)
-                    case .editor:
-                        EditorSettings(settings: $settingsStore.settings)
-                    case .templates:
-                        TemplateSettings()
-                    case .ai:
-                        AISettings(settings: $settingsStore.settings)
-                    case .voice:
-                        VoiceSettings(settings: $settingsStore.settings)
-                    case .export:
-                        ExportSettings(settings: $settingsStore.settings)
-                    case .advanced:
-                        AdvancedSettings(
-                            resetAction: appState.settingsStore.reset,
-                            clearRecentsAction: appState.clearRecentProjects
-                        )
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Group {
+                        switch selectedTab {
+                        case .general:
+                            GeneralSettings(settings: $settingsStore.settings)
+                        case .appearance:
+                            AppearanceSettings(settings: $settingsStore.settings)
+                        case .editor:
+                            EditorSettings(settings: $settingsStore.settings)
+                        case .templates:
+                            TemplateSettings()
+                        case .ai:
+                            AISettings(settings: $settingsStore.settings)
+                        case .voice:
+                            VoiceSettings(settings: $settingsStore.settings)
+                        case .export:
+                            ExportSettings(settings: $settingsStore.settings)
+                        case .advanced:
+                            AdvancedSettings(
+                                resetAction: appState.resetSettingsWithConfirmation,
+                                clearRecentsAction: appState.clearRecentProjects
+                            )
+                        }
                     }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(theme.windowBackground)
+                .onAppear {
+                    handleSettingsRequest(using: proxy)
+                }
+                .onChange(of: appState.windowState.settingsRequestID) { _, _ in
+                    handleSettingsRequest(using: proxy)
+                }
             }
-            .background(theme.windowBackground)
         }
-        .frame(minWidth: 720, idealWidth: 880, maxWidth: 1040, minHeight: 520, idealHeight: 610, maxHeight: 760)
+        .frame(minWidth: 840, idealWidth: 940, maxWidth: 1120, minHeight: 560, idealHeight: 650, maxHeight: 800)
         .background(theme.windowBackground)
         .foregroundStyle(theme.primaryText)
         .onAppear {
@@ -59,6 +67,26 @@ struct SettingsRootView: View {
         }
         .onChange(of: appState.windowState.requestedSettingsTab) { _, newValue in
             selectedTab = newValue
+        }
+    }
+
+    private func handleSettingsRequest(using proxy: ScrollViewProxy) {
+        let requestID = appState.windowState.settingsRequestID
+        let highlightKey = appState.windowState.requestedSettingsHighlightKey
+        selectedTab = appState.windowState.requestedSettingsTab
+        guard let highlightKey else { return }
+
+        Task { @MainActor in
+            await Task.yield()
+            await Task.yield()
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(highlightKey, anchor: .center)
+            }
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            guard appState.windowState.settingsRequestID == requestID else { return }
+            withAnimation(.easeOut(duration: 0.25)) {
+                appState.windowState.requestedSettingsHighlightKey = nil
+            }
         }
     }
 }
@@ -161,7 +189,7 @@ private struct GeneralSettings: View {
                     .disabled(!settings.generalPreferences.autosaveEnabled)
             }
 
-            SettingsRow(appState.localized("settings.defaultTemplate"), help: appState.localized("help.defaultTemplate")) {
+            SettingsRow(appState.localized("settings.defaultTemplate"), help: appState.localized("help.defaultTemplate"), highlightKey: "general.defaultTemplate") {
                 Picker("", selection: $settings.generalPreferences.defaultNewProjectTemplate) {
                     ForEach(appState.scriptTemplates()) { template in
                         Text(appState.displayName(template)).tag(template.name)
@@ -205,10 +233,8 @@ private struct AppearanceSettings: View {
             settings.theme = AppSettings.defaults.theme
             settings.accentColor = AppSettings.defaults.accentColor
             settings.windowPreferences = AppSettings.defaults.windowPreferences
-            settings.editorPreferences.showFooterShortcuts = AppSettings.defaults.editorPreferences.showFooterShortcuts
-            settings.editorPreferences.showAIReviewPanel = AppSettings.defaults.editorPreferences.showAIReviewPanel
         }) {
-            SettingsRow(appState.localized("settings.theme"), help: appState.localized("help.theme")) {
+            SettingsRow(appState.localized("settings.theme"), help: appState.localized("help.theme"), highlightKey: "appearance.theme") {
                 Picker("", selection: $settings.theme) {
                     ForEach(AppearanceTheme.allCases) { option in
                         Text(appState.displayName(option)).tag(option)
@@ -230,7 +256,7 @@ private struct AppearanceSettings: View {
 
             SettingsRow(appState.localized("settings.sidebarWidth"), help: appState.localized("help.sidebarWidth")) {
                 HStack(spacing: 10) {
-                    Stepper("\(Int(settings.windowPreferences.sidebarWidth)) pt", value: $settings.windowPreferences.sidebarWidth, in: 180...420, step: 10)
+                    Stepper("\(Int(settings.windowPreferences.sidebarWidth)) pt", value: $settings.windowPreferences.sidebarWidth, in: 170...360, step: 5)
                     Button(appState.localized("settings.resetSidebar")) {
                         settings.windowPreferences.sidebarWidth = AppSettings.defaults.windowPreferences.sidebarWidth
                     }
@@ -248,12 +274,7 @@ private struct AppearanceSettings: View {
                     .labelsHidden()
             }
 
-            SettingsRow(appState.localized("settings.reducedChrome"), help: appState.localized("help.reducedChrome")) {
-                Toggle("", isOn: $settings.windowPreferences.reducedChromeMode)
-                    .labelsHidden()
-            }
-
-            SettingsRow(appState.localized("settings.focusBehavior"), help: appState.localized("help.focusBehavior")) {
+            SettingsRow(appState.localized("settings.focusBehavior"), help: appState.localized("help.focusBehavior"), highlightKey: "appearance.focusBehavior") {
                 Picker("", selection: $settings.windowPreferences.focusModeBehavior) {
                     ForEach(FocusModeBehavior.allCases) { Text(appState.displayName($0)).tag($0) }
                 }
@@ -298,11 +319,11 @@ private struct EditorSettings: View {
                 Stepper("\(settings.editorPreferences.wordsPerMinute)", value: $settings.editorPreferences.wordsPerMinute, in: 90...230)
             }
 
-            SettingsRow(appState.localized("settings.fontSize"), help: appState.localized("help.fontSize")) {
+            SettingsRow(appState.localized("settings.fontSize"), help: appState.localized("help.fontSize"), highlightKey: "editor.fontSize") {
                 ValueSlider(value: $settings.editorPreferences.fontSize, range: 16...30, suffix: " pt", precision: 0)
             }
 
-            SettingsRow(appState.localized("settings.editorWidth"), help: appState.localized("help.editorWidth")) {
+            SettingsRow(appState.localized("settings.editorWidth"), help: appState.localized("help.editorWidth"), highlightKey: "editor.editorWidth") {
                 ValueSlider(value: $settings.editorPreferences.editorWidth, range: 560...980, suffix: " pt", precision: 0)
             }
 
@@ -330,7 +351,7 @@ private struct EditorSettings: View {
                     .labelsHidden()
             }
 
-            SettingsRow(appState.localized("settings.defaultSplit"), help: appState.localized("help.defaultSplit")) {
+            SettingsRow(appState.localized("settings.defaultSplit"), help: appState.localized("help.defaultSplit"), highlightKey: "editor.defaultSplit") {
                 Picker("", selection: $settings.generalPreferences.defaultSplitMode) {
                     ForEach(SegmentType.allCases) { Text(appState.displayName($0)).tag($0) }
                 }
@@ -373,8 +394,9 @@ private struct TemplateSettings: View {
     var body: some View {
         @Bindable var settingsStore = appState.settingsStore
 
-        SettingsSection(title: appState.localized("settings.templates"), resetAction: {
-            settingsStore.settings.generalPreferences.defaultNewProjectTemplate = AppSettings.defaults.generalPreferences.defaultNewProjectTemplate
+        SettingsSection(title: appState.localized("settings.templates"), resetHelp: appState.localized("help.resetTemplates"), resetAction: {
+            settingsStore.settings.generalPreferences.defaultNewProjectTemplate = appState.scriptTemplates().first(where: \.isBlank)?.name
+                ?? AppSettings.defaults.generalPreferences.defaultNewProjectTemplate
         }) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 16) {
@@ -383,19 +405,19 @@ private struct TemplateSettings: View {
                             Button {
                                 selectedTemplateID = template.id
                             } label: {
-                                HStack {
+                                VStack(alignment: .leading, spacing: 3) {
                                     Text(appState.displayName(template))
                                         .font(.system(size: 13, weight: selectedTemplate?.id == template.id ? .semibold : .regular))
-                                    Spacer()
-                                    if template.builtIn {
-                                        Text(appState.localized("templates.builtIn"))
-                                            .font(.system(size: 11))
-                                            .foregroundStyle(theme.tertiaryText)
-                                    }
+                                        .lineLimit(1)
+                                    Text(templateStatus(template))
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(theme.tertiaryText)
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 .foregroundStyle(selectedTemplate?.id == template.id ? theme.primaryText : theme.secondaryText)
                                 .padding(.horizontal, 10)
-                                .frame(height: 30)
+                                .frame(height: 42)
+                                .contentShape(Rectangle())
                                 .background {
                                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                                         .fill(selectedTemplate?.id == template.id ? theme.accentSoft.opacity(0.58) : Color.clear)
@@ -413,7 +435,7 @@ private struct TemplateSettings: View {
                         .buttonStyle(.cursorPlain)
                         .padding(.top, 6)
                     }
-                    .frame(width: 210, alignment: .topLeading)
+                    .frame(width: 190, alignment: .topLeading)
 
                     Divider()
                         .overlay(theme.divider)
@@ -433,6 +455,12 @@ private struct TemplateSettings: View {
             selectedTemplateID = selectedTemplateID ?? appState.scriptTemplates().first?.id
         }
     }
+
+    private func templateStatus(_ template: FrameTemplate) -> String {
+        if template.builtIn { return appState.localized("templates.builtIn") }
+        if template.isCustomizedBuiltIn { return appState.localized("templates.customized") }
+        return appState.localized("templates.custom")
+    }
 }
 
 private struct TemplateDetailEditor: View {
@@ -448,35 +476,27 @@ private struct TemplateDetailEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 if draft.builtIn {
                     Text(appState.displayName(draft))
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 18, weight: .semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .frame(height: 34)
                 } else {
                     TextField(appState.localized("templates.name"), text: $draft.name)
                         .textFieldStyle(QuietTextFieldStyle())
                 }
 
-                Button(appState.localized("templates.duplicate")) {
-                    appState.duplicateTemplate(draft)
-                }
-                .clickableCursor()
+                Text(templateStatus)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(theme.secondaryText)
+                    .padding(.horizontal, 7)
+                    .frame(height: 21)
+                    .background { Capsule().fill(theme.hover) }
+            }
 
-                Button(appState.localized("templates.setDefault")) {
-                    defaultTemplate = draft.name
-                }
-                .disabled(defaultTemplate == draft.name)
-                .clickableCursor(enabled: defaultTemplate != draft.name)
-
-                if !draft.builtIn {
-                    Button(appState.localized("templates.delete"), role: .destructive) {
-                        appState.deleteTemplate(draft)
-                    }
-                    .clickableCursor()
-                }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { templateActions }
+                VStack(alignment: .leading, spacing: 8) { templateActions }
             }
 
             if draft.builtIn {
@@ -507,40 +527,37 @@ private struct TemplateDetailEditor: View {
                         } else {
                             TextField(appState.localized("templates.sceneName"), text: bindingForScene(at: index))
                                 .textFieldStyle(QuietTextFieldStyle())
+
+                            EditorIconButton(
+                                systemName: "arrow.up",
+                                accessibilityLabel: appState.localized("scene.moveUp"),
+                                action: { moveScene(from: index, by: -1) }
+                            )
+                            .disabled(index == 0)
+
+                            EditorIconButton(
+                                systemName: "arrow.down",
+                                accessibilityLabel: appState.localized("scene.moveDown"),
+                                action: { moveScene(from: index, by: 1) }
+                            )
+                            .disabled(index == draft.structureDefinition.count - 1)
+
+                            EditorIconButton(
+                                systemName: "trash",
+                                accessibilityLabel: appState.localized("scene.delete"),
+                                role: .destructive,
+                                action: { removeScene(at: index) }
+                            )
                         }
-
-                        EditorIconButton(
-                            systemName: "arrow.up",
-                            accessibilityLabel: appState.localized("scene.moveUp"),
-                            action: { moveScene(from: index, by: -1) }
-                        )
-                        .disabled(draft.builtIn || index == 0)
-
-                        EditorIconButton(
-                            systemName: "arrow.down",
-                            accessibilityLabel: appState.localized("scene.moveDown"),
-                            action: { moveScene(from: index, by: 1) }
-                        )
-                        .disabled(draft.builtIn || index == draft.structureDefinition.count - 1)
-
-                        EditorIconButton(
-                            systemName: "trash",
-                            accessibilityLabel: appState.localized("scene.delete"),
-                            role: .destructive,
-                            action: { removeScene(at: index) }
-                        )
-                        .disabled(draft.builtIn)
                     }
                 }
 
                 Button {
-                    draft.structureDefinition.append(appState.localized("templates.defaultScene"))
-                    saveDraft()
+                    addScene()
                 } label: {
                     Label(appState.localized("templates.addScene"), systemImage: "plus")
                 }
                 .buttonStyle(.cursorPlain)
-                .disabled(draft.builtIn)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -550,6 +567,58 @@ private struct TemplateDetailEditor: View {
                 defaultTemplate = newValue
             }
         }
+    }
+
+    @ViewBuilder
+    private var templateActions: some View {
+        if draft.builtIn {
+            Button(appState.localized("templates.customize"), action: customize)
+                .clickableCursor()
+        }
+
+        Button(appState.localized("templates.setDefault")) {
+            defaultTemplate = draft.name
+        }
+        .disabled(defaultTemplate == draft.name)
+        .clickableCursor(enabled: defaultTemplate != draft.name)
+
+        Button(appState.localized("templates.duplicate")) {
+            appState.duplicateTemplate(draft)
+        }
+        .clickableCursor()
+
+        if draft.isCustomizedBuiltIn {
+            Button(appState.localized("templates.restoreOriginal"), role: .destructive) {
+                guard let restored = appState.restoreOriginalTemplate(draft) else { return }
+                draft = restored
+            }
+            .clickableCursor()
+        } else if !draft.builtIn {
+            Button(appState.localized("templates.delete"), role: .destructive) {
+                appState.deleteTemplate(draft)
+            }
+            .clickableCursor()
+        }
+    }
+
+    private var templateStatus: String {
+        if draft.builtIn { return appState.localized("templates.builtIn") }
+        if draft.isCustomizedBuiltIn { return appState.localized("templates.customized") }
+        return appState.localized("templates.custom")
+    }
+
+    private func customize() {
+        guard let override = appState.customizeBuiltInTemplate(draft) else { return }
+        draft = override
+    }
+
+    private func addScene() {
+        if draft.builtIn {
+            customize()
+            guard !draft.builtIn else { return }
+        }
+        draft.structureDefinition.append(appState.localized("templates.defaultScene"))
+        saveDraft()
     }
 
     private func bindingForScene(at index: Int) -> Binding<String> {
@@ -672,17 +741,10 @@ private struct AISettings: View {
                 }
             }
 
-            SettingsRow(appState.localized("settings.privacyMode"), help: appState.localized("help.privacyMode")) {
-                VStack(alignment: .trailing, spacing: 6) {
-                    Toggle("", isOn: $settings.aiPreferences.privacyMode)
-                        .labelsHidden()
-                        .disabled(providerDisabled)
-                    Text(appState.localized("settings.privacyModeExplanation"))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 360, alignment: .trailing)
-                }
+            SettingsRow(appState.localized("settings.privacyMode"), help: appState.localized("help.privacyMode"), highlightKey: "ai.privacyMode") {
+                Toggle("", isOn: $settings.aiPreferences.privacyMode)
+                    .labelsHidden()
+                    .disabled(providerDisabled)
             }
         }
         .task { loadAPIKey() }
@@ -798,7 +860,7 @@ private struct VoiceSettings: View {
                 .frame(width: 220)
             }
 
-            SettingsRow(appState.localized("settings.systemVoice"), help: appState.localized("help.systemVoice")) {
+            SettingsRow(appState.localized("settings.systemVoice"), help: appState.localized("help.systemVoice"), highlightKey: "voice.systemVoice") {
                 Picker("", selection: $settings.voicePreferences.voiceIdentifier) {
                     Text(appState.localized("settings.default")).tag("")
                     ForEach(voices, id: \.identifier) { voice in
@@ -862,7 +924,7 @@ private struct ExportSettings: View {
         SettingsSection(title: appState.localized("settings.export"), resetAction: {
             settings.exportPreferences = AppSettings.defaults.exportPreferences
         }) {
-            SettingsRow(appState.localized("settings.defaultFormat"), help: appState.localized("help.defaultFormat")) {
+            SettingsRow(appState.localized("settings.defaultFormat"), help: appState.localized("help.defaultFormat"), highlightKey: "export.defaultFormat") {
                 Picker("", selection: $settings.exportPreferences.defaultFormat) {
                     ForEach(ExportFormat.allCases) { Text(appState.displayName($0)).tag($0) }
                 }
@@ -929,11 +991,7 @@ private struct AdvancedSettings: View {
                     .clickableCursor()
             }
             SettingsRow(appState.localized("settings.clearKeys"), help: appState.localized("help.clearKeys")) {
-                Button(appState.localized("settings.clearKeys")) {
-                    for provider in AIProviderKind.allCases {
-                        KeychainStore.deleteAPIKey(account: provider.rawValue)
-                    }
-                }
+                Button(appState.localized("settings.clearKeys"), action: appState.clearAPIKeysWithConfirmation)
                 .clickableCursor()
             }
         }
@@ -944,11 +1002,14 @@ private struct SettingsSection<Content: View>: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     let title: String
+    var resetHelp: String?
     var resetAction: (() -> Void)?
     @ViewBuilder var content: Content
+    @State private var showsResetFeedback = false
 
-    init(title: String, resetAction: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+    init(title: String, resetHelp: String? = nil, resetAction: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.resetHelp = resetHelp
         self.resetAction = resetAction
         self.content = content()
     }
@@ -961,7 +1022,27 @@ private struct SettingsSection<Content: View>: View {
                     .foregroundStyle(theme.primaryText)
                 Spacer()
                 if let resetAction {
-                    Button(appState.localized("settings.resetSection"), action: resetAction)
+                    if showsResetFeedback {
+                        Text(appState.localized("settings.resetDone"))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(theme.success)
+                            .transition(.opacity)
+                    }
+                    if let resetHelp {
+                        SettingsInfoButton(text: resetHelp)
+                    }
+                    Button(appState.localized("settings.resetSection")) {
+                        resetAction()
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            showsResetFeedback = true
+                        }
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_300_000_000)
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                showsResetFeedback = false
+                            }
+                        }
+                    }
                         .font(.system(size: 12))
                         .buttonStyle(.borderless)
                         .clickableCursor()
@@ -984,14 +1065,17 @@ private struct SettingsSection<Content: View>: View {
 }
 
 private struct SettingsRow<Content: View>: View {
+    @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     let title: String
     let help: String?
+    let highlightKey: String?
     @ViewBuilder var content: Content
 
-    init(_ title: String, help: String? = nil, @ViewBuilder content: () -> Content) {
+    init(_ title: String, help: String? = nil, highlightKey: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
         self.help = help
+        self.highlightKey = highlightKey
         self.content = content()
     }
 
@@ -1002,6 +1086,15 @@ private struct SettingsRow<Content: View>: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+        .background {
+            if let highlightKey, appState.windowState.requestedSettingsHighlightKey == highlightKey {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(theme.accentSoft.opacity(0.72))
+                    .padding(.horizontal, 3)
+                    .padding(.vertical, 2)
+            }
+        }
+        .id(highlightKey ?? "settings-row-\(title)")
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(theme.divider)

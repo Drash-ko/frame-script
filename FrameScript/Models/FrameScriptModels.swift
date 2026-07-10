@@ -305,9 +305,14 @@ struct FrameTemplate: Identifiable, Codable, Hashable {
     var builtIn: Bool
     var structureDefinition: [String]
     var customFields: [String]
+    var builtInSourceName: String? = nil
+
+    var isCustomizedBuiltIn: Bool {
+        builtInSourceName != nil
+    }
 
     var isBlank: Bool {
-        category == .script && name == "Blank"
+        category == .script && (builtInSourceName ?? name) == "Blank"
     }
 }
 
@@ -670,8 +675,8 @@ extension AppSettings {
         ),
         windowPreferences: WindowPreferences(
             sidebarDefaultVisible: true,
-            sidebarWidth: 230,
-            reducedChromeMode: true,
+            sidebarWidth: 195,
+            reducedChromeMode: false,
             focusModeBehavior: .hidePanels
         )
     )

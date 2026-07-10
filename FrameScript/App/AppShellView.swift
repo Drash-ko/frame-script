@@ -20,9 +20,15 @@ struct AppRootView: View {
                 appState.configure(modelContext: modelContext, existingProjects: projects)
             }
             .sheet(item: $windowState.newProjectRequest) { request in
-                NewProjectSheet(request: request)
-                    .environment(appState)
-                    .environment(\.frameTheme, appState.themeManager.frameTheme)
+                Group {
+                    if request.showsTemplateBrowser {
+                        TemplatePickerView()
+                    } else {
+                        NewProjectSheet(request: request)
+                    }
+                }
+                .environment(appState)
+                .environment(\.frameTheme, appState.themeManager.frameTheme)
             }
             .sheet(isPresented: $windowState.isExportPresented) {
                 ExportSheetView()
@@ -133,7 +139,7 @@ private struct SidebarResizeHandle: View {
                             .onChanged { value in
                                 let start = dragStartWidth ?? width
                                 dragStartWidth = start
-                                width = min(420, max(180, start + value.translation.width))
+                                width = min(360, max(170, start + value.translation.width))
                             }
                             .onEnded { _ in
                                 dragStartWidth = nil
@@ -273,12 +279,16 @@ private struct TemplatePickerView: View {
         templates.first { $0.id == selectedTemplateID } ?? templates.first
     }
 
+    private var defaultTemplateID: UUID? {
+        templates.first { $0.name == appState.settings.generalPreferences.defaultNewProjectTemplate }?.id ?? templates.first?.id
+    }
+
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 14) {
                 Text(appState.localized("templates.newFromTemplate"))
-                    .font(.system(size: 18, weight: .semibold))
-                    .padding(.bottom, 8)
+                    .font(.system(size: 20, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
 
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 4) {
@@ -304,42 +314,47 @@ private struct TemplatePickerView: View {
                                 }
                             }
                             .buttonStyle(.cursorPlain)
+                            .frame(maxWidth: .infinity)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
-                .frame(maxHeight: .infinity)
-
-                Spacer()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 Button(appState.localized("templates.manage")) {
                     appState.openSettings(tab: .templates)
                     dismiss()
-                    openSettings()
+                    Task { @MainActor in
+                        await Task.yield()
+                        openSettings()
+                    }
                 }
                 .buttonStyle(.cursorPlain)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(18)
-            .frame(minWidth: 210, idealWidth: 240, maxWidth: 300, alignment: .topLeading)
+            .padding(20)
+            .frame(width: 260)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
             .background(theme.panelBackground)
 
             Divider()
                 .overlay(theme.divider)
 
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 0) {
                 if let selectedTemplate {
-                    Text(appState.displayName(selectedTemplate))
-                        .font(.system(size: 24, weight: .semibold))
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    QuietField(appState.localized("newProject.name")) {
-                        TextField(appState.localized("project.untitled"), text: $projectName)
-                            .textFieldStyle(QuietTextFieldStyle())
-                            .focused($isNameFocused)
-                    }
-
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 18) {
+                            Text(appState.displayName(selectedTemplate))
+                                .font(.system(size: 24, weight: .semibold))
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            QuietField(appState.localized("newProject.name")) {
+                                TextField(appState.localized("project.untitled"), text: $projectName)
+                                    .textFieldStyle(QuietTextFieldStyle())
+                                    .focused($isNameFocused)
+                                    .onSubmit(createProject)
+                            }
+
                             Text(appState.localized("templates.structure"))
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(theme.secondaryText)
@@ -365,43 +380,54 @@ private struct TemplatePickerView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(24)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    Spacer()
+                    Divider()
+                        .overlay(theme.divider)
 
                     HStack {
                         Button(appState.localized("project.unsaved.cancel")) {
                             dismiss()
                         }
+                        .keyboardShortcut(.cancelAction)
                         .clickableCursor()
 
                         Spacer()
 
-                        Button(appState.localized("templates.createProject")) {
-                            appState.createNewProject(named: resolvedProjectName, template: selectedTemplate)
-                            dismiss()
-                        }
+                        Button(appState.localized("templates.createProject"), action: createProject)
                         .keyboardShortcut(.defaultAction)
                         .clickableCursor()
                     }
+                    .padding(.horizontal, 24)
+                    .frame(height: 64)
                 }
             }
-            .padding(24)
-            .frame(minWidth: 360, idealWidth: 430, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(theme.windowBackground)
         }
         .foregroundStyle(theme.primaryText)
-        .frame(minWidth: 620, idealWidth: 700, maxWidth: 860, minHeight: 430, idealHeight: 500, maxHeight: 680)
+        .frame(width: 800, height: 560)
+        .background(theme.windowBackground)
         .onAppear {
-            selectedTemplateID = selectedTemplateID ?? templates.first?.id
+            selectedTemplateID = selectedTemplateID ?? defaultTemplateID
             projectName = projectName.isEmpty ? appState.localized("project.untitled") : projectName
-            isNameFocused = true
+            Task { @MainActor in
+                isNameFocused = true
+            }
         }
     }
 
     private var resolvedProjectName: String {
         let trimmed = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? appState.localized("project.untitled") : trimmed
+    }
+
+    private func createProject() {
+        guard let selectedTemplate else { return }
+        appState.createNewProject(named: resolvedProjectName, template: selectedTemplate)
+        dismiss()
     }
 }
 
@@ -422,56 +448,71 @@ private struct NewProjectSheet: View {
         templates.first { $0.id == selectedTemplateID } ?? templates.first
     }
 
+    private var isLockedBlankProject: Bool {
+        request.locksTemplate && selectedTemplate?.isBlank == true
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(appState.localized("newProject.title"))
+            Text(appState.localized(isLockedBlankProject ? "newProject.blankTitle" : "newProject.title"))
                 .font(.system(size: 20, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+
+            if isLockedBlankProject {
+                Text(appState.localized("newProject.blankDescription"))
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             QuietField(appState.localized("newProject.name")) {
                 TextField(appState.localized("project.untitled"), text: $projectName)
                     .textFieldStyle(QuietTextFieldStyle())
                     .focused($isNameFocused)
+                    .onSubmit(createProject)
             }
 
-            QuietField(appState.localized("newProject.template")) {
-                Picker("", selection: $selectedTemplateID) {
-                    ForEach(templates) { template in
-                        Text(appState.displayName(template)).tag(Optional(template.id))
-                    }
-                }
-                .labelsHidden()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .disabled(request.locksTemplate)
-            }
-
-            if let selectedTemplate {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(appState.localized("templates.structure"))
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(theme.secondaryText)
-
-                    if selectedTemplate.structureDefinition.isEmpty {
-                        Text(appState.localized("templates.blankStructure"))
-                            .font(.system(size: 13))
-                            .foregroundStyle(theme.secondaryText)
-                    } else {
-                        ForEach(Array(selectedTemplate.structureDefinition.prefix(6).enumerated()), id: \.offset) { index, sceneName in
-                            Text("\(index + 1). \(selectedTemplate.builtIn ? appState.localizedTemplateSceneName(sceneName) : sceneName)")
-                                .font(.system(size: 13))
-                                .foregroundStyle(theme.primaryText)
-                                .lineLimit(1)
+            if !isLockedBlankProject {
+                QuietField(appState.localized("newProject.template")) {
+                    Picker("", selection: $selectedTemplateID) {
+                        ForEach(templates) { template in
+                            Text(appState.displayName(template)).tag(Optional(template.id))
                         }
                     }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .disabled(request.locksTemplate)
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(theme.cardBackground)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(theme.divider, lineWidth: 1)
-                        )
+
+                if let selectedTemplate {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(appState.localized("templates.structure"))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(theme.secondaryText)
+
+                        if selectedTemplate.structureDefinition.isEmpty {
+                            Text(appState.localized("templates.blankStructure"))
+                                .font(.system(size: 13))
+                                .foregroundStyle(theme.secondaryText)
+                        } else {
+                            ForEach(Array(selectedTemplate.structureDefinition.prefix(6).enumerated()), id: \.offset) { index, sceneName in
+                                Text("\(index + 1). \(selectedTemplate.builtIn ? appState.localizedTemplateSceneName(sceneName) : sceneName)")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(theme.primaryText)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(theme.cardBackground)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .stroke(theme.divider, lineWidth: 1)
+                            )
+                    }
                 }
             }
 
@@ -485,28 +526,34 @@ private struct NewProjectSheet: View {
 
                 Spacer()
 
-                Button(appState.localized("newProject.create")) {
-                    appState.createNewProject(named: resolvedProjectName, template: selectedTemplate)
-                    dismiss()
-                }
+                Button(appState.localized("newProject.create"), action: createProject)
                 .keyboardShortcut(.defaultAction)
+                .disabled(selectedTemplate == nil)
                 .clickableCursor()
             }
         }
         .padding(24)
-        .frame(width: 460)
+        .frame(width: 480)
         .background(theme.windowBackground)
         .foregroundStyle(theme.primaryText)
         .onAppear {
             selectedTemplateID = request.templateID ?? templates.first?.id
             projectName = appState.localized("project.untitled")
-            isNameFocused = true
+            Task { @MainActor in
+                isNameFocused = true
+            }
         }
     }
 
     private var resolvedProjectName: String {
         let trimmed = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? appState.localized("project.untitled") : trimmed
+    }
+
+    private func createProject() {
+        guard let selectedTemplate else { return }
+        appState.createNewProject(named: resolvedProjectName, template: selectedTemplate)
+        dismiss()
     }
 }
 

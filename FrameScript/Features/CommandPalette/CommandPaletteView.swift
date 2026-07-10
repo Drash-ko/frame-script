@@ -6,53 +6,82 @@ struct CommandPaletteView: View {
     @Environment(\.frameTheme) private var theme
     @Environment(\.openSettings) private var openSettings
     @State private var query = ""
+    @State private var selectedIndex = 0
+    @FocusState private var isSearchFocused: Bool
 
-    private var commands: [PaletteCommand] {
+    private var commandResults: [PaletteResult] {
         [
-            PaletteCommand(title: appState.localized("command.switchScript"), detail: "⌘1") {
+            PaletteResult(title: appState.localized("command.switchScript"), detail: "⌘1") {
                 appState.selectMode(.script)
             },
-            PaletteCommand(title: appState.localized("command.switchBRoll"), detail: "⌘2") {
+            PaletteResult(title: appState.localized("command.switchBRoll"), detail: "⌘2") {
                 appState.selectMode(.bRoll)
             },
-            PaletteCommand(title: appState.localized("command.switchEditing"), detail: "⌘3") {
+            PaletteResult(title: appState.localized("command.switchEditing"), detail: "⌘3") {
                 appState.selectMode(.editing)
             },
-            PaletteCommand(title: appState.localized("scene.add"), detail: "⌘⌥N", action: appState.addScene),
-            PaletteCommand(title: appState.localized("scene.duplicate"), detail: "⌘D", action: appState.duplicateSelectedScene),
-            PaletteCommand(title: appState.localized("scene.delete"), detail: "⌘⌫", action: appState.deleteSelectedScene),
-            PaletteCommand(title: appState.localized("ai.analyzeCurrentScene"), detail: "⌘⇧A") {
+            PaletteResult(title: appState.localized("scene.add"), detail: "⌘⌥N", action: appState.addScene),
+            PaletteResult(title: appState.localized("scene.duplicate"), detail: "⌘D", action: appState.duplicateSelectedScene),
+            PaletteResult(title: appState.localized("scene.delete"), detail: "⌘⌫", action: appState.deleteSelectedScene),
+            PaletteResult(title: appState.localized("ai.analyzeCurrentScene"), detail: "⌘⇧A") {
                 appState.settings.editorPreferences.showAIReviewPanel = true
                 Task { await appState.analyzeSelectedScene() }
             },
-            PaletteCommand(title: appState.localized("command.openSettings"), detail: "⌘,", action: {
+            PaletteResult(title: appState.localized("command.openSettings"), detail: "⌘,", action: {
                 appState.openSettings(tab: .general)
                 openSettings()
             }),
-            PaletteCommand(title: appState.localized("command.toggleFocus"), detail: "⌘'") {
+            PaletteResult(title: appState.localized("command.toggleFocus"), detail: "⌘'") {
                 appState.isFocusModeEnabled.toggle()
             },
-            PaletteCommand(title: appState.localized("command.toggleSidebar"), detail: "⌘\\") {
+            PaletteResult(title: appState.localized("command.toggleSidebar"), detail: "⌘\\") {
                 appState.isSidebarVisible.toggle()
             },
-            PaletteCommand(title: appState.localized("command.toggleAIReview"), detail: "⌘⇧R") {
+            PaletteResult(title: appState.localized("command.toggleAIReview"), detail: "⌘⇧R") {
                 appState.settings.editorPreferences.showAIReviewPanel.toggle()
             },
-            PaletteCommand(title: appState.localized("command.closeProject"), detail: "") {
+            PaletteResult(title: appState.localized("command.closeProject"), detail: "") {
                 appState.closeProject()
             },
-            PaletteCommand(title: appState.localized("command.projectBrowser"), detail: "") {
+            PaletteResult(title: appState.localized("command.projectBrowser"), detail: "") {
                 appState.showProjectBrowser()
             },
-            PaletteCommand(title: appState.localized("command.showShortcuts"), detail: "?") {
+            PaletteResult(title: appState.localized("command.showShortcuts"), detail: "?") {
                 appState.isShortcutsPresented = true
             }
         ]
     }
 
-    private var filtered: [PaletteCommand] {
-        guard !query.isEmpty else { return commands }
-        return commands.filter { $0.title.localizedCaseInsensitiveContains(query) }
+    private var settingResults: [PaletteResult] {
+        [
+            settingResult(tab: .general, key: "general.defaultTemplate", titleKey: "settings.defaultTemplate"),
+            settingResult(tab: .editor, key: "editor.defaultSplit", titleKey: "settings.defaultSplit"),
+            settingResult(tab: .appearance, key: "appearance.theme", titleKey: "settings.theme"),
+            settingResult(tab: .appearance, key: "appearance.focusBehavior", titleKey: "settings.focusBehavior"),
+            settingResult(tab: .editor, key: "editor.fontSize", titleKey: "settings.fontSize"),
+            settingResult(tab: .editor, key: "editor.editorWidth", titleKey: "settings.editorWidth"),
+            settingResult(tab: .ai, key: "ai.privacyMode", titleKey: "settings.privacyMode"),
+            settingResult(tab: .voice, key: "voice.systemVoice", titleKey: "settings.systemVoice"),
+            settingResult(tab: .export, key: "export.defaultFormat", titleKey: "settings.defaultFormat"),
+            settingResult(tab: .templates, key: nil, title: appState.localized("settings.templates")),
+            settingResult(tab: .advanced, key: nil, title: appState.localized("settings.advanced"))
+        ]
+    }
+
+    private var sceneResults: [PaletteResult] {
+        appState.project.scenes.sortedByOrder.map { scene in
+            PaletteResult(title: scene.title, detail: appState.localized("scene.kind")) {
+                appState.selectScene(scene.id)
+            }
+        }
+    }
+
+    private var results: [PaletteResult] {
+        let allResults = commandResults + (query.isEmpty ? [] : sceneResults + settingResults)
+        guard !query.isEmpty else { return allResults }
+        return allResults.filter {
+            $0.title.localizedCaseInsensitiveContains(query) || $0.detail.localizedCaseInsensitiveContains(query)
+        }
     }
 
     var body: some View {
@@ -62,6 +91,8 @@ struct CommandPaletteView: View {
                 .font(.system(size: 18))
                 .padding(.horizontal, 18)
                 .frame(height: 58)
+                .focused($isSearchFocused)
+                .onSubmit(runSelected)
                 .textCursor()
 
             Divider()
@@ -69,42 +100,31 @@ struct CommandPaletteView: View {
 
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    ForEach(filtered) { command in
+                    ForEach(Array(results.enumerated()), id: \.element.id) { index, result in
                         Button {
-                            command.action()
-                            dismiss()
+                            run(result)
                         } label: {
                             HStack {
-                                Text(command.title)
+                                Text(result.title)
                                     .font(.system(size: 14))
                                 Spacer()
-                                Text(command.detail)
+                                Text(result.detail)
                                     .font(.system(size: 12, weight: .medium, design: .rounded))
                                     .foregroundStyle(theme.secondaryText)
                             }
                             .padding(.horizontal, 14)
                             .frame(height: 38)
-                        }
-                        .buttonStyle(.cursorPlain)
-                    }
-
-                    ForEach(appState.project.scenes.sortedByOrder.filter { query.isEmpty ? false : $0.title.localizedCaseInsensitiveContains(query) }) { scene in
-                        Button {
-                            appState.selectScene(scene.id)
-                            dismiss()
-                        } label: {
-                            HStack {
-                                Text(scene.title)
-                                    .font(.system(size: 14))
-                                Spacer()
-                                Text(appState.localized("scene.kind"))
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(theme.secondaryText)
+                            .background {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(index == selectedIndex ? theme.selection : Color.clear)
                             }
-                            .padding(.horizontal, 14)
-                            .frame(height: 38)
                         }
                         .buttonStyle(.cursorPlain)
+                        .onHover { hovering in
+                            if hovering {
+                                selectedIndex = index
+                            }
+                        }
                     }
                 }
                 .padding(8)
@@ -112,12 +132,64 @@ struct CommandPaletteView: View {
         }
         .frame(width: 560, height: 420)
         .background(theme.background)
+        .onAppear {
+            isSearchFocused = true
+        }
+        .onChange(of: query) { _, _ in
+            selectedIndex = 0
+        }
+        .onChange(of: results.count) { _, count in
+            selectedIndex = min(selectedIndex, max(0, count - 1))
+        }
+        .onKeyPress(.downArrow) {
+            moveSelection(1)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            moveSelection(-1)
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            dismiss()
+            return .handled
+        }
+    }
+
+    private func settingResult(tab: SettingsTab, key: String?, titleKey: String) -> PaletteResult {
+        settingResult(tab: tab, key: key, title: appState.localized(titleKey))
+    }
+
+    private func settingResult(tab: SettingsTab, key: String?, title: String) -> PaletteResult {
+        PaletteResult(title: title, detail: tab.title(appState: appState)) {
+            appState.openSettings(tab: tab, highlightKey: key)
+            openSettings()
+        }
+    }
+
+    private func moveSelection(_ delta: Int) {
+        guard !results.isEmpty else { return }
+        selectedIndex = max(0, min(results.count - 1, selectedIndex + delta))
+    }
+
+    private func runSelected() {
+        let currentResults = results
+        guard currentResults.indices.contains(selectedIndex) else { return }
+        run(currentResults[selectedIndex])
+    }
+
+    private func run(_ result: PaletteResult) {
+        dismiss()
+        Task { @MainActor in
+            await Task.yield()
+            result.action()
+        }
     }
 }
 
-private struct PaletteCommand: Identifiable {
-    let id = UUID()
+private struct PaletteResult: Identifiable {
     let title: String
     let detail: String
     let action: () -> Void
+
+    var id: String { "\(title)|\(detail)" }
 }

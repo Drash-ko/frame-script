@@ -142,6 +142,14 @@ struct FrameTheme {
     var success: Color {
         colorScheme == .dark ? Color(hex: 0x8FD3A6) : Color(hex: 0x2F7D52)
     }
+
+    var bRollMarker: Color {
+        colorScheme == .dark ? Color(hex: 0x6EA8FF) : Color(hex: 0x2563EB)
+    }
+
+    var editingMarker: Color {
+        colorScheme == .dark ? Color(hex: 0x78D39A) : Color(hex: 0x2F8F55)
+    }
 }
 
 @MainActor

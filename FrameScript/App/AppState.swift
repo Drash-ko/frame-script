@@ -48,6 +48,7 @@ struct NewProjectRequest: Identifiable, Equatable {
     let id = UUID()
     var templateID: UUID?
     var locksTemplate: Bool
+    var showsTemplateBrowser = false
 }
 
 @MainActor
@@ -63,6 +64,7 @@ final class AppState {
     let dependencies: AppDependencies
 
     var templates: [FrameTemplate]
+    private let builtInTemplates: [FrameTemplate]
     private var autosaveTask: Task<Void, Never>?
     private var voicePlaybackID = UUID()
 
@@ -85,7 +87,8 @@ final class AppState {
         self.windowState = windowState
         self.themeManager = themeManager
         self.dependencies = dependencies
-        self.templates = Self.mergedTemplates(builtIns: templates, customTemplates: Self.loadCustomTemplates())
+        self.builtInTemplates = templates.filter(\.builtIn)
+        self.templates = Self.mergedTemplates(builtIns: templates.filter(\.builtIn), customTemplates: Self.loadCustomTemplates())
         self.windowState.isSidebarVisible = settingsStore.settings.windowPreferences.sidebarDefaultVisible
         self.projectStore.setSegmentSplitMode(settingsStore.settings.generalPreferences.defaultSplitMode)
     }
@@ -190,9 +193,17 @@ final class AppState {
         createNewProject(named: localized("project.untitled"), template: template)
     }
 
-    func requestNewProject(template: FrameTemplate? = nil, locksTemplate: Bool = false) {
+    func requestNewProject(
+        template: FrameTemplate? = nil,
+        locksTemplate: Bool = false,
+        showsTemplateBrowser: Bool = false
+    ) {
         let selectedTemplate = template ?? templates.first { $0.name == settings.generalPreferences.defaultNewProjectTemplate } ?? templates.first
-        windowState.newProjectRequest = NewProjectRequest(templateID: selectedTemplate?.id, locksTemplate: locksTemplate)
+        windowState.newProjectRequest = NewProjectRequest(
+            templateID: selectedTemplate?.id,
+            locksTemplate: locksTemplate,
+            showsTemplateBrowser: showsTemplateBrowser
+        )
     }
 
     func createNewProject(named name: String, template: FrameTemplate? = nil) {
@@ -544,8 +555,10 @@ final class AppState {
         projectStore.clearRecentProjects()
     }
 
-    func openSettings(tab: SettingsTab = .general) {
+    func openSettings(tab: SettingsTab = .general, highlightKey: String? = nil) {
         windowState.requestedSettingsTab = tab
+        windowState.requestedSettingsHighlightKey = highlightKey
+        windowState.settingsRequestID = UUID()
     }
 
     func resetSidebarWidth() {
@@ -639,12 +652,12 @@ final class AppState {
         alert.runModal()
     }
 
-    private func confirm(title: String, message: String) -> Bool {
+    private func confirm(title: String, message: String, confirmButtonTitle: String? = nil) -> Bool {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
-        alert.addButton(withTitle: localized("dialog.delete"))
+        alert.addButton(withTitle: confirmButtonTitle ?? localized("dialog.delete"))
         alert.addButton(withTitle: localized("project.unsaved.cancel"))
         return alert.runModal() == .alertFirstButtonReturn
     }
@@ -692,9 +705,60 @@ final class AppState {
         var copy = template
         copy.id = UUID()
         copy.builtIn = false
+        copy.builtInSourceName = nil
         copy.name = uniqueTemplateName(base: "\(template.name) \(localized("templates.copySuffix"))")
         templates.append(copy)
         persistCustomTemplates()
+    }
+
+    @discardableResult
+    func customizeBuiltInTemplate(_ template: FrameTemplate) -> FrameTemplate? {
+        guard template.builtIn else { return template }
+        guard confirm(
+            title: localized("dialog.customizeTemplate.title"),
+            message: localized("dialog.customizeTemplate.message"),
+            confirmButtonTitle: localized("templates.customize")
+        ) else {
+            return nil
+        }
+
+        var override = template
+        override.builtIn = false
+        override.builtInSourceName = template.name
+        override.name = displayName(template)
+        override.structureDefinition = template.structureDefinition.map(localizedTemplateSceneName)
+
+        guard let index = templates.firstIndex(where: { $0.id == template.id }) else { return nil }
+        templates[index] = override
+        if settings.generalPreferences.defaultNewProjectTemplate == template.name {
+            settings.generalPreferences.defaultNewProjectTemplate = override.name
+        }
+        persistCustomTemplates()
+        return override
+    }
+
+    @discardableResult
+    func restoreOriginalTemplate(_ template: FrameTemplate) -> FrameTemplate? {
+        guard let sourceName = template.builtInSourceName,
+              var original = builtInTemplates.first(where: { $0.name == sourceName }) else {
+            return nil
+        }
+        guard confirm(
+            title: localized("dialog.restoreTemplate.title"),
+            message: localized("dialog.restoreTemplate.message"),
+            confirmButtonTitle: localized("templates.restoreOriginal")
+        ) else {
+            return nil
+        }
+
+        guard let index = templates.firstIndex(where: { $0.id == template.id }) else { return nil }
+        original.id = template.id
+        templates[index] = original
+        if settings.generalPreferences.defaultNewProjectTemplate == template.name {
+            settings.generalPreferences.defaultNewProjectTemplate = original.name
+        }
+        persistCustomTemplates()
+        return original
     }
 
     func updateTemplate(_ template: FrameTemplate) {
@@ -705,11 +769,41 @@ final class AppState {
 
     func deleteTemplate(_ template: FrameTemplate) {
         guard !template.builtIn else { return }
+        guard confirm(
+            title: localized("dialog.deleteTemplate.title"),
+            message: localized("dialog.deleteTemplate.message")
+        ) else {
+            return
+        }
         templates.removeAll { $0.id == template.id }
         if settings.generalPreferences.defaultNewProjectTemplate == template.name {
             settings.generalPreferences.defaultNewProjectTemplate = scriptTemplates().first?.name ?? "Blank"
         }
         persistCustomTemplates()
+    }
+
+    func resetSettingsWithConfirmation() {
+        guard confirm(
+            title: localized("dialog.resetSettings.title"),
+            message: localized("dialog.resetSettings.message"),
+            confirmButtonTitle: localized("settings.reset")
+        ) else {
+            return
+        }
+        settingsStore.reset()
+    }
+
+    func clearAPIKeysWithConfirmation() {
+        guard confirm(
+            title: localized("dialog.clearKeys.title"),
+            message: localized("dialog.clearKeys.message"),
+            confirmButtonTitle: localized("settings.clearKeys")
+        ) else {
+            return
+        }
+        for provider in AIProviderKind.allCases {
+            KeychainStore.deleteAPIKey(account: provider.rawValue)
+        }
     }
 
     private func templateKey(for name: String) -> String {
@@ -776,9 +870,18 @@ final class AppState {
     }
 
     private static func mergedTemplates(builtIns: [FrameTemplate], customTemplates: [FrameTemplate]) -> [FrameTemplate] {
-        builtIns + customTemplates.filter { custom in
-            !builtIns.contains { $0.name == custom.name && $0.category == custom.category }
+        let customized = Dictionary(
+            customTemplates.compactMap { template in
+                template.builtInSourceName.map { ($0, template) }
+            },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let resolvedBuiltIns = builtIns.map { customized[$0.name] ?? $0 }
+        let customOnly = customTemplates.filter { template in
+            template.builtInSourceName == nil
+                && !builtIns.contains { $0.name == template.name && $0.category == template.category }
         }
+        return resolvedBuiltIns + customOnly
     }
 
     private static let customTemplatesKey = "FrameScript.customTemplates.v1"
@@ -889,16 +992,19 @@ final class ProjectStore {
             templateID: project.templateID,
             scenes: project.scenes.sortedByOrder.enumerated().map { index, scene in
                 let sceneID = UUID()
-                let segments = scene.textSegments.sortedByOrder.enumerated().map { offset, segment in
-                    TextSegment(
+                var oldToNewSegmentIDs: [UUID: UUID] = [:]
+                let oldSegments = scene.textSegments.sortedByOrder
+                let segments = oldSegments.enumerated().map { offset, segment in
+                    let copy = TextSegment(
                         sceneID: sceneID,
                         order: offset,
                         sourceText: segment.sourceText,
                         segmentType: segment.segmentType,
                         timingEstimate: segment.timingEstimate
                     )
+                    oldToNewSegmentIDs[segment.id] = copy.id
+                    return copy
                 }
-                let firstSegmentID = segments.first?.id
                 return Scene(
                     id: sceneID,
                     order: index,
@@ -911,7 +1017,7 @@ final class ProjectStore {
                     aiComments: scene.aiComments.map {
                         AIComment(
                             sceneID: sceneID,
-                            segmentID: firstSegmentID,
+                            segmentID: mappedSegmentID($0.segmentID, oldSegments: oldSegments, newSegments: segments, oldToNewSegmentIDs: oldToNewSegmentIDs),
                             type: $0.type,
                             severity: $0.severity,
                             message: $0.message,
@@ -921,7 +1027,7 @@ final class ProjectStore {
                     },
                     bRollItems: scene.bRollItems.map {
                         BRollItem(
-                            linkedSegmentID: firstSegmentID,
+                            linkedSegmentID: mappedSegmentID($0.linkedSegmentID, oldSegments: oldSegments, newSegments: segments, oldToNewSegmentIDs: oldToNewSegmentIDs),
                             templateType: $0.templateType,
                             sourceType: $0.sourceType,
                             descriptionText: $0.descriptionText,
@@ -935,7 +1041,7 @@ final class ProjectStore {
                     },
                     editingItems: scene.editingItems.map {
                         EditingItem(
-                            linkedSegmentID: firstSegmentID,
+                            linkedSegmentID: mappedSegmentID($0.linkedSegmentID, oldSegments: oldSegments, newSegments: segments, oldToNewSegmentIDs: oldToNewSegmentIDs),
                             templateType: $0.templateType,
                             cutStyle: $0.cutStyle,
                             transition: $0.transition,
@@ -1016,16 +1122,19 @@ final class ProjectStore {
 
     func duplicate(_ scene: Scene, copySuffix: String) -> Scene {
         let copyID = UUID()
-        let segments = scene.textSegments.sortedByOrder.enumerated().map { offset, segment in
-            TextSegment(
+        var oldToNewSegmentIDs: [UUID: UUID] = [:]
+        let oldSegments = scene.textSegments.sortedByOrder
+        let segments = oldSegments.enumerated().map { offset, segment in
+            let copy = TextSegment(
                 sceneID: copyID,
                 order: offset,
                 sourceText: segment.sourceText,
                 segmentType: segment.segmentType,
                 timingEstimate: segment.timingEstimate
             )
+            oldToNewSegmentIDs[segment.id] = copy.id
+            return copy
         }
-        let firstSegmentID = segments.first?.id
         return Scene(
             id: copyID,
             order: project.scenes.count,
@@ -1038,7 +1147,7 @@ final class ProjectStore {
             aiComments: scene.aiComments.map {
                 AIComment(
                     sceneID: copyID,
-                    segmentID: firstSegmentID,
+                    segmentID: mappedSegmentID($0.segmentID, oldSegments: oldSegments, newSegments: segments, oldToNewSegmentIDs: oldToNewSegmentIDs),
                     type: $0.type,
                     severity: $0.severity,
                     message: $0.message,
@@ -1048,7 +1157,7 @@ final class ProjectStore {
             },
             bRollItems: scene.bRollItems.map {
                 BRollItem(
-                    linkedSegmentID: firstSegmentID,
+                    linkedSegmentID: mappedSegmentID($0.linkedSegmentID, oldSegments: oldSegments, newSegments: segments, oldToNewSegmentIDs: oldToNewSegmentIDs),
                     templateType: $0.templateType,
                     sourceType: $0.sourceType,
                     descriptionText: $0.descriptionText,
@@ -1062,7 +1171,7 @@ final class ProjectStore {
             },
             editingItems: scene.editingItems.map {
                 EditingItem(
-                    linkedSegmentID: firstSegmentID,
+                    linkedSegmentID: mappedSegmentID($0.linkedSegmentID, oldSegments: oldSegments, newSegments: segments, oldToNewSegmentIDs: oldToNewSegmentIDs),
                     templateType: $0.templateType,
                     cutStyle: $0.cutStyle,
                     transition: $0.transition,
@@ -1076,6 +1185,22 @@ final class ProjectStore {
                 )
             }
         )
+    }
+
+    private func mappedSegmentID(
+        _ oldID: UUID?,
+        oldSegments: [TextSegment],
+        newSegments: [TextSegment],
+        oldToNewSegmentIDs: [UUID: UUID]
+    ) -> UUID? {
+        guard let oldID else { return nil }
+        if let newID = oldToNewSegmentIDs[oldID] {
+            return newID
+        }
+        guard let oldOrder = oldSegments.first(where: { $0.id == oldID })?.order else {
+            return nil
+        }
+        return newSegments.min { abs($0.order - oldOrder) < abs($1.order - oldOrder) }?.id
     }
 
     func deleteScene(at sortedIndex: Int, wordsPerMinute: Int) {
@@ -1262,6 +1387,8 @@ final class WindowState {
     var isSettingsPresented = false
     var isShortcutsPresented = false
     var requestedSettingsTab: SettingsTab = .general
+    var requestedSettingsHighlightKey: String?
+    var settingsRequestID = UUID()
     var newProjectRequest: NewProjectRequest?
     var isExportPresented = false
     var isVoiceoverPresented = false

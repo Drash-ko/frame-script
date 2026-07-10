@@ -13,19 +13,22 @@ struct BRollEditorView: View {
                     subtitle: appState.localized("broll.linkedSubtitle")
                 )
 
-                if scene.scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if scene.scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && scene.bRollItems.isEmpty {
                     EmptyProductionState(message: appState.localized("broll.writeScriptFirst"))
                 } else {
-                    VStack(spacing: 16) {
-                        ForEach(scene.textSegments.sortedByOrder) { segment in
-                            BRollSegmentBlock(
-                                segment: segment,
-                                items: items(for: segment),
-                                addEmptyAction: { addEmptyItem(linkedTo: segment.id) },
-                                addPresetAction: { addItem(from: $0, linkedTo: segment.id) },
-                                duplicateAction: duplicateItem,
-                                deleteAction: deleteItem
-                            )
+                    if !scene.textSegments.isEmpty {
+                        VStack(spacing: 16) {
+                            ForEach(scene.textSegments.sortedByOrder) { segment in
+                                BRollSegmentBlock(
+                                    segment: segment,
+                                    allSegments: scene.textSegments.sortedByOrder,
+                                    items: items(for: segment),
+                                    addEmptyAction: { addEmptyItem(linkedTo: segment.id) },
+                                    addPresetAction: { addItem(from: $0, linkedTo: segment.id) },
+                                    duplicateAction: duplicateItem,
+                                    deleteAction: deleteItem
+                                )
+                            }
                         }
                     }
 
@@ -35,6 +38,7 @@ struct BRollEditorView: View {
                             ForEach(unlinked) { item in
                                 BRollItemEditor(
                                     item: item,
+                                    segments: scene.textSegments.sortedByOrder,
                                     duplicateAction: { duplicateItem(item) },
                                     deleteAction: { deleteItem(item) }
                                 )
@@ -171,6 +175,7 @@ private struct BRollSegmentBlock: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     let segment: TextSegment
+    let allSegments: [TextSegment]
     let items: [BRollItem]
     let addEmptyAction: () -> Void
     let addPresetAction: (BRollTemplatePreset) -> Void
@@ -186,6 +191,7 @@ private struct BRollSegmentBlock: View {
                 Text(segment.sourceText)
                     .font(.system(size: 14))
                     .foregroundStyle(theme.primaryText)
+                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -198,6 +204,7 @@ private struct BRollSegmentBlock: View {
                     ForEach(items) { item in
                         BRollItemEditor(
                             item: item,
+                            segments: allSegments,
                             duplicateAction: { duplicateAction(item) },
                             deleteAction: { deleteAction(item) }
                         )
@@ -209,7 +216,13 @@ private struct BRollSegmentBlock: View {
                 Button {
                     addEmptyAction()
                 } label: {
-                    Label(appState.localized("broll.addEmpty"), systemImage: "plus")
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(theme.bRollMarker)
+                            .frame(width: 7, height: 7)
+                        Image(systemName: "plus")
+                        Text(appState.localized("broll.addEmpty"))
+                    }
                 }
                 .buttonStyle(.cursorPlain)
 
@@ -225,6 +238,8 @@ private struct BRollSegmentBlock: View {
             }
             .font(.system(size: 13, weight: .medium))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: 136, alignment: .topLeading)
         .padding(16)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -241,17 +256,24 @@ private struct BRollItemEditor: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     @Bindable var item: BRollItem
+    let segments: [TextSegment]
     let duplicateAction: () -> Void
     let deleteAction: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(theme.bRollMarker)
+                    .frame(width: 7, height: 7)
+
                 Text(appState.localized("broll.item"))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(theme.secondaryText)
 
                 Spacer()
+
+                linkMenu
 
                 EditorIconButton(
                     systemName: "plus.square.on.square",
@@ -266,43 +288,68 @@ private struct BRollItemEditor: View {
                 )
             }
 
-            HStack(spacing: 12) {
-                Picker(appState.localized("broll.source"), selection: $item.sourceType) {
-                    ForEach(BRollSourceType.allCases) { source in
-                        Text(appState.displayName(source)).tag(source)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .bottom, spacing: 12) {
+                    QuietField(appState.localized("broll.source")) {
+                        Picker("", selection: $item.sourceType) {
+                            ForEach(BRollSourceType.allCases) { source in
+                                Text(appState.displayName(source)).tag(source)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                    .frame(width: 180)
+
+                    QuietField(appState.localized("templates.name")) {
+                        TextField(appState.localized("templates.name"), text: $item.templateType)
+                            .textFieldStyle(QuietTextFieldStyle())
+                    }
+
+                    QuietField(appState.localized("broll.status")) {
+                        Picker("", selection: $item.status) {
+                            ForEach(BRollStatus.allCases) { status in
+                                Text(appState.displayName(status)).tag(status)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                    .frame(width: 130)
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    QuietField(appState.localized("broll.source")) {
+                        Picker("", selection: $item.sourceType) {
+                            ForEach(BRollSourceType.allCases) { source in
+                                Text(appState.displayName(source)).tag(source)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                    QuietField(appState.localized("templates.name")) {
+                        TextField(appState.localized("templates.name"), text: $item.templateType)
+                            .textFieldStyle(QuietTextFieldStyle())
+                    }
+                    QuietField(appState.localized("broll.status")) {
+                        Picker("", selection: $item.status) {
+                            ForEach(BRollStatus.allCases) { status in
+                                Text(appState.displayName(status)).tag(status)
+                            }
+                        }
+                        .labelsHidden()
                     }
                 }
-                .labelsHidden()
-                .frame(width: 190)
-
-                TextField(appState.localized("templates.name"), text: $item.templateType)
-                    .textFieldStyle(QuietTextFieldStyle())
-
-                Picker(appState.localized("broll.status"), selection: $item.status) {
-                    ForEach(BRollStatus.allCases) { status in
-                        Text(appState.displayName(status)).tag(status)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 120)
             }
 
             QuietField(appState.localized("broll.description")) {
                 MultilineField(placeholder: appState.localized("broll.descriptionPlaceholder"), text: $item.descriptionText)
             }
 
-            HStack(spacing: 12) {
-                QuietField(appState.localized("broll.mood")) {
-                    TextField(appState.localized("broll.moodPlaceholder"), text: $item.mood)
-                        .textFieldStyle(QuietTextFieldStyle())
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    bRollDetailFields
                 }
-                QuietField(appState.localized("broll.framing")) {
-                    TextField(appState.localized("broll.framingPlaceholder"), text: $item.framing)
-                        .textFieldStyle(QuietTextFieldStyle())
-                }
-                QuietField(appState.localized("broll.motion")) {
-                    TextField(appState.localized("broll.motionPlaceholder"), text: $item.motion)
-                        .textFieldStyle(QuietTextFieldStyle())
+                VStack(alignment: .leading, spacing: 12) {
+                    bRollDetailFields
                 }
             }
 
@@ -310,6 +357,8 @@ private struct BRollItemEditor: View {
                 MultilineField(placeholder: appState.localized("broll.notesPlaceholder"), text: $item.notes, minHeight: 70)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: 178, alignment: .topLeading)
         .padding(16)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -328,5 +377,56 @@ private struct BRollItemEditor: View {
         .onChange(of: item.motion) { _, _ in appState.touchProject() }
         .onChange(of: item.duration) { _, _ in appState.touchProject() }
         .onChange(of: item.notes) { _, _ in appState.touchProject() }
+    }
+
+    @ViewBuilder
+    private var bRollDetailFields: some View {
+        QuietField(appState.localized("broll.mood")) {
+            TextField(appState.localized("broll.moodPlaceholder"), text: $item.mood)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+        QuietField(appState.localized("broll.framing")) {
+            TextField(appState.localized("broll.framingPlaceholder"), text: $item.framing)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+        QuietField(appState.localized("broll.motion")) {
+            TextField(appState.localized("broll.motionPlaceholder"), text: $item.motion)
+                .textFieldStyle(QuietTextFieldStyle())
+        }
+    }
+
+    private var linkMenu: some View {
+        Menu {
+            ForEach(Array(segments.enumerated()), id: \.element.id) { index, segment in
+                Button(segmentMenuTitle(index: index, segment: segment)) {
+                    item.linkedSegmentID = segment.id
+                    appState.touchProject()
+                }
+            }
+            Divider()
+            Button(appState.localized("production.unlinked")) {
+                item.linkedSegmentID = nil
+                appState.touchProject()
+            }
+        } label: {
+            Label(linkLabel, systemImage: "link")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var linkLabel: String {
+        guard let linkedID = item.linkedSegmentID,
+              let index = segments.firstIndex(where: { $0.id == linkedID }) else {
+            return appState.localized("production.unlinked")
+        }
+        return String(format: "%02d", index + 1)
+    }
+
+    private func segmentMenuTitle(index: Int, segment: TextSegment) -> String {
+        let preview = segment.sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clipped = preview.count > 42 ? "\(preview.prefix(42))..." : preview
+        return "\(String(format: "%02d", index + 1)) \(clipped)"
     }
 }
