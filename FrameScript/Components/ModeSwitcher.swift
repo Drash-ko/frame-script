@@ -11,10 +11,17 @@ struct ModeSwitcher: View {
                 Button {
                     selection = mode
                 } label: {
-                    Text(title(for: mode))
+                    HStack(spacing: 5) {
+                        Text(title(for: mode)).lineLimit(1).minimumScaleFactor(0.88)
+                        Text(mode.shortcut)
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .foregroundStyle(theme.tertiaryText)
+                            .padding(.horizontal, 4).frame(height: 16)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(theme.hover).overlay(RoundedRectangle(cornerRadius: 4).stroke(theme.divider)))
+                    }
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(selection == mode ? theme.primaryText : theme.secondaryText)
-                        .frame(width: 86, height: 28)
+                        .frame(minWidth: 92, maxWidth: 112, minHeight: 28)
                         .background {
                             if selection == mode {
                                 RoundedRectangle(cornerRadius: 7, style: .continuous)

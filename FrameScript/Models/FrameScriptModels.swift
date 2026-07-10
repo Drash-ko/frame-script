@@ -419,11 +419,8 @@ struct EditorPreferences: Codable, Hashable {
     var fontSize: Double
     var editorWidth: Double
     var lineHeight: Double
-    var typewriterMode: Bool
-    var focusParagraph: Bool
     var spellcheck: Bool
     var smartQuotes: Bool
-    var markdownLite: Bool
     var showWordCount: Bool
     var showSceneDuration: Bool
     var showFooterShortcuts: Bool
@@ -435,11 +432,8 @@ struct EditorPreferences: Codable, Hashable {
         fontSize: Double,
         editorWidth: Double,
         lineHeight: Double,
-        typewriterMode: Bool,
-        focusParagraph: Bool,
         spellcheck: Bool,
         smartQuotes: Bool,
-        markdownLite: Bool,
         showWordCount: Bool,
         showSceneDuration: Bool,
         showFooterShortcuts: Bool,
@@ -450,11 +444,8 @@ struct EditorPreferences: Codable, Hashable {
         self.fontSize = fontSize
         self.editorWidth = editorWidth
         self.lineHeight = lineHeight
-        self.typewriterMode = typewriterMode
-        self.focusParagraph = focusParagraph
         self.spellcheck = spellcheck
         self.smartQuotes = smartQuotes
-        self.markdownLite = markdownLite
         self.showWordCount = showWordCount
         self.showSceneDuration = showSceneDuration
         self.showFooterShortcuts = showFooterShortcuts
@@ -467,11 +458,8 @@ struct EditorPreferences: Codable, Hashable {
         case fontSize
         case editorWidth
         case lineHeight
-        case typewriterMode
-        case focusParagraph
         case spellcheck
         case smartQuotes
-        case markdownLite
         case showWordCount
         case showSceneDuration
         case showFooterShortcuts
@@ -485,11 +473,8 @@ struct EditorPreferences: Codable, Hashable {
         fontSize = try container.decode(Double.self, forKey: .fontSize)
         editorWidth = try container.decode(Double.self, forKey: .editorWidth)
         lineHeight = try container.decode(Double.self, forKey: .lineHeight)
-        typewriterMode = try container.decode(Bool.self, forKey: .typewriterMode)
-        focusParagraph = try container.decode(Bool.self, forKey: .focusParagraph)
         spellcheck = try container.decode(Bool.self, forKey: .spellcheck)
         smartQuotes = try container.decode(Bool.self, forKey: .smartQuotes)
-        markdownLite = try container.decode(Bool.self, forKey: .markdownLite)
         showWordCount = try container.decode(Bool.self, forKey: .showWordCount)
         showSceneDuration = try container.decode(Bool.self, forKey: .showSceneDuration)
         showFooterShortcuts = try container.decode(Bool.self, forKey: .showFooterShortcuts)
@@ -511,10 +496,6 @@ struct AIPreferences: Codable, Hashable {
     var baseURL: String
     var temperature: Double
     var maxTokens: Int
-    var inlineCompletionEnabled: Bool
-    var completionDelayMilliseconds: Int
-    var completionLength: CompletionLength
-    var reviewMarkersEnabled: Bool
     var privacyMode: Bool
 }
 
@@ -522,37 +503,13 @@ enum AIProviderKind: String, Codable, CaseIterable, Identifiable {
     case disabled = "Disabled"
     case openAICompatible = "OpenAI-compatible"
     case openRouter = "OpenRouter"
-    case anthropicCompatible = "Anthropic-compatible"
-    case gemini = "Gemini"
-
-    var id: String { rawValue }
-}
-
-enum CompletionLength: String, CaseIterable, Identifiable, Codable {
-    case short = "Short"
-    case medium = "Medium"
-    case long = "Long"
+    case groq = "Groq"
 
     var id: String { rawValue }
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        let rawValue = try container.decode(String.self)
-        switch rawValue.lowercased() {
-        case "short":
-            self = .short
-        case "medium":
-            self = .medium
-        case "long", "bold":
-            self = .long
-        default:
-            self = .medium
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(rawValue)
+        let value = try decoder.singleValueContainer().decode(String.self)
+        self = AIProviderKind(rawValue: value) ?? .disabled
     }
 }
 
@@ -586,7 +543,6 @@ struct ExportPreferences: Codable, Hashable {
 struct WindowPreferences: Codable, Hashable {
     var sidebarDefaultVisible: Bool
     var sidebarWidth: Double
-    var reducedChromeMode: Bool
     var focusModeBehavior: FocusModeBehavior
 }
 
@@ -632,11 +588,8 @@ extension AppSettings {
             fontSize: 22,
             editorWidth: 900,
             lineHeight: 1.48,
-            typewriterMode: false,
-            focusParagraph: false,
             spellcheck: true,
             smartQuotes: true,
-            markdownLite: true,
             showWordCount: true,
             showSceneDuration: true,
             showFooterShortcuts: false,
@@ -649,10 +602,6 @@ extension AppSettings {
             baseURL: "",
             temperature: 0.4,
             maxTokens: 420,
-            inlineCompletionEnabled: true,
-            completionDelayMilliseconds: 450,
-            completionLength: .short,
-            reviewMarkersEnabled: true,
             privacyMode: true
         ),
         voicePreferences: VoicePreferences(
@@ -676,7 +625,6 @@ extension AppSettings {
         windowPreferences: WindowPreferences(
             sidebarDefaultVisible: true,
             sidebarWidth: 195,
-            reducedChromeMode: false,
             focusModeBehavior: .hidePanels
         )
     )

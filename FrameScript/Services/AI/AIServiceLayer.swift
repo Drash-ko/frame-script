@@ -6,11 +6,6 @@ protocol LLMProviderProtocol {
 }
 
 @MainActor
-protocol CompletionServicing {
-    func suggestion(for scene: Scene, settings: AIPreferences) async -> String
-}
-
-@MainActor
 protocol RewriteServicing {
     func rewrite(text: String, scene: Scene, settings: AIPreferences) async -> String
 }
@@ -67,10 +62,8 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
         switch request.provider {
         case .disabled:
             return LLMResponse(text: "")
-        case .openAICompatible, .openRouter:
+        case .openAICompatible, .openRouter, .groq:
             return try await completeChat(request: request)
-        case .anthropicCompatible, .gemini:
-            throw LLMProviderError.unsupportedProvider
         }
     }
 
@@ -116,6 +109,8 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
         switch provider {
         case .openRouter:
             "https://openrouter.ai/api/v1"
+        case .groq:
+            "https://api.groq.com/openai/v1"
         default:
             "https://api.openai.com/v1"
         }
@@ -169,38 +164,6 @@ struct PromptBuilder {
             "Generate practical B-roll ideas that strengthen the meaning of the script."
         case .editingGeneration:
             "Generate restrained YouTube editing notes. Avoid timeline complexity."
-        }
-    }
-}
-
-@MainActor
-struct CompletionService: CompletionServicing {
-    var provider: any LLMProviderProtocol
-    var promptBuilder = PromptBuilder()
-
-    func suggestion(for scene: Scene, settings: AIPreferences) async -> String {
-        guard settings.provider != .disabled, settings.inlineCompletionEnabled else { return "" }
-        let request = LLMRequest(
-            task: .autocomplete,
-            provider: settings.provider,
-            baseURL: settings.baseURL,
-            systemPrompt: promptBuilder.systemPrompt(for: .autocomplete),
-            userPrompt: scene.scriptText,
-            model: settings.model,
-            temperature: settings.temperature,
-            maxTokens: autocompleteTokenLimit(for: settings.completionLength, fallback: settings.maxTokens)
-        )
-        return (try? await provider.complete(request: request).text) ?? ""
-    }
-
-    private func autocompleteTokenLimit(for length: CompletionLength, fallback: Int) -> Int {
-        switch length {
-        case .short:
-            min(fallback, 80)
-        case .medium:
-            min(fallback, 180)
-        case .long:
-            min(fallback, 360)
         }
     }
 }

@@ -10,7 +10,7 @@ struct FrameScriptFile: Codable {
     var project: ProjectDTO
 
     init(project: FrameProject) {
-        fileVersion = 1
+        fileVersion = 2
         self.project = ProjectDTO(project: project)
     }
 
@@ -132,89 +132,73 @@ struct TextSegmentDTO: Codable {
 struct BRollItemDTO: Codable {
     var id: UUID
     var linkedSegmentID: UUID?
-    var templateType: String
     var sourceType: BRollSourceType
     var descriptionText: String
-    var mood: String
-    var framing: String
-    var motion: String
-    var duration: TimeInterval
     var notes: String
-    var status: BRollStatus
 
     init(item: BRollItem) {
         id = item.id
         linkedSegmentID = item.linkedSegmentID
-        templateType = item.templateType
         sourceType = item.sourceType
         descriptionText = item.descriptionText
-        mood = item.mood
-        framing = item.framing
-        motion = item.motion
-        duration = item.duration
         notes = item.notes
-        status = item.status
     }
 
     func makeBRollItem() -> BRollItem {
         BRollItem(
             id: id,
             linkedSegmentID: linkedSegmentID,
-            templateType: templateType,
+            templateType: "",
             sourceType: sourceType,
             descriptionText: descriptionText,
-            mood: mood,
-            framing: framing,
-            motion: motion,
-            duration: duration,
-            notes: notes,
-            status: status
+            notes: notes
         )
     }
+
+    enum CodingKeys: String, CodingKey { case id, linkedSegmentID, sourceType, descriptionText, notes }
 }
 
 struct EditingItemDTO: Codable {
     var id: UUID
     var linkedSegmentID: UUID?
-    var templateType: String
-    var cutStyle: String
-    var transition: String
-    var subtitleStyle: String
-    var emphasis: String
-    var zoom: String
-    var sfx: String
-    var musicCue: String
-    var graphics: String
+    var description: String
     var notes: String
 
     init(item: EditingItem) {
         id = item.id
         linkedSegmentID = item.linkedSegmentID
-        templateType = item.templateType
-        cutStyle = item.cutStyle
-        transition = item.transition
-        subtitleStyle = item.subtitleStyle
-        emphasis = item.emphasis
-        zoom = item.zoom
-        sfx = item.sfx
-        musicCue = item.musicCue
-        graphics = item.graphics
+        description = item.cutStyle
         notes = item.notes
+    }
+
+    enum CodingKeys: String, CodingKey { case id, linkedSegmentID, description, cutStyle, notes }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        linkedSegmentID = try container.decodeIfPresent(UUID.self, forKey: .linkedSegmentID)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+            ?? container.decodeIfPresent(String.self, forKey: .cutStyle)
+            ?? ""
+        notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(linkedSegmentID, forKey: .linkedSegmentID)
+        try container.encode(description, forKey: .description)
+        try container.encode(notes, forKey: .notes)
     }
 
     func makeEditingItem() -> EditingItem {
         EditingItem(
             id: id,
             linkedSegmentID: linkedSegmentID,
-            templateType: templateType,
-            cutStyle: cutStyle,
-            transition: transition,
-            subtitleStyle: subtitleStyle,
-            emphasis: emphasis,
-            zoom: zoom,
-            sfx: sfx,
-            musicCue: musicCue,
-            graphics: graphics,
+            templateType: "",
+            cutStyle: description,
+            transition: "",
+            subtitleStyle: "",
             notes: notes
         )
     }

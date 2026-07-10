@@ -35,17 +35,13 @@ struct AppRootView: View {
                     .environment(appState)
                     .environment(\.frameTheme, appState.themeManager.frameTheme)
             }
-            .sheet(isPresented: $windowState.isVoiceoverPresented) {
-                VoiceoverSheetView()
-                    .environment(appState)
-                    .environment(\.frameTheme, appState.themeManager.frameTheme)
-            }
     }
 }
 
 struct AppShellView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
+    @Environment(\.openSettings) private var openSettings
     @State private var sidebarDragStartWidth: Double?
 
     var body: some View {
@@ -91,7 +87,7 @@ struct AppShellView: View {
         .background(theme.background)
         .foregroundStyle(theme.primaryText)
         .frame(minWidth: 980, minHeight: 680)
-        .sheet(isPresented: $windowState.isCommandPalettePresented) {
+        .sheet(isPresented: $windowState.isCommandPalettePresented, onDismiss: performPendingPaletteAction) {
             CommandPaletteView()
                 .environment(appState)
                 .environment(\.frameTheme, theme)
@@ -101,6 +97,15 @@ struct AppShellView: View {
                 .environment(appState)
                 .environment(\.frameTheme, theme)
         }
+    }
+
+    private func performPendingPaletteAction() {
+        guard let tab = appState.windowState.pendingSettingsTab else { return }
+        let key = appState.windowState.pendingSettingsHighlightKey
+        appState.windowState.pendingSettingsTab = nil
+        appState.windowState.pendingSettingsHighlightKey = nil
+        appState.openSettings(tab: tab, highlightKey: key)
+        openSettings()
     }
 
     @ViewBuilder
@@ -676,78 +681,6 @@ private struct ExportSheetView: View {
         appState.saveExport(format: format, preferences: effectivePreferences, to: url)
         appState.windowState.isExportPresented = false
         dismiss()
-    }
-}
-
-private struct VoiceoverSheetView: View {
-    @Environment(AppState.self) private var appState
-    @Environment(\.frameTheme) private var theme
-    @Environment(\.dismiss) private var dismiss
-
-    private var hasCurrentSceneText: Bool {
-        !(appState.selectedScene?.scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-    }
-
-    private var hasFullScriptText: Bool {
-        !appState.project.scenes.map(\.scriptText).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(appState.localized("voiceover.title"))
-                .font(.system(size: 20, weight: .semibold))
-
-            Text(appState.localized("voiceover.message"))
-                .font(.system(size: 13))
-                .foregroundStyle(theme.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 10) {
-                Button(appState.localized("voiceover.playCurrentScene")) {
-                    appState.playVoicePreview()
-                }
-                .disabled(!hasCurrentSceneText || appState.voiceState.isSpeaking)
-                .clickableCursor(enabled: hasCurrentSceneText && !appState.voiceState.isSpeaking)
-
-                Button(appState.localized("voiceover.playFullScript")) {
-                    appState.playFullScriptVoicePreview()
-                }
-                .disabled(!hasFullScriptText || appState.voiceState.isSpeaking)
-                .clickableCursor(enabled: hasFullScriptText && !appState.voiceState.isSpeaking)
-
-                Button(appState.localized("voiceover.stop")) {
-                    appState.stopVoicePreview()
-                }
-                .disabled(!appState.voiceState.isSpeaking)
-                .clickableCursor(enabled: appState.voiceState.isSpeaking)
-            }
-
-            Divider()
-                .overlay(theme.divider)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(appState.localized("voiceover.exportAudio"))
-                    .font(.system(size: 13, weight: .medium))
-                Text(appState.localized("voiceover.exportUnavailable"))
-                    .font(.system(size: 13))
-                    .foregroundStyle(theme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack {
-                Spacer()
-                Button(appState.localized("dialog.ok")) {
-                    appState.windowState.isVoiceoverPresented = false
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .clickableCursor()
-            }
-        }
-        .padding(24)
-        .frame(width: 420)
-        .background(theme.windowBackground)
-        .foregroundStyle(theme.primaryText)
     }
 }
 

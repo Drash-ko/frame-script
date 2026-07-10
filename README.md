@@ -8,7 +8,7 @@ This repository is prepared as the first public demo snapshot of the project.
 
 ## Status
 
-FrameScript is an early demo. The core app shell, local project format, templates, script/B-roll/editing workflows, export renderer, Keychain-backed AI configuration, and system voice preview are implemented. Some advanced AI and voice-export features are intentionally still rough or placeholder-backed.
+FrameScript is an early demo. The core app shell, local project format, templates, script/B-roll/editing workflows, export renderer, and Keychain-backed AI configuration are implemented.
 
 ## Requirements
 
@@ -30,8 +30,7 @@ Then select the `FrameScript` scheme, choose `My Mac`, and press `Cmd+R`.
 - Built-in templates for blank, standard YouTube, educational, storytelling, product review, commentary/essay, and tutorial projects.
 - Project save/open using `.framescript` files.
 - Export as plain text, Markdown, CSV, or production outline.
-- macOS system voice preview for the current scene or the full script.
-- AI review plumbing for OpenAI-compatible providers and OpenRouter when configured with API keys.
+- AI review and production suggestions for OpenAI-compatible providers, OpenRouter, and Groq when configured with API keys.
 - API keys are stored in the macOS Keychain, not in project files.
 
 ## Project Structure
@@ -44,7 +43,7 @@ FrameScript/
   Core/                Theme, localization, duration utilities
   Features/            Script, B-roll, Editing, AI, Settings, commands
   Models/              SwiftData models, settings, built-in templates, demo data
-  Services/            AI, voice preview, export, file storage, Keychain
+  Services/            AI, export, file storage, Keychain
   Assets.xcassets      App icon and assets
 docs/
   banner.svg           README banner
@@ -69,7 +68,14 @@ See `SECURITY.md` for reporting guidance.
 
 ## Known Limitations
 
-- Voice audio file export is not implemented yet; voiceover is preview/playback only.
 - Inline AI completion and inline review markers are not exposed until the editor has real inline behavior.
+<<<<<<< HEAD
 - Anthropic-compatible and Gemini provider adapters are listed as future provider types but are not implemented.
 - Manual UI verification is still needed for exact cursor/caret alignment across macOS text rendering configurations.
+=======
+- Production markers use AppKit text-range geometry and should be verified when changing typography or editor layout.
+
+## License
+
+No open-source license has been selected yet. Until a license is added, all rights are reserved by the repository owner.
+>>>>>>> c819716 (Clean up production notes, AI providers, and exports)

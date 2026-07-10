@@ -4,13 +4,35 @@ import Observation
 import SwiftData
 import SwiftUI
 
+private struct GeneratedBRollSuggestion: Decodable {
+    let source: String
+    let description: String
+    let notes: String
+}
+
+private struct GeneratedEditingSuggestion: Decodable {
+    let description: String
+    let notes: String
+}
+
+private enum GenerationError: LocalizedError {
+    case invalidJSON
+    case emptyDescription
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidJSON: "The provider did not return valid structured JSON."
+        case .emptyDescription: "The provider returned an empty description."
+        }
+    }
+}
+
 enum SettingsTab: String, CaseIterable, Identifiable, Codable, Hashable {
     case general
     case appearance
     case editor
     case templates
     case ai
-    case voice
     case export
     case advanced
 
@@ -23,7 +45,6 @@ enum SettingsTab: String, CaseIterable, Identifiable, Codable, Hashable {
         case .editor: "text.alignleft"
         case .templates: "doc.on.doc"
         case .ai: "sparkles"
-        case .voice: "waveform"
         case .export: "square.and.arrow.up"
         case .advanced: "wrench.and.screwdriver"
         }
@@ -37,7 +58,6 @@ enum SettingsTab: String, CaseIterable, Identifiable, Codable, Hashable {
         case .editor: appState.localized("settings.editor")
         case .templates: appState.localized("settings.templates")
         case .ai: appState.localized("settings.ai")
-        case .voice: appState.localized("settings.voice")
         case .export: appState.localized("settings.export")
         case .advanced: appState.localized("settings.advanced")
         }
@@ -57,7 +77,6 @@ final class AppState {
     let projectStore: ProjectStore
     let editorState: EditorState
     let settingsStore: SettingsStore
-    let voiceState: VoiceState
     let aiState: AIState
     let windowState: WindowState
     let themeManager: ResolvedThemeManager
@@ -66,13 +85,11 @@ final class AppState {
     var templates: [FrameTemplate]
     private let builtInTemplates: [FrameTemplate]
     private var autosaveTask: Task<Void, Never>?
-    private var voicePlaybackID = UUID()
 
     init(
         projectStore: ProjectStore = ProjectStore(),
         editorState: EditorState = EditorState(),
         settingsStore: SettingsStore = SettingsStore(),
-        voiceState: VoiceState = VoiceState(),
         aiState: AIState = AIState(),
         windowState: WindowState = WindowState(),
         themeManager: ResolvedThemeManager = ResolvedThemeManager(),
@@ -82,7 +99,6 @@ final class AppState {
         self.projectStore = projectStore
         self.editorState = editorState
         self.settingsStore = settingsStore
-        self.voiceState = voiceState
         self.aiState = aiState
         self.windowState = windowState
         self.themeManager = themeManager
@@ -179,6 +195,11 @@ final class AppState {
     }
 
     func selectMode(_ mode: WorkspaceMode) {
+        editorState.selectedMode = mode
+    }
+
+    func selectProductionSegment(_ segmentID: UUID, mode: WorkspaceMode) {
+        editorState.selectedProductionSegmentID = segmentID
         editorState.selectedMode = mode
     }
 
@@ -435,48 +456,69 @@ final class AppState {
     }
 
     func generateBRollForSelectedScene() {
-        guard let scene = selectedScene else { return }
-        if scene.bRollItems.isEmpty {
-            scene.bRollItems.append(
-                BRollItem(
-                    linkedSegmentID: scene.textSegments.sortedByOrder.first?.id,
-                    templateType: localized("generated.startingPoint"),
-                    sourceType: .screenRecording,
-                    descriptionText: localized("generated.broll.description"),
-                    mood: localized("generated.broll.mood"),
-                    framing: localized("generated.broll.framing"),
-                    motion: localized("generated.broll.motion"),
-                    duration: 5,
-                    notes: localized("generated.reviewBeforeProduction"),
-                    status: .idea
-                )
-            )
-        }
-        touchProject()
-        selectedMode = .bRoll
+        Task { await generateProductionSuggestion(kind: .bRollGeneration) }
     }
 
     func generateEditingNotesForSelectedScene() {
-        guard let scene = selectedScene else { return }
-        if scene.editingItems.isEmpty {
-            scene.editingItems.append(
-                EditingItem(
-                    linkedSegmentID: scene.textSegments.sortedByOrder.first?.id,
-                    templateType: localized("generated.startingPoint"),
-                    cutStyle: localized("generated.editing.cleanJumpCuts"),
-                    transition: localized("generated.editing.hardCut"),
-                    subtitleStyle: localized("generated.editing.keywordHighlights"),
-                    emphasis: localized("generated.editing.emphasis"),
-                    zoom: localized("generated.editing.zoom"),
-                    sfx: "",
-                    musicCue: localized("generated.editing.musicCue"),
-                    graphics: localized("generated.editing.graphics"),
-                    notes: localized("generated.editing.notes")
-                )
-            )
+        Task { await generateProductionSuggestion(kind: .editingGeneration) }
+    }
+
+    private func generateProductionSuggestion(kind: AITask) async {
+        guard settings.aiPreferences.provider != .disabled else {
+            presentError(localized("ai.generationUnavailable.title"), details: localized("ai.generationConnect"))
+            return
         }
-        touchProject()
-        selectedMode = .editing
+        guard let scene = selectedScene else { return }
+        rebuildProductionSegments(markUnsaved: false)
+        let segments = scene.textSegments.sortedByOrder
+        guard let segment = segments.first(where: { $0.id == editorState.selectedProductionSegmentID }) ?? segments.first else {
+            presentError(localized("ai.generationFailed.title"), details: localized("ai.generationNoSegment"))
+            return
+        }
+
+        let schema = kind == .bRollGeneration
+            ? "Return only one JSON object with string fields: source, description, notes. Source must be one of: \(BRollSourceType.allCases.map(\.rawValue).joined(separator: ", "))."
+            : "Return only one JSON object with string fields: description, notes."
+        let context = settings.aiPreferences.privacyMode
+            ? segment.sourceText
+            : "Scene: \(scene.title)\nFull scene: \(scene.scriptText)\nTarget segment: \(segment.sourceText)"
+        do {
+            let response = try await OpenAICompatibleLLMProvider().complete(request: LLMRequest(
+                task: kind,
+                provider: settings.aiPreferences.provider,
+                baseURL: settings.aiPreferences.baseURL,
+                systemPrompt: "\(PromptBuilder().systemPrompt(for: kind)) \(schema) Do not use Markdown fences.",
+                userPrompt: context,
+                model: settings.aiPreferences.model,
+                temperature: settings.aiPreferences.temperature,
+                maxTokens: settings.aiPreferences.maxTokens
+            ))
+            let data = try Self.structuredJSONData(from: response.text)
+            switch kind {
+            case .bRollGeneration:
+                let value = try JSONDecoder().decode(GeneratedBRollSuggestion.self, from: data)
+                guard !value.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GenerationError.emptyDescription }
+                let source = BRollSourceType.allCases.first { $0.rawValue.caseInsensitiveCompare(value.source) == .orderedSame } ?? .custom
+                scene.bRollItems.append(BRollItem(linkedSegmentID: segment.id, templateType: "", sourceType: source, descriptionText: value.description, notes: value.notes))
+                selectedMode = .bRoll
+            case .editingGeneration:
+                let value = try JSONDecoder().decode(GeneratedEditingSuggestion.self, from: data)
+                guard !value.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GenerationError.emptyDescription }
+                scene.editingItems.append(EditingItem(linkedSegmentID: segment.id, templateType: "", cutStyle: value.description, transition: "", subtitleStyle: "", notes: value.notes))
+                selectedMode = .editing
+            default: return
+            }
+            editorState.selectedProductionSegmentID = segment.id
+            touchProject()
+        } catch {
+            presentError(localized("ai.generationFailed.title"), details: "\(localized("ai.generationFailed.message")) \(error.localizedDescription)")
+        }
+    }
+
+    private static func structuredJSONData(from response: String) throws -> Data {
+        guard let start = response.firstIndex(of: "{"), let end = response.lastIndex(of: "}"), start <= end,
+              let data = String(response[start...end]).data(using: .utf8) else { throw GenerationError.invalidJSON }
+        return data
     }
 
     func moveSelection(_ delta: Int) {
@@ -506,49 +548,6 @@ final class AppState {
         }
         touchProject()
         aiState.isAnalyzing = false
-    }
-
-    func playVoicePreview() {
-        guard let scene = selectedScene else {
-            voiceState.isSpeaking = false
-            return
-        }
-        playVoiceText(scene.scriptText)
-    }
-
-    func playFullScriptVoicePreview() {
-        let text = project.scenes.sortedByOrder.map(\.scriptText).joined(separator: "\n\n")
-        playVoiceText(text)
-    }
-
-    func playVoiceText(_ text: String) {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            voiceState.isSpeaking = false
-            presentError(localized("voice.empty.title"), details: localized("voice.empty.message"))
-            return
-        }
-        dependencies.voiceService.stop()
-        let playbackID = UUID()
-        voicePlaybackID = playbackID
-        voiceState.isSpeaking = true
-        Task {
-            defer {
-                if voicePlaybackID == playbackID {
-                    voiceState.isSpeaking = false
-                }
-            }
-            do {
-                try await dependencies.voiceService.speak(text: text, preferences: settings.voicePreferences)
-            } catch {
-                presentError(localized("error.voicePreview"), details: error.localizedDescription)
-            }
-        }
-    }
-
-    func stopVoicePreview() {
-        voicePlaybackID = UUID()
-        dependencies.voiceService.stop()
-        voiceState.isSpeaking = false
     }
 
     func clearRecentProjects() {
@@ -714,14 +713,6 @@ final class AppState {
     @discardableResult
     func customizeBuiltInTemplate(_ template: FrameTemplate) -> FrameTemplate? {
         guard template.builtIn else { return template }
-        guard confirm(
-            title: localized("dialog.customizeTemplate.title"),
-            message: localized("dialog.customizeTemplate.message"),
-            confirmButtonTitle: localized("templates.customize")
-        ) else {
-            return nil
-        }
-
         var override = template
         override.builtIn = false
         override.builtInSourceName = template.name
@@ -1340,6 +1331,7 @@ final class ProjectStore {
 final class EditorState {
     var selectedMode: WorkspaceMode = .script
     var selectedSceneID: UUID?
+    var selectedProductionSegmentID: UUID?
     var isFocusModeEnabled = false
 }
 
@@ -1371,11 +1363,6 @@ final class SettingsStore {
 }
 
 @Observable
-final class VoiceState {
-    var isSpeaking = false
-}
-
-@Observable
 final class AIState {
     var isAnalyzing = false
 }
@@ -1391,7 +1378,8 @@ final class WindowState {
     var settingsRequestID = UUID()
     var newProjectRequest: NewProjectRequest?
     var isExportPresented = false
-    var isVoiceoverPresented = false
+    var pendingSettingsTab: SettingsTab?
+    var pendingSettingsHighlightKey: String?
 }
 
 enum SaveState: String {

@@ -61,7 +61,6 @@ struct CommandPaletteView: View {
             settingResult(tab: .editor, key: "editor.fontSize", titleKey: "settings.fontSize"),
             settingResult(tab: .editor, key: "editor.editorWidth", titleKey: "settings.editorWidth"),
             settingResult(tab: .ai, key: "ai.privacyMode", titleKey: "settings.privacyMode"),
-            settingResult(tab: .voice, key: "voice.systemVoice", titleKey: "settings.systemVoice"),
             settingResult(tab: .export, key: "export.defaultFormat", titleKey: "settings.defaultFormat"),
             settingResult(tab: .templates, key: nil, title: appState.localized("settings.templates")),
             settingResult(tab: .advanced, key: nil, title: appState.localized("settings.advanced"))
@@ -70,7 +69,7 @@ struct CommandPaletteView: View {
 
     private var sceneResults: [PaletteResult] {
         appState.project.scenes.sortedByOrder.map { scene in
-            PaletteResult(title: scene.title, detail: appState.localized("scene.kind")) {
+            PaletteResult(id: "scene:\(scene.id.uuidString)", title: scene.title, detail: appState.localized("scene.kind")) {
                 appState.selectScene(scene.id)
             }
         }
@@ -160,9 +159,9 @@ struct CommandPaletteView: View {
     }
 
     private func settingResult(tab: SettingsTab, key: String?, title: String) -> PaletteResult {
-        PaletteResult(title: title, detail: tab.title(appState: appState)) {
-            appState.openSettings(tab: tab, highlightKey: key)
-            openSettings()
+        PaletteResult(id: "setting:\(tab.rawValue):\(key ?? title)", title: title, detail: tab.title(appState: appState)) {
+            appState.windowState.pendingSettingsTab = tab
+            appState.windowState.pendingSettingsHighlightKey = key
         }
     }
 
@@ -178,18 +177,21 @@ struct CommandPaletteView: View {
     }
 
     private func run(_ result: PaletteResult) {
+        result.action()
         dismiss()
-        Task { @MainActor in
-            await Task.yield()
-            result.action()
-        }
     }
 }
 
 private struct PaletteResult: Identifiable {
+    let id: String
     let title: String
     let detail: String
     let action: () -> Void
 
-    var id: String { "\(title)|\(detail)" }
+    init(id: String? = nil, title: String, detail: String, action: @escaping () -> Void) {
+        self.id = id ?? "command:\(title):\(detail)"
+        self.title = title
+        self.detail = detail
+        self.action = action
+    }
 }

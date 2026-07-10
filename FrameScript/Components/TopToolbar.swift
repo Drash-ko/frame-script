@@ -17,7 +17,6 @@ struct TopToolbar: View {
                     .disabled(appState.projectStore.currentFileURL == nil)
                 Divider()
                 Button(appState.localized("project.export")) { appState.exportProject() }
-                Button(appState.localized("voiceover.title")) { appState.windowState.isVoiceoverPresented = true }
                 Divider()
                 Button(appState.localized("project.close")) { appState.closeProject() }
                 Button(appState.localized("project.browser")) { appState.showProjectBrowser() }
@@ -55,15 +54,6 @@ struct TopToolbar: View {
                     help: appState.localized("project.export"),
                     action: appState.exportProject
                 )
-
-                toolbarDivider
-
-                toolbarButton(
-                    systemName: appState.voiceState.isSpeaking ? "stop.fill" : "waveform",
-                    help: appState.localized("voiceover.title")
-                ) {
-                    appState.windowState.isVoiceoverPresented = true
-                }
 
                 toolbarDivider
 

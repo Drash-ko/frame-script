@@ -3,7 +3,7 @@ import Foundation
 enum SampleData {
     static let templates: [FrameTemplate] = [
         FrameTemplate(
-            id: UUID(),
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!,
             category: .script,
             name: "Blank",
             builtIn: true,
@@ -11,7 +11,7 @@ enum SampleData {
             customFields: []
         ),
         FrameTemplate(
-            id: UUID(),
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000002")!,
             category: .script,
             name: "Standard YouTube",
             builtIn: true,
@@ -19,7 +19,7 @@ enum SampleData {
             customFields: []
         ),
         FrameTemplate(
-            id: UUID(),
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000003")!,
             category: .script,
             name: "Educational",
             builtIn: true,
@@ -27,7 +27,7 @@ enum SampleData {
             customFields: []
         ),
         FrameTemplate(
-            id: UUID(),
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000004")!,
             category: .script,
             name: "Storytelling",
             builtIn: true,
@@ -35,7 +35,7 @@ enum SampleData {
             customFields: []
         ),
         FrameTemplate(
-            id: UUID(),
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000005")!,
             category: .script,
             name: "Product Review",
             builtIn: true,
@@ -43,7 +43,7 @@ enum SampleData {
             customFields: []
         ),
         FrameTemplate(
-            id: UUID(),
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000006")!,
             category: .script,
             name: "Commentary / Essay",
             builtIn: true,
@@ -51,7 +51,7 @@ enum SampleData {
             customFields: []
         ),
         FrameTemplate(
-            id: UUID(),
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000007")!,
             category: .script,
             name: "Tutorial",
             builtIn: true,

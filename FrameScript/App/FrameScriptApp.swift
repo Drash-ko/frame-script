@@ -107,8 +107,6 @@ struct FrameScriptApp: App {
             Button(appState.localized("project.export")) { appState.exportProject() }
                 .keyboardShortcut("e", modifiers: .command)
                 .disabled(!appState.hasOpenProject)
-            Button(appState.localized("voiceover.title")) { appState.windowState.isVoiceoverPresented = true }
-                .disabled(!appState.hasOpenProject)
         }
 
         CommandGroup(replacing: .appSettings) {
@@ -183,13 +181,6 @@ struct FrameScriptApp: App {
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("menu.generateEditing")) { appState.generateEditingNotesForSelectedScene() }
                 .disabled(!appState.hasOpenProject)
-            Divider()
-            Button(appState.localized("voiceover.title")) { appState.windowState.isVoiceoverPresented = true }
-                .disabled(!appState.hasOpenProject)
-            Button(appState.localized("menu.playVoicePreview")) { appState.playVoicePreview() }
-                .disabled(!appState.hasOpenProject)
-            Button(appState.localized("menu.stopVoicePreview")) { appState.stopVoicePreview() }
-                .disabled(!appState.voiceState.isSpeaking)
         }
     }
 }

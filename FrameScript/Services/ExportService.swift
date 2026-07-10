@@ -43,7 +43,8 @@ struct ExportService: ExportServicing {
             if preferences.includeEditingNotes, !scene.editingItems.isEmpty {
                 output += "\n\n\(label("export.label.editing", language: language)):\n"
                 for item in scene.editingItems {
-                    output += "- \(item.cutStyle); \(item.subtitleStyle); \(item.notes)\n"
+                    if !item.cutStyle.isEmpty { output += "- \(item.cutStyle)\n" }
+                    if !item.notes.isEmpty { output += "  \(label("export.label.notes", language: language)): \(item.notes)\n" }
                 }
             }
 
@@ -71,21 +72,7 @@ struct ExportService: ExportServicing {
             }
             output += "\(formattedScript(scene.scriptText, preferences: preferences))\n\n"
 
-            if preferences.includeBRoll, !scene.bRollItems.isEmpty {
-                output += "### \(label("export.label.broll", language: language))\n"
-                for item in scene.bRollItems {
-                    output += "- \(label("brollSource.\(item.sourceType.rawValue)", language: language)): \(item.descriptionText)\n"
-                }
-                output += "\n"
-            }
-
-            if preferences.includeEditingNotes, !scene.editingItems.isEmpty {
-                output += "### \(label("export.label.editing", language: language))\n"
-                for item in scene.editingItems {
-                    output += "- \(item.cutStyle); \(item.subtitleStyle); \(item.notes)\n"
-                }
-                output += "\n"
-            }
+            output += renderSegmentProduction(scene: scene, preferences: preferences, language: language, headingPrefix: "### ")
 
             if preferences.includeAINotes, !scene.aiComments.isEmpty {
                 output += "### \(label("export.label.aiNotes", language: language))\n"
@@ -116,35 +103,7 @@ struct ExportService: ExportServicing {
             output += "\(label("export.label.script", language: language).uppercased()):\n"
             output += "\(formattedScript(scene.scriptText, preferences: preferences))\n\n"
 
-            if preferences.includeBRoll, !scene.bRollItems.isEmpty {
-                output += "\(label("export.label.broll", language: language).uppercased()):\n"
-                for item in scene.bRollItems {
-                    output += "- \(label("export.label.source", language: language)): \(label("brollSource.\(item.sourceType.rawValue)", language: language))\n"
-                    appendLine(&output, key: "export.label.description", value: item.descriptionText, language: language, indent: "  ")
-                    appendLine(&output, key: "export.label.mood", value: item.mood, language: language, indent: "  ")
-                    appendLine(&output, key: "export.label.framing", value: item.framing, language: language, indent: "  ")
-                    appendLine(&output, key: "export.label.motion", value: item.motion, language: language, indent: "  ")
-                    appendLine(&output, key: "export.label.notes", value: item.notes, language: language, indent: "  ")
-                }
-                output += "\n"
-            }
-
-            if preferences.includeEditingNotes, !scene.editingItems.isEmpty {
-                output += "\(label("export.label.editing", language: language).uppercased()):\n"
-                for item in scene.editingItems {
-                    output += "- \(label("export.label.template", language: language)): \(item.templateType)\n"
-                    appendLine(&output, key: "editing.cutStyle", value: item.cutStyle, language: language, indent: "  ")
-                    appendLine(&output, key: "editing.transition", value: item.transition, language: language, indent: "  ")
-                    appendLine(&output, key: "editing.subtitles", value: item.subtitleStyle, language: language, indent: "  ")
-                    appendLine(&output, key: "editing.emphasis", value: item.emphasis, language: language, indent: "  ")
-                    appendLine(&output, key: "editing.zoom", value: item.zoom, language: language, indent: "  ")
-                    appendLine(&output, key: "editing.sfx", value: item.sfx, language: language, indent: "  ")
-                    appendLine(&output, key: "editing.musicCue", value: item.musicCue, language: language, indent: "  ")
-                    appendLine(&output, key: "editing.graphics", value: item.graphics, language: language, indent: "  ")
-                    appendLine(&output, key: "editing.notes", value: item.notes, language: language, indent: "  ")
-                }
-                output += "\n"
-            }
+            output += renderSegmentProduction(scene: scene, preferences: preferences, language: language, headingPrefix: "### ")
 
             if preferences.includeAINotes, !scene.aiComments.isEmpty {
                 output += "\(label("export.label.aiNotes", language: language).uppercased()):\n"
@@ -159,37 +118,80 @@ struct ExportService: ExportServicing {
     }
 
     private func renderCSV(project: FrameProject, preferences: ExportPreferences, language: AppLanguage) -> String {
-        var headers = [
-            label("export.label.scene", language: language),
-            label("export.label.title", language: language),
-            label("export.label.duration", language: language),
-            label("export.label.script", language: language)
-        ]
-        if preferences.includeBRoll { headers.append(label("export.label.broll", language: language)) }
-        if preferences.includeEditingNotes { headers.append(label("export.label.editing", language: language)) }
-        if preferences.includeAINotes { headers.append(label("export.label.aiNotes", language: language)) }
-        var rows = [headers.joined(separator: ",")]
+        let headers = ["export.csv.sceneOrder", "export.label.title", "export.csv.segmentOrder", "export.csv.segmentText", "export.csv.itemType", "export.label.source", "export.label.description", "export.label.notes"].map { label($0, language: language) }
+        var rows = [headers.map(csvEscape).joined(separator: ",")]
         for scene in project.scenes.sortedByOrder {
-            let title = preferences.includeSectionNames ? scene.title.replacingOccurrences(of: "\"", with: "\"\"") : ""
-            let duration = preferences.includeTimestamps ? "\(Int(scene.estimatedDuration))" : ""
-            var columns = [
-                "\(scene.order + 1)",
-                title,
-                duration,
-                scene.scriptText
-            ]
+            let segments = scene.textSegments.sortedByOrder
+            let valid = Set(segments.map(\.id))
+            for segment in segments {
+                if preferences.includeBRoll {
+                    for item in scene.bRollItems where item.linkedSegmentID == segment.id {
+                        rows.append(csvRow(scene: scene, segment: segment, type: label("export.label.broll", language: language), source: label("brollSource.\(item.sourceType.rawValue)", language: language), description: item.descriptionText, notes: item.notes))
+                    }
+                }
+                if preferences.includeEditingNotes {
+                    for item in scene.editingItems where item.linkedSegmentID == segment.id {
+                        rows.append(csvRow(scene: scene, segment: segment, type: label("export.label.editing", language: language), source: "", description: item.cutStyle, notes: item.notes))
+                    }
+                }
+            }
             if preferences.includeBRoll {
-                columns.append(scene.bRollItems.map { "\(label("brollSource.\($0.sourceType.rawValue)", language: language)): \($0.descriptionText)" }.joined(separator: " | "))
+                for item in scene.bRollItems where item.linkedSegmentID.map({ !valid.contains($0) }) ?? true {
+                    rows.append(csvRow(scene: scene, segment: nil, type: label("export.label.broll", language: language), source: label("brollSource.\(item.sourceType.rawValue)", language: language), description: item.descriptionText, notes: item.notes))
+                }
             }
             if preferences.includeEditingNotes {
-                columns.append(scene.editingItems.map { "\($0.cutStyle); \($0.subtitleStyle); \($0.notes)" }.joined(separator: " | "))
+                for item in scene.editingItems where item.linkedSegmentID.map({ !valid.contains($0) }) ?? true {
+                    rows.append(csvRow(scene: scene, segment: nil, type: label("export.label.editing", language: language), source: "", description: item.cutStyle, notes: item.notes))
+                }
             }
-            if preferences.includeAINotes {
-                columns.append(scene.aiComments.filter { $0.status == .new }.map(\.message).joined(separator: " | "))
-            }
-            rows.append(columns.map(csvEscape).joined(separator: ","))
         }
         return rows.joined(separator: "\n")
+    }
+
+    private func renderSegmentProduction(scene: Scene, preferences: ExportPreferences, language: AppLanguage, headingPrefix: String) -> String {
+        let segments = scene.textSegments.sortedByOrder
+        let valid = Set(segments.map(\.id))
+        var output = ""
+        for segment in segments {
+            let bRoll = preferences.includeBRoll ? scene.bRollItems.filter { $0.linkedSegmentID == segment.id } : []
+            let editing = preferences.includeEditingNotes ? scene.editingItems.filter { $0.linkedSegmentID == segment.id } : []
+            guard !bRoll.isEmpty || !editing.isEmpty else { continue }
+            output += "\(headingPrefix)\(label("export.csv.segmentText", language: language)): \(segmentPreview(segment.sourceText))\n"
+            appendProductionItems(&output, bRoll: bRoll, editing: editing, language: language)
+            output += "\n"
+        }
+        let unlinkedBRoll = preferences.includeBRoll ? scene.bRollItems.filter { $0.linkedSegmentID.map { !valid.contains($0) } ?? true } : []
+        let unlinkedEditing = preferences.includeEditingNotes ? scene.editingItems.filter { $0.linkedSegmentID.map { !valid.contains($0) } ?? true } : []
+        if !unlinkedBRoll.isEmpty || !unlinkedEditing.isEmpty {
+            output += "\(headingPrefix)\(label("production.unlinked", language: language))\n"
+            appendProductionItems(&output, bRoll: unlinkedBRoll, editing: unlinkedEditing, language: language)
+            output += "\n"
+        }
+        return output
+    }
+
+    private func appendProductionItems(_ output: inout String, bRoll: [BRollItem], editing: [EditingItem], language: AppLanguage) {
+        for item in bRoll {
+            output += "- **\(label("export.label.broll", language: language))**\n"
+            appendLine(&output, key: "export.label.source", value: label("brollSource.\(item.sourceType.rawValue)", language: language), language: language, indent: "  ")
+            appendLine(&output, key: "export.label.description", value: item.descriptionText, language: language, indent: "  ")
+            appendLine(&output, key: "export.label.notes", value: item.notes, language: language, indent: "  ")
+        }
+        for item in editing {
+            output += "- **\(label("export.label.editing", language: language))**\n"
+            appendLine(&output, key: "export.label.description", value: item.cutStyle, language: language, indent: "  ")
+            appendLine(&output, key: "export.label.notes", value: item.notes, language: language, indent: "  ")
+        }
+    }
+
+    private func csvRow(scene: Scene, segment: TextSegment?, type: String, source: String, description: String, notes: String) -> String {
+        ["\(scene.order + 1)", scene.title, segment.map { "\($0.order + 1)" } ?? "", segment?.sourceText ?? "", type, source, description, notes].map(csvEscape).joined(separator: ",")
+    }
+
+    private func segmentPreview(_ text: String) -> String {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\n", with: " ")
+        return clean.count > 100 ? "\(clean.prefix(100))…" : clean
     }
 
     private func formattedScript(_ text: String, preferences: ExportPreferences) -> String {

@@ -1,4 +1,3 @@
-import AVFoundation
 import SwiftUI
 
 struct SettingsView: View {
@@ -36,8 +35,6 @@ struct SettingsRootView: View {
                             TemplateSettings()
                         case .ai:
                             AISettings(settings: $settingsStore.settings)
-                        case .voice:
-                            VoiceSettings(settings: $settingsStore.settings)
                         case .export:
                             ExportSettings(settings: $settingsStore.settings)
                         case .advanced:
@@ -232,7 +229,11 @@ private struct AppearanceSettings: View {
         SettingsSection(title: appState.localized("settings.appearance"), resetAction: {
             settings.theme = AppSettings.defaults.theme
             settings.accentColor = AppSettings.defaults.accentColor
-            settings.windowPreferences = AppSettings.defaults.windowPreferences
+            settings.windowPreferences.sidebarDefaultVisible = AppSettings.defaults.windowPreferences.sidebarDefaultVisible
+            settings.windowPreferences.sidebarWidth = AppSettings.defaults.windowPreferences.sidebarWidth
+            settings.windowPreferences.focusModeBehavior = AppSettings.defaults.windowPreferences.focusModeBehavior
+            settings.editorPreferences.showFooterShortcuts = AppSettings.defaults.editorPreferences.showFooterShortcuts
+            settings.editorPreferences.showAIReviewPanel = AppSettings.defaults.editorPreferences.showAIReviewPanel
         }) {
             SettingsRow(appState.localized("settings.theme"), help: appState.localized("help.theme"), highlightKey: "appearance.theme") {
                 Picker("", selection: $settings.theme) {
@@ -304,11 +305,8 @@ private struct EditorSettings: View {
             settings.editorPreferences.fontSize = defaults.fontSize
             settings.editorPreferences.editorWidth = defaults.editorWidth
             settings.editorPreferences.lineHeight = defaults.lineHeight
-            settings.editorPreferences.typewriterMode = defaults.typewriterMode
-            settings.editorPreferences.focusParagraph = defaults.focusParagraph
             settings.editorPreferences.spellcheck = defaults.spellcheck
             settings.editorPreferences.smartQuotes = defaults.smartQuotes
-            settings.editorPreferences.markdownLite = defaults.markdownLite
             settings.editorPreferences.showWordCount = defaults.showWordCount
             settings.editorPreferences.showSceneDuration = defaults.showSceneDuration
             settings.editorPreferences.defaultNotesVisibility = defaults.defaultNotesVisibility
@@ -394,7 +392,7 @@ private struct TemplateSettings: View {
     var body: some View {
         @Bindable var settingsStore = appState.settingsStore
 
-        SettingsSection(title: appState.localized("settings.templates"), resetHelp: appState.localized("help.resetTemplates"), resetAction: {
+        SettingsSection(title: appState.localized("settings.templates"), resetHelp: appState.localized("help.resetTemplates"), resetTitle: appState.localized("settings.resetDefaultTemplate"), resetAction: {
             settingsStore.settings.generalPreferences.defaultNewProjectTemplate = appState.scriptTemplates().first(where: \.isBlank)?.name
                 ?? AppSettings.defaults.generalPreferences.defaultNewProjectTemplate
         }) {
@@ -467,10 +465,13 @@ private struct TemplateDetailEditor: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     @State private var draft: FrameTemplate
+    @State private var savedDraft: FrameTemplate
+    @State private var showsSavedFeedback = false
     @Binding var defaultTemplate: String
 
     init(template: FrameTemplate, defaultTemplate: Binding<String>) {
         _draft = State(initialValue: template)
+        _savedDraft = State(initialValue: template)
         _defaultTemplate = defaultTemplate
     }
 
@@ -497,6 +498,17 @@ private struct TemplateDetailEditor: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { templateActions }
                 VStack(alignment: .leading, spacing: 8) { templateActions }
+            }
+
+            if !draft.builtIn {
+                HStack(spacing: 8) {
+                    Button(appState.localized("templates.save")) { saveDraft(showFeedback: true) }
+                        .disabled(!hasUnsavedChanges)
+                    Button(appState.localized("templates.done")) { saveDraft(showFeedback: false) }
+                    if showsSavedFeedback {
+                        Text(appState.localized("templates.saved")).font(.system(size: 12)).foregroundStyle(theme.secondaryText)
+                    }
+                }
             }
 
             if draft.builtIn {
@@ -561,12 +573,12 @@ private struct TemplateDetailEditor: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .onChange(of: draft) { _, _ in saveDraft() }
         .onChange(of: draft.name) { oldValue, newValue in
             if defaultTemplate == oldValue {
                 defaultTemplate = newValue
             }
         }
+        .onDisappear { if hasUnsavedChanges { saveDraft(showFeedback: false) } }
     }
 
     @ViewBuilder
@@ -610,6 +622,7 @@ private struct TemplateDetailEditor: View {
     private func customize() {
         guard let override = appState.customizeBuiltInTemplate(draft) else { return }
         draft = override
+        savedDraft = override
     }
 
     private func addScene() {
@@ -618,7 +631,6 @@ private struct TemplateDetailEditor: View {
             guard !draft.builtIn else { return }
         }
         draft.structureDefinition.append(appState.localized("templates.defaultScene"))
-        saveDraft()
     }
 
     private func bindingForScene(at index: Int) -> Binding<String> {
@@ -639,21 +651,26 @@ private struct TemplateDetailEditor: View {
         guard draft.structureDefinition.indices.contains(index),
               draft.structureDefinition.indices.contains(nextIndex) else { return }
         draft.structureDefinition.swapAt(index, nextIndex)
-        saveDraft()
     }
 
     private func removeScene(at index: Int) {
         guard draft.structureDefinition.indices.contains(index) else { return }
         draft.structureDefinition.remove(at: index)
-        saveDraft()
     }
 
-    private func saveDraft() {
+    private var hasUnsavedChanges: Bool { draft != savedDraft }
+
+    private func saveDraft(showFeedback: Bool = false) {
         guard !draft.builtIn else { return }
         draft.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? appState.localized("templates.untitled")
             : draft.name
         appState.updateTemplate(draft)
+        savedDraft = draft
+        showsSavedFeedback = showFeedback
+        if showFeedback {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { showsSavedFeedback = false }
+        }
     }
 }
 
@@ -748,14 +765,15 @@ private struct AISettings: View {
             }
         }
         .task { loadAPIKey() }
-        .onChange(of: settings.aiPreferences.provider) { _, _ in
+        .onChange(of: settings.aiPreferences.provider) { oldProvider, newProvider in
+            saveProviderConfiguration(oldProvider)
             apiKey = ""
             status = ""
             loadAPIKey()
-            if settings.aiPreferences.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                settings.aiPreferences.baseURL = defaultBaseURL(for: settings.aiPreferences.provider)
-            }
+            loadProviderConfiguration(newProvider)
         }
+        .onChange(of: settings.aiPreferences.model) { _, _ in saveProviderConfiguration(settings.aiPreferences.provider) }
+        .onChange(of: settings.aiPreferences.baseURL) { _, _ in saveProviderConfiguration(settings.aiPreferences.provider) }
     }
 
     private var keyStatusText: String {
@@ -794,10 +812,6 @@ private struct AISettings: View {
             status = appState.localized("settings.aiDisabled")
             return
         }
-        guard settings.aiPreferences.provider == .openAICompatible || settings.aiPreferences.provider == .openRouter else {
-            status = appState.localized("settings.unsupported")
-            return
-        }
         guard hasStoredKey || !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             status = appState.localized("settings.keyMissing")
             return
@@ -833,86 +847,43 @@ private struct AISettings: View {
             "https://openrouter.ai/api/v1"
         case .openAICompatible:
             "https://api.openai.com/v1"
-        case .disabled, .anthropicCompatible, .gemini:
+        case .groq:
+            "https://api.groq.com/openai/v1"
+        case .disabled:
             ""
         }
     }
-}
 
-private struct VoiceSettings: View {
-    @Environment(AppState.self) private var appState
-    @Binding var settings: AppSettings
-    @State private var synthesizer = AVSpeechSynthesizer()
-
-    private var voices: [AVSpeechSynthesisVoice] {
-        AVSpeechSynthesisVoice.speechVoices().sorted { $0.name < $1.name }
-    }
-
-    var body: some View {
-        SettingsSection(title: appState.localized("settings.voice"), resetAction: {
-            settings.voicePreferences = AppSettings.defaults.voicePreferences
-        }) {
-            SettingsRow(appState.localized("settings.provider"), help: appState.localized("help.voiceProvider")) {
-                Picker("", selection: $settings.voicePreferences.provider) {
-                    ForEach(VoiceProviderKind.allCases) { Text(appState.displayName($0)).tag($0) }
-                }
-                .labelsHidden()
-                .frame(width: 220)
-            }
-
-            SettingsRow(appState.localized("settings.systemVoice"), help: appState.localized("help.systemVoice"), highlightKey: "voice.systemVoice") {
-                Picker("", selection: $settings.voicePreferences.voiceIdentifier) {
-                    Text(appState.localized("settings.default")).tag("")
-                    ForEach(voices, id: \.identifier) { voice in
-                        Text("\(voice.name) (\(voice.language))").tag(voice.identifier)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 300)
-            }
-
-            SettingsRow(appState.localized("settings.speed"), help: appState.localized("help.voiceSpeed")) {
-                ValueSlider(value: $settings.voicePreferences.speed, range: 0.7...1.4, suffix: "x", precision: 2)
-            }
-
-            SettingsRow(appState.localized("settings.pitch"), help: appState.localized("help.voicePitch")) {
-                ValueSlider(value: $settings.voicePreferences.pitch, range: 0.7...1.4, suffix: "x", precision: 2)
-            }
-
-            SettingsRow(appState.localized("settings.usePauses"), help: appState.localized("help.usePauses")) {
-                Toggle("", isOn: $settings.voicePreferences.pausesEnabled)
-                    .labelsHidden()
-            }
-
-            SettingsRow(appState.localized("settings.exportAudioFormat"), help: appState.localized("help.exportAudioFormat")) {
-                Text(appState.localized("voiceover.exportUnavailable"))
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-            }
-
-            SettingsRow("") {
-                HStack {
-                    Button(appState.localized("settings.previewVoice"), action: previewVoice)
-                        .clickableCursor()
-                    Button(appState.localized("settings.stop")) { synthesizer.stopSpeaking(at: .immediate) }
-                        .clickableCursor()
-                }
-            }
+    private func defaultModel(for provider: AIProviderKind) -> String {
+        switch provider {
+        case .groq: "llama-3.3-70b-versatile"
+        case .openRouter: "openai/gpt-4.1-mini"
+        case .openAICompatible: "gpt-4.1-mini"
+        case .disabled: ""
         }
     }
 
-    private func previewVoice() {
-        synthesizer.stopSpeaking(at: .immediate)
-        let preview = settings.voicePreferences.pausesEnabled
-            ? appState.localized("voice.previewText")
-            : appState.localized("voice.previewText").components(separatedBy: CharacterSet(charactersIn: ".,;:!?")).joined(separator: " ")
-        let utterance = AVSpeechUtterance(string: preview)
-        utterance.rate = Float(0.5 * settings.voicePreferences.speed)
-        utterance.pitchMultiplier = Float(settings.voicePreferences.pitch)
-        if !settings.voicePreferences.voiceIdentifier.isEmpty {
-            utterance.voice = AVSpeechSynthesisVoice(identifier: settings.voicePreferences.voiceIdentifier)
+    private func providerConfigurationKey(_ provider: AIProviderKind) -> String {
+        "FrameScript.ai.provider.\(provider.rawValue)"
+    }
+
+    private func saveProviderConfiguration(_ provider: AIProviderKind) {
+        guard provider != .disabled else { return }
+        UserDefaults.standard.set([
+            "model": settings.aiPreferences.model,
+            "baseURL": settings.aiPreferences.baseURL
+        ], forKey: providerConfigurationKey(provider))
+    }
+
+    private func loadProviderConfiguration(_ provider: AIProviderKind) {
+        guard provider != .disabled else {
+            settings.aiPreferences.model = ""
+            settings.aiPreferences.baseURL = ""
+            return
         }
-        synthesizer.speak(utterance)
+        let stored = UserDefaults.standard.dictionary(forKey: providerConfigurationKey(provider)) as? [String: String]
+        settings.aiPreferences.model = stored?["model"] ?? defaultModel(for: provider)
+        settings.aiPreferences.baseURL = stored?["baseURL"] ?? defaultBaseURL(for: provider)
     }
 }
 
@@ -1003,13 +974,15 @@ private struct SettingsSection<Content: View>: View {
     @Environment(\.frameTheme) private var theme
     let title: String
     var resetHelp: String?
+    var resetTitle: String?
     var resetAction: (() -> Void)?
     @ViewBuilder var content: Content
     @State private var showsResetFeedback = false
 
-    init(title: String, resetHelp: String? = nil, resetAction: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
+    init(title: String, resetHelp: String? = nil, resetTitle: String? = nil, resetAction: (() -> Void)? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
         self.resetHelp = resetHelp
+        self.resetTitle = resetTitle
         self.resetAction = resetAction
         self.content = content()
     }
@@ -1031,7 +1004,7 @@ private struct SettingsSection<Content: View>: View {
                     if let resetHelp {
                         SettingsInfoButton(text: resetHelp)
                     }
-                    Button(appState.localized("settings.resetSection")) {
+                    Button(resetTitle ?? appState.localized("settings.resetSection")) {
                         resetAction()
                         withAnimation(.easeOut(duration: 0.15)) {
                             showsResetFeedback = true
