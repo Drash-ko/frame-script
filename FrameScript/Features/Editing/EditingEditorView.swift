@@ -72,9 +72,17 @@ struct EditingEditorView: View {
     private func linkMenu(_ item: EditingItem) -> some View {
         Menu {
             ForEach(Array(scene.textSegments.sortedByOrder.enumerated()), id: \.element.id) { index, segment in
-                Button(segmentTitle(index, segment)) { item.linkedSegmentID = segment.id; appState.touchProject() }
+                Button(segmentTitle(index, segment)) {
+                    item.linkedSegmentID = segment.id
+                    item.textAnchor = appState.projectStore.anchor(for: segment.id, in: scene)
+                    appState.touchProject()
+                }
             }
-            Divider(); Button(appState.localized("production.unlinked")) { item.linkedSegmentID = nil; appState.touchProject() }
+            Divider(); Button(appState.localized("production.unlinked")) {
+                item.linkedSegmentID = nil
+                item.textAnchor = nil
+                appState.touchProject()
+            }
         } label: { Label(linkLabel(item), systemImage: "link").font(.system(size: 12, weight: .medium)) }
         .menuStyle(.borderlessButton).fixedSize()
     }
@@ -83,10 +91,10 @@ struct EditingEditorView: View {
     private var unlinkedItems: [EditingItem] {
         let ids = Set(scene.textSegments.map(\.id)); return scene.editingItems.filter { $0.linkedSegmentID.map { !ids.contains($0) } ?? true }
     }
-    private func addEmptyItem(linkedTo id: UUID) { scene.editingItems.append(EditingItem(linkedSegmentID: id, templateType: "", cutStyle: "", transition: "", subtitleStyle: "")); appState.touchProject() }
-    private func addItem(from preset: EditingPreset, linkedTo id: UUID) { scene.editingItems.append(EditingItem(linkedSegmentID: id, templateType: "", cutStyle: preset.description(appState), transition: "", subtitleStyle: "", notes: preset.notes(appState))); appState.touchProject() }
+    private func addEmptyItem(linkedTo id: UUID) { scene.editingItems.append(EditingItem(textAnchor: appState.projectStore.anchor(for: id, in: scene), linkedSegmentID: id, templateType: "", cutStyle: "", transition: "", subtitleStyle: "")); appState.touchProject() }
+    private func addItem(from preset: EditingPreset, linkedTo id: UUID) { scene.editingItems.append(EditingItem(textAnchor: appState.projectStore.anchor(for: id, in: scene), linkedSegmentID: id, templateType: "", cutStyle: preset.description(appState), transition: "", subtitleStyle: "", notes: preset.notes(appState))); appState.touchProject() }
     private func duplicateItem(_ item: EditingItem) {
-        let copy = EditingItem(linkedSegmentID: item.linkedSegmentID, templateType: "", cutStyle: item.cutStyle, transition: "", subtitleStyle: "", notes: item.notes)
+        let copy = EditingItem(textAnchor: item.textAnchor, linkedSegmentID: item.linkedSegmentID, templateType: "", cutStyle: item.cutStyle, transition: "", subtitleStyle: "", notes: item.notes)
         if let index = scene.editingItems.firstIndex(where: { $0.id == item.id }) { scene.editingItems.insert(copy, at: index + 1) } else { scene.editingItems.append(copy) }; appState.touchProject()
     }
     private func deleteItem(_ item: EditingItem) { scene.editingItems.removeAll { $0.id == item.id }; appState.touchProject() }

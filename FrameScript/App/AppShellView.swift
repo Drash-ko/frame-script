@@ -1,11 +1,8 @@
-import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct AppRootView: View {
     @Environment(AppState.self) private var appState
-    @Environment(\.modelContext) private var modelContext
-    @Query(sort: \FrameProject.updatedAt, order: .reverse) private var projects: [FrameProject]
 
     var body: some View {
         @Bindable var windowState = appState.windowState
@@ -17,7 +14,7 @@ struct AppRootView: View {
             }
         }
             .task {
-                appState.configure(modelContext: modelContext, existingProjects: projects)
+                appState.configure()
             }
             .sheet(item: $windowState.newProjectRequest) { request in
                 Group {

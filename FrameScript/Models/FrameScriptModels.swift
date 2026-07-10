@@ -1,5 +1,5 @@
 import Foundation
-import SwiftData
+import Observation
 
 enum WorkspaceMode: String, Codable, CaseIterable, Identifiable {
     case script = "Script"
@@ -82,16 +82,36 @@ enum TemplateCategory: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-@Model
-final class FrameProject {
-    @Attribute(.unique) var id: UUID
+struct TextAnchor: Codable, Hashable {
+    var startUTF16: Int
+    var lengthUTF16: Int
+    var selectedText: String
+    var prefixContext: String
+    var suffixContext: String
+
+    var nsRange: NSRange {
+        NSRange(location: startUTF16, length: lengthUTF16)
+    }
+
+    init(startUTF16: Int, lengthUTF16: Int, selectedText: String, prefixContext: String = "", suffixContext: String = "") {
+        self.startUTF16 = max(0, startUTF16)
+        self.lengthUTF16 = max(0, lengthUTF16)
+        self.selectedText = selectedText
+        self.prefixContext = prefixContext
+        self.suffixContext = suffixContext
+    }
+}
+
+@Observable
+final class FrameProject: Identifiable {
+    var id: UUID
     var title: String
     var createdAt: Date
     var updatedAt: Date
     var templateID: UUID?
     var settingsOverride: ProjectSettingsOverride?
     var exportPresets: [ExportPreset]
-    @Relationship(deleteRule: .cascade) var scenes: [Scene]
+    var scenes: [Scene]
 
     init(
         id: UUID = UUID(),
@@ -114,19 +134,19 @@ final class FrameProject {
     }
 }
 
-@Model
-final class Scene {
-    @Attribute(.unique) var id: UUID
+@Observable
+final class Scene: Identifiable {
+    var id: UUID
     var order: Int
     var sectionType: SectionType
     var title: String
     var scriptText: String
     var notes: String
     var estimatedDuration: TimeInterval
-    @Relationship(deleteRule: .cascade) var textSegments: [TextSegment]
-    @Relationship(deleteRule: .cascade) var aiComments: [AIComment]
-    @Relationship(deleteRule: .cascade) var bRollItems: [BRollItem]
-    @Relationship(deleteRule: .cascade) var editingItems: [EditingItem]
+    var textSegments: [TextSegment]
+    var aiComments: [AIComment]
+    var bRollItems: [BRollItem]
+    var editingItems: [EditingItem]
 
     init(
         id: UUID = UUID(),
@@ -155,9 +175,9 @@ final class Scene {
     }
 }
 
-@Model
-final class TextSegment {
-    @Attribute(.unique) var id: UUID
+@Observable
+final class TextSegment: Identifiable {
+    var id: UUID
     var sceneID: UUID
     var order: Int
     var sourceText: String
@@ -181,9 +201,10 @@ final class TextSegment {
     }
 }
 
-@Model
-final class BRollItem {
-    @Attribute(.unique) var id: UUID
+@Observable
+final class BRollItem: Identifiable {
+    var id: UUID
+    var textAnchor: TextAnchor?
     var linkedSegmentID: UUID?
     var templateType: String
     var sourceType: BRollSourceType
@@ -197,6 +218,7 @@ final class BRollItem {
 
     init(
         id: UUID = UUID(),
+        textAnchor: TextAnchor? = nil,
         linkedSegmentID: UUID? = nil,
         templateType: String,
         sourceType: BRollSourceType,
@@ -209,6 +231,7 @@ final class BRollItem {
         status: BRollStatus = .idea
     ) {
         self.id = id
+        self.textAnchor = textAnchor
         self.linkedSegmentID = linkedSegmentID
         self.templateType = templateType
         self.sourceType = sourceType
@@ -222,9 +245,10 @@ final class BRollItem {
     }
 }
 
-@Model
-final class EditingItem {
-    @Attribute(.unique) var id: UUID
+@Observable
+final class EditingItem: Identifiable {
+    var id: UUID
+    var textAnchor: TextAnchor?
     var linkedSegmentID: UUID?
     var templateType: String
     var cutStyle: String
@@ -239,6 +263,7 @@ final class EditingItem {
 
     init(
         id: UUID = UUID(),
+        textAnchor: TextAnchor? = nil,
         linkedSegmentID: UUID? = nil,
         templateType: String,
         cutStyle: String,
@@ -252,6 +277,7 @@ final class EditingItem {
         notes: String = ""
     ) {
         self.id = id
+        self.textAnchor = textAnchor
         self.linkedSegmentID = linkedSegmentID
         self.templateType = templateType
         self.cutStyle = cutStyle
@@ -266,9 +292,9 @@ final class EditingItem {
     }
 }
 
-@Model
-final class AIComment {
-    @Attribute(.unique) var id: UUID
+@Observable
+final class AIComment: Identifiable {
+    var id: UUID
     var sceneID: UUID?
     var segmentID: UUID?
     var type: String

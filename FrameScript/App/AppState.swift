@@ -1,7 +1,6 @@
 import Foundation
 import AppKit
 import Observation
-import SwiftData
 import SwiftUI
 
 private struct GeneratedBRollSuggestion: Decodable {
@@ -85,6 +84,7 @@ final class AppState {
     var templates: [FrameTemplate]
     private let builtInTemplates: [FrameTemplate]
     private var autosaveTask: Task<Void, Never>?
+    private var segmentRebuildTasks: [UUID: Task<Void, Never>] = [:]
 
     init(
         projectStore: ProjectStore = ProjectStore(),
@@ -109,15 +109,12 @@ final class AppState {
         self.projectStore.setSegmentSplitMode(settingsStore.settings.generalPreferences.defaultSplitMode)
     }
 
-    func configure(modelContext: ModelContext, existingProjects: [FrameProject]) {
+    func configure() {
         projectStore.configure(
-            modelContext: modelContext,
-            existingProjects: existingProjects,
             restoreLastProjectOnLaunch: settings.generalPreferences.restoreLastProjectOnLaunch && !settings.generalPreferences.showProjectBrowserOnLaunch,
             wordsPerMinute: settings.editorPreferences.wordsPerMinute
         )
         projectStore.setSegmentSplitMode(settings.generalPreferences.defaultSplitMode)
-        projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
         if editorState.selectedSceneID == nil {
             editorState.selectedSceneID = project.scenes.first?.id
         }
@@ -255,7 +252,7 @@ final class AppState {
 
     func openProject() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.frameScript]
+        panel.allowedContentTypes = [.frameScript, .frameScriptLegacy]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -299,7 +296,7 @@ final class AppState {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.frameScript]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = "\(project.title).framescript"
+        panel.nameFieldStringValue = "\(project.title).fscr"
         panel.message = localized("dialog.saveProject.message")
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         do {
@@ -378,8 +375,19 @@ final class AppState {
     }
 
     func touchProject() {
+        projectStore.markProjectDirty()
+        scheduleAutosaveIfNeeded()
+    }
+
+    func touchCurrentSceneText() {
+        guard let scene = selectedScene else {
+            touchProject()
+            return
+        }
         projectStore.setSegmentSplitMode(settings.generalPreferences.defaultSplitMode)
-        projectStore.touch(wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+        projectStore.updateCurrentSceneMetrics(sceneID: scene.id, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+        projectStore.markProjectDirty()
+        scheduleSegmentRebuild(for: scene.id)
         scheduleAutosaveIfNeeded()
     }
 
@@ -390,6 +398,26 @@ final class AppState {
             markUnsaved: markUnsaved
         )
         scheduleAutosaveIfNeeded()
+    }
+
+    func addBRollItem(sceneID: UUID, anchor: TextAnchor) {
+        guard let scene = project.scenes.first(where: { $0.id == sceneID }) else { return }
+        scene.bRollItems.append(BRollItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", sourceType: .custom, descriptionText: anchor.selectedText))
+        editorState.selectedMode = .bRoll
+        touchProject()
+    }
+
+    func addEditingItem(sceneID: UUID, anchor: TextAnchor) {
+        guard let scene = project.scenes.first(where: { $0.id == sceneID }) else { return }
+        scene.editingItems.append(EditingItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", cutStyle: anchor.selectedText, transition: "", subtitleStyle: ""))
+        editorState.selectedMode = .editing
+        touchProject()
+    }
+
+    func selectProductionItem(_ itemID: UUID, mode: WorkspaceMode) {
+        editorState.selectedProductionItemID = itemID
+        editorState.selectedProductionSegmentID = projectStore.segmentID(forProductionItem: itemID, mode: mode)
+        editorState.selectedMode = mode
     }
 
     func addScene() {
@@ -499,12 +527,12 @@ final class AppState {
                 let value = try JSONDecoder().decode(GeneratedBRollSuggestion.self, from: data)
                 guard !value.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GenerationError.emptyDescription }
                 let source = BRollSourceType.allCases.first { $0.rawValue.caseInsensitiveCompare(value.source) == .orderedSame } ?? .custom
-                scene.bRollItems.append(BRollItem(linkedSegmentID: segment.id, templateType: "", sourceType: source, descriptionText: value.description, notes: value.notes))
+                scene.bRollItems.append(BRollItem(textAnchor: projectStore.anchor(for: segment.id, in: scene), linkedSegmentID: segment.id, templateType: "", sourceType: source, descriptionText: value.description, notes: value.notes))
                 selectedMode = .bRoll
             case .editingGeneration:
                 let value = try JSONDecoder().decode(GeneratedEditingSuggestion.self, from: data)
                 guard !value.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GenerationError.emptyDescription }
-                scene.editingItems.append(EditingItem(linkedSegmentID: segment.id, templateType: "", cutStyle: value.description, transition: "", subtitleStyle: "", notes: value.notes))
+                scene.editingItems.append(EditingItem(textAnchor: projectStore.anchor(for: segment.id, in: scene), linkedSegmentID: segment.id, templateType: "", cutStyle: value.description, transition: "", subtitleStyle: "", notes: value.notes))
                 selectedMode = .editing
             default: return
             }
@@ -623,9 +651,32 @@ final class AppState {
         }
         let delay = UInt64(settings.generalPreferences.autosaveIntervalSeconds) * 1_000_000_000
         autosaveTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: delay)
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
             guard !Task.isCancelled else { return }
             self?.performAutosave()
+        }
+    }
+
+    private func scheduleSegmentRebuild(for sceneID: UUID) {
+        segmentRebuildTasks[sceneID]?.cancel()
+        segmentRebuildTasks[sceneID] = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 320_000_000)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.projectStore.synchronizeTextSegments(
+                forSceneID: sceneID,
+                splitMode: self.settings.generalPreferences.defaultSplitMode,
+                wordsPerMinute: self.settings.editorPreferences.wordsPerMinute,
+                markUnsaved: false
+            )
+            self.segmentRebuildTasks[sceneID] = nil
         }
     }
 
@@ -895,7 +946,6 @@ final class ProjectStore {
         case missingFileURL
     }
 
-    private var modelContext: ModelContext?
     private var isConfigured = false
     private(set) var project: FrameProject
     private(set) var hasOpenProject = false
@@ -917,22 +967,20 @@ final class ProjectStore {
     }
 
     func configure(
-        modelContext: ModelContext,
-        existingProjects: [FrameProject],
         restoreLastProjectOnLaunch: Bool,
         wordsPerMinute: Int
     ) {
-        self.modelContext = modelContext
-        if modelContext.undoManager == nil {
-            modelContext.undoManager = UndoManager()
-        }
-        if !isConfigured,
-           restoreLastProjectOnLaunch,
-           let newest = existingProjects.sorted(by: { $0.updatedAt > $1.updatedAt }).first {
-            project = newest
-            hasOpenProject = true
-            hasUnsavedFileChanges = false
-            saveState = .saved
+        if !isConfigured, restoreLastProjectOnLaunch {
+            pruneMissingRecentProjectURLs()
+            if let url = recentProjectURLs.first {
+                do {
+                    let restoredProject = try FrameScriptFileStore.read(from: url)
+                    openProject(restoredProject, fileURL: url, wordsPerMinute: wordsPerMinute, markUnsaved: false)
+                } catch {
+                    recentProjectURLs.removeAll { $0.path == url.path }
+                    UserDefaults.standard.set(recentProjectURLs.map(\.path), forKey: recentProjectsKey)
+                }
+            }
         }
         isConfigured = true
         recalculateDurations(wordsPerMinute: wordsPerMinute)
@@ -942,12 +990,10 @@ final class ProjectStore {
         self.project = project
         currentFileURL = fileURL
         hasOpenProject = true
-        modelContext?.insert(project)
         if let fileURL {
             rememberRecentProject(fileURL)
         }
         recalculateDurations(wordsPerMinute: wordsPerMinute)
-        try? modelContext?.save()
         hasUnsavedFileChanges = markUnsaved || fileURL == nil
         saveState = hasUnsavedFileChanges ? .edited : .saved
     }
@@ -1018,6 +1064,7 @@ final class ProjectStore {
                     },
                     bRollItems: scene.bRollItems.map {
                         BRollItem(
+                            textAnchor: $0.textAnchor,
                             linkedSegmentID: mappedSegmentID($0.linkedSegmentID, oldSegments: oldSegments, newSegments: segments, oldToNewSegmentIDs: oldToNewSegmentIDs),
                             templateType: $0.templateType,
                             sourceType: $0.sourceType,
@@ -1032,6 +1079,7 @@ final class ProjectStore {
                     },
                     editingItems: scene.editingItems.map {
                         EditingItem(
+                            textAnchor: $0.textAnchor,
                             linkedSegmentID: mappedSegmentID($0.linkedSegmentID, oldSegments: oldSegments, newSegments: segments, oldToNewSegmentIDs: oldToNewSegmentIDs),
                             templateType: $0.templateType,
                             cutStyle: $0.cutStyle,
@@ -1050,7 +1098,6 @@ final class ProjectStore {
             settingsOverride: project.settingsOverride,
             exportPresets: project.exportPresets
         )
-        modelContext?.insert(copy)
         project = copy
         currentFileURL = nil
         hasOpenProject = true
@@ -1060,8 +1107,6 @@ final class ProjectStore {
     }
 
     func deleteCurrentProject() {
-        modelContext?.delete(project)
-        try? modelContext?.save()
         project = SampleData.defaultProject
         currentFileURL = nil
         hasOpenProject = false
@@ -1098,7 +1143,8 @@ final class ProjectStore {
     func addScene(_ scene: Scene, wordsPerMinute: Int) {
         project.scenes.append(scene)
         normalizeSceneOrder()
-        touch(wordsPerMinute: wordsPerMinute)
+        updateCurrentSceneMetrics(sceneID: scene.id, wordsPerMinute: wordsPerMinute)
+        markProjectDirty()
     }
 
     func addScene(_ scene: Scene, afterSortedIndex index: Int, wordsPerMinute: Int) {
@@ -1108,7 +1154,8 @@ final class ProjectStore {
         scene.order = index + 1
         project.scenes.append(scene)
         normalizeSceneOrder()
-        touch(wordsPerMinute: wordsPerMinute)
+        updateCurrentSceneMetrics(sceneID: scene.id, wordsPerMinute: wordsPerMinute)
+        markProjectDirty()
     }
 
     func duplicate(_ scene: Scene, copySuffix: String) -> Scene {
@@ -1148,6 +1195,7 @@ final class ProjectStore {
             },
             bRollItems: scene.bRollItems.map {
                 BRollItem(
+                    textAnchor: $0.textAnchor,
                     linkedSegmentID: mappedSegmentID($0.linkedSegmentID, oldSegments: oldSegments, newSegments: segments, oldToNewSegmentIDs: oldToNewSegmentIDs),
                     templateType: $0.templateType,
                     sourceType: $0.sourceType,
@@ -1162,6 +1210,7 @@ final class ProjectStore {
             },
             editingItems: scene.editingItems.map {
                 EditingItem(
+                    textAnchor: $0.textAnchor,
                     linkedSegmentID: mappedSegmentID($0.linkedSegmentID, oldSegments: oldSegments, newSegments: segments, oldToNewSegmentIDs: oldToNewSegmentIDs),
                     templateType: $0.templateType,
                     cutStyle: $0.cutStyle,
@@ -1202,9 +1251,8 @@ final class ProjectStore {
             return
         }
         project.scenes.remove(at: storageIndex)
-        modelContext?.delete(scene)
         normalizeSceneOrder()
-        touch(wordsPerMinute: wordsPerMinute)
+        markProjectDirty()
     }
 
     func moveScene(at sortedIndex: Int, by delta: Int, wordsPerMinute: Int) {
@@ -1217,17 +1265,18 @@ final class ProjectStore {
         }
         swap(&sourceScene.order, &destinationScene.order)
         normalizeSceneOrder()
-        touch(wordsPerMinute: wordsPerMinute)
+        markProjectDirty()
     }
 
-    func touch(wordsPerMinute: Int) {
-        synchronizeTextSegments(splitMode: segmentSplitMode, wordsPerMinute: wordsPerMinute, markUnsaved: false)
-        recalculateDurations(wordsPerMinute: wordsPerMinute)
+    func markProjectDirty() {
         project.updatedAt = Date()
-        saveState = .autosaving
-        try? modelContext?.save()
         hasUnsavedFileChanges = true
         saveState = .edited
+    }
+
+    func updateCurrentSceneMetrics(sceneID: UUID, wordsPerMinute: Int) {
+        guard let scene = project.scenes.first(where: { $0.id == sceneID }) else { return }
+        scene.estimatedDuration = DurationEstimator.estimate(text: scene.scriptText, wordsPerMinute: wordsPerMinute)
     }
 
     private func prepareForSave(wordsPerMinute: Int) {
@@ -1235,7 +1284,6 @@ final class ProjectStore {
         recalculateDurations(wordsPerMinute: wordsPerMinute)
         project.updatedAt = Date()
         saveState = .autosaving
-        try? modelContext?.save()
     }
 
     func synchronizeTextSegments(splitMode: SegmentType, wordsPerMinute: Int, markUnsaved: Bool = true) {
@@ -1245,7 +1293,18 @@ final class ProjectStore {
         }
         recalculateDurations(wordsPerMinute: wordsPerMinute)
         project.updatedAt = Date()
-        try? modelContext?.save()
+        if markUnsaved {
+            hasUnsavedFileChanges = true
+            saveState = .edited
+        }
+    }
+
+    func synchronizeTextSegments(forSceneID sceneID: UUID, splitMode: SegmentType, wordsPerMinute: Int, markUnsaved: Bool = true) {
+        segmentSplitMode = splitMode
+        guard let scene = project.scenes.first(where: { $0.id == sceneID }) else { return }
+        synchronizeTextSegments(for: scene, splitMode: splitMode, wordsPerMinute: wordsPerMinute)
+        scene.estimatedDuration = DurationEstimator.estimate(text: scene.scriptText, wordsPerMinute: wordsPerMinute)
+        project.updatedAt = Date()
         if markUnsaved {
             hasUnsavedFileChanges = true
             saveState = .edited
@@ -1288,15 +1347,54 @@ final class ProjectStore {
 
         let validIDs = Set(nextSegments.map(\.id))
         for item in scene.bRollItems {
+            if let repaired = TextAnchorRepair.repair(item.textAnchor, in: scene.scriptText) {
+                item.textAnchor = repaired
+            } else if item.textAnchor != nil {
+                item.textAnchor = nil
+            }
             guard let linkedID = item.linkedSegmentID, !validIDs.contains(linkedID) else { continue }
             item.linkedSegmentID = oldToNewIDs[linkedID] ?? nearestSegmentID(linkedID)
+            if item.textAnchor == nil, let segmentID = item.linkedSegmentID, let segment = nextSegments.first(where: { $0.id == segmentID }) {
+                item.textAnchor = TextAnchorRepair.anchor(for: segment, in: scene.scriptText)
+            }
         }
         for item in scene.editingItems {
+            if let repaired = TextAnchorRepair.repair(item.textAnchor, in: scene.scriptText) {
+                item.textAnchor = repaired
+            } else if item.textAnchor != nil {
+                item.textAnchor = nil
+            }
             guard let linkedID = item.linkedSegmentID, !validIDs.contains(linkedID) else { continue }
             item.linkedSegmentID = oldToNewIDs[linkedID] ?? nearestSegmentID(linkedID)
+            if item.textAnchor == nil, let segmentID = item.linkedSegmentID, let segment = nextSegments.first(where: { $0.id == segmentID }) {
+                item.textAnchor = TextAnchorRepair.anchor(for: segment, in: scene.scriptText)
+            }
         }
 
         scene.textSegments = nextSegments
+    }
+
+    func anchor(for segmentID: UUID, in scene: Scene) -> TextAnchor? {
+        guard let segment = scene.textSegments.first(where: { $0.id == segmentID }) else { return nil }
+        return TextAnchorRepair.anchor(for: segment, in: scene.scriptText)
+    }
+
+    func segmentID(forProductionItem itemID: UUID, mode: WorkspaceMode) -> UUID? {
+        for scene in project.scenes {
+            switch mode {
+            case .bRoll:
+                if let item = scene.bRollItems.first(where: { $0.id == itemID }) {
+                    return item.linkedSegmentID
+                }
+            case .editing:
+                if let item = scene.editingItems.first(where: { $0.id == itemID }) {
+                    return item.linkedSegmentID
+                }
+            case .script:
+                continue
+            }
+        }
+        return nil
     }
 
     private func recalculateDurations(wordsPerMinute: Int) {
@@ -1321,6 +1419,11 @@ final class ProjectStore {
         UserDefaults.standard.set(recentProjectURLs.map(\.path), forKey: recentProjectsKey)
     }
 
+    private func pruneMissingRecentProjectURLs() {
+        recentProjectURLs = recentProjectURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
+        UserDefaults.standard.set(recentProjectURLs.map(\.path), forKey: recentProjectsKey)
+    }
+
     func clearRecentProjects() {
         recentProjectURLs = []
         UserDefaults.standard.removeObject(forKey: recentProjectsKey)
@@ -1332,7 +1435,104 @@ final class EditorState {
     var selectedMode: WorkspaceMode = .script
     var selectedSceneID: UUID?
     var selectedProductionSegmentID: UUID?
+    var selectedProductionItemID: UUID?
     var isFocusModeEnabled = false
+}
+
+enum TextAnchorRepair {
+    private static let contextLength = 48
+
+    static func anchor(for segment: TextSegment, in text: String) -> TextAnchor? {
+        let full = text as NSString
+        guard full.length > 0, !segment.sourceText.isEmpty else { return nil }
+        var searchStart = 0
+        let candidates = TextSegmenter.segmentTexts(in: text, splitMode: segment.segmentType)
+        for candidate in candidates {
+            let searchRange = NSRange(location: searchStart, length: max(0, full.length - searchStart))
+            let found = full.range(of: candidate, options: [], range: searchRange)
+            guard found.location != NSNotFound else { continue }
+            if TextSegmenter.normalized(candidate) == TextSegmenter.normalized(segment.sourceText) {
+                return anchor(in: text, range: found)
+            }
+            searchStart = NSMaxRange(found)
+        }
+        let fallback = full.range(of: segment.sourceText)
+        return fallback.location == NSNotFound ? nil : anchor(in: text, range: fallback)
+    }
+
+    static func anchor(in text: String, range: NSRange) -> TextAnchor? {
+        let full = text as NSString
+        let bounded = clamp(range, toLength: full.length)
+        guard bounded.length > 0, NSMaxRange(bounded) <= full.length else { return nil }
+        let selected = full.substring(with: bounded)
+        return TextAnchor(
+            startUTF16: bounded.location,
+            lengthUTF16: bounded.length,
+            selectedText: selected,
+            prefixContext: full.substring(with: NSRange(location: max(0, bounded.location - contextLength), length: bounded.location - max(0, bounded.location - contextLength))),
+            suffixContext: full.substring(with: NSRange(location: NSMaxRange(bounded), length: min(contextLength, full.length - NSMaxRange(bounded))))
+        )
+    }
+
+    static func repair(_ anchor: TextAnchor?, in text: String) -> TextAnchor? {
+        guard let anchor else { return nil }
+        let full = text as NSString
+        guard anchor.lengthUTF16 >= 0, anchor.startUTF16 >= 0, !anchor.selectedText.isEmpty else { return nil }
+        let stored = NSRange(location: anchor.startUTF16, length: anchor.lengthUTF16)
+        if NSMaxRange(stored) <= full.length, full.substring(with: stored) == anchor.selectedText {
+            return self.anchor(in: text, range: stored)
+        }
+
+        let searchRange = nearbySearchRange(previousOffset: anchor.startUTF16, textLength: full.length)
+        let local = full.range(of: anchor.selectedText, options: [], range: searchRange)
+        if local.location != NSNotFound, contextsMatch(anchor: anchor, text: full, range: local) {
+            return self.anchor(in: text, range: local)
+        }
+
+        let global = nearestOccurrence(of: anchor.selectedText, in: full, near: anchor.startUTF16)
+        guard global.location != NSNotFound, contextsMatch(anchor: anchor, text: full, range: global) else { return nil }
+        return self.anchor(in: text, range: global)
+    }
+
+    private static func nearbySearchRange(previousOffset: Int, textLength: Int) -> NSRange {
+        let radius = max(256, contextLength * 4)
+        let start = max(0, previousOffset - radius)
+        let end = min(textLength, previousOffset + radius)
+        return NSRange(location: start, length: max(0, end - start))
+    }
+
+    private static func nearestOccurrence(of selectedText: String, in text: NSString, near offset: Int) -> NSRange {
+        var best = NSRange(location: NSNotFound, length: 0)
+        var bestDistance = Int.max
+        var searchStart = 0
+        while searchStart < text.length {
+            let found = text.range(of: selectedText, options: [], range: NSRange(location: searchStart, length: text.length - searchStart))
+            guard found.location != NSNotFound else { break }
+            let distance = abs(found.location - offset)
+            if distance < bestDistance {
+                best = found
+                bestDistance = distance
+            }
+            searchStart = max(NSMaxRange(found), found.location + 1)
+        }
+        return best
+    }
+
+    private static func contextsMatch(anchor: TextAnchor, text: NSString, range: NSRange) -> Bool {
+        let beforeStart = max(0, range.location - contextLength)
+        let before = text.substring(with: NSRange(location: beforeStart, length: range.location - beforeStart))
+        let afterLength = min(contextLength, text.length - NSMaxRange(range))
+        let after = text.substring(with: NSRange(location: NSMaxRange(range), length: afterLength))
+        let prefixOK = anchor.prefixContext.isEmpty || before.hasSuffix(anchor.prefixContext) || anchor.prefixContext.hasSuffix(before)
+        let suffixOK = anchor.suffixContext.isEmpty || after.hasPrefix(anchor.suffixContext) || anchor.suffixContext.hasPrefix(after)
+        return prefixOK && suffixOK
+    }
+
+    private static func clamp(_ range: NSRange, toLength length: Int) -> NSRange {
+        let location = min(max(0, range.location), length)
+        let maxLength = max(0, length - location)
+        return NSRange(location: location, length: min(max(0, range.length), maxLength))
+    }
 }
 
 @Observable

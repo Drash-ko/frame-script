@@ -2,7 +2,8 @@ import Foundation
 import UniformTypeIdentifiers
 
 extension UTType {
-    static let frameScript = UTType(exportedAs: "com.framescript.project")
+    static let frameScript = UTType(exportedAs: "com.drashko.framescript.project", conformingTo: .json)
+    static let frameScriptLegacy = UTType(filenameExtension: "framescript") ?? UTType(importedAs: "com.drashko.framescript.legacy-project", conformingTo: .json)
 }
 
 struct FrameScriptFile: Codable {
@@ -10,16 +11,33 @@ struct FrameScriptFile: Codable {
     var project: ProjectDTO
 
     init(project: FrameProject) {
-        fileVersion = 2
+        fileVersion = 3
         self.project = ProjectDTO(project: project)
     }
 
-    func makeProject() -> FrameProject {
-        project.makeProject()
+    func makeProject() throws -> FrameProject {
+        guard (1...3).contains(fileVersion) else {
+            throw FrameScriptFileError.unsupportedVersion(fileVersion)
+        }
+        return try project.makeProject(fileVersion: fileVersion)
     }
 }
 
-// DTOs keep the public file format stable while SwiftData models stay free to
+enum FrameScriptFileError: LocalizedError {
+    case unsupportedVersion(Int)
+    case duplicateSceneID(UUID)
+    case invalidAnchor
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedVersion(let version): "Unsupported FrameScript project file version \(version)."
+        case .duplicateSceneID: "The project file contains duplicate scene identifiers."
+        case .invalidAnchor: "The project file contains an invalid text anchor."
+        }
+    }
+}
+
+// DTOs keep the public file format stable while runtime models remain free to
 // evolve with app-only relationships and derived state.
 struct ProjectDTO: Codable {
     var id: UUID
@@ -42,8 +60,12 @@ struct ProjectDTO: Codable {
         exportPresets = project.exportPresets
     }
 
-    func makeProject() -> FrameProject {
-        FrameProject(
+    func makeProject(fileVersion: Int) throws -> FrameProject {
+        let sceneIDs = scenes.map(\.id)
+        guard Set(sceneIDs).count == sceneIDs.count else {
+            throw FrameScriptFileError.duplicateSceneID(sceneIDs.first ?? UUID())
+        }
+        let project = FrameProject(
             id: id,
             title: title,
             createdAt: createdAt,
@@ -53,6 +75,35 @@ struct ProjectDTO: Codable {
             settingsOverride: settingsOverride,
             exportPresets: exportPresets
         )
+        try validateAndMigrate(project: project, fileVersion: fileVersion)
+        return project
+    }
+
+    private func validateAndMigrate(project: FrameProject, fileVersion: Int) throws {
+        for scene in project.scenes {
+            let textLength = (scene.scriptText as NSString).length
+            for item in scene.bRollItems {
+                if item.textAnchor == nil, let linkedID = item.linkedSegmentID, let segment = scene.textSegments.first(where: { $0.id == linkedID }) {
+                    item.textAnchor = TextAnchorRepair.anchor(for: segment, in: scene.scriptText)
+                }
+                try validate(item.textAnchor, textLength: textLength)
+            }
+            for item in scene.editingItems {
+                if item.textAnchor == nil, let linkedID = item.linkedSegmentID, let segment = scene.textSegments.first(where: { $0.id == linkedID }) {
+                    item.textAnchor = TextAnchorRepair.anchor(for: segment, in: scene.scriptText)
+                }
+                try validate(item.textAnchor, textLength: textLength)
+            }
+        }
+    }
+
+    private func validate(_ anchor: TextAnchor?, textLength: Int) throws {
+        guard let anchor else { return }
+        guard anchor.startUTF16 >= 0,
+              anchor.lengthUTF16 >= 0,
+              anchor.startUTF16 + anchor.lengthUTF16 <= textLength else {
+            throw FrameScriptFileError.invalidAnchor
+        }
     }
 }
 
@@ -131,6 +182,7 @@ struct TextSegmentDTO: Codable {
 
 struct BRollItemDTO: Codable {
     var id: UUID
+    var textAnchor: TextAnchor?
     var linkedSegmentID: UUID?
     var sourceType: BRollSourceType
     var descriptionText: String
@@ -138,6 +190,7 @@ struct BRollItemDTO: Codable {
 
     init(item: BRollItem) {
         id = item.id
+        textAnchor = item.textAnchor
         linkedSegmentID = item.linkedSegmentID
         sourceType = item.sourceType
         descriptionText = item.descriptionText
@@ -147,6 +200,7 @@ struct BRollItemDTO: Codable {
     func makeBRollItem() -> BRollItem {
         BRollItem(
             id: id,
+            textAnchor: textAnchor,
             linkedSegmentID: linkedSegmentID,
             templateType: "",
             sourceType: sourceType,
@@ -155,27 +209,30 @@ struct BRollItemDTO: Codable {
         )
     }
 
-    enum CodingKeys: String, CodingKey { case id, linkedSegmentID, sourceType, descriptionText, notes }
+    enum CodingKeys: String, CodingKey { case id, textAnchor, linkedSegmentID, sourceType, descriptionText, notes }
 }
 
 struct EditingItemDTO: Codable {
     var id: UUID
+    var textAnchor: TextAnchor?
     var linkedSegmentID: UUID?
     var description: String
     var notes: String
 
     init(item: EditingItem) {
         id = item.id
+        textAnchor = item.textAnchor
         linkedSegmentID = item.linkedSegmentID
         description = item.cutStyle
         notes = item.notes
     }
 
-    enum CodingKeys: String, CodingKey { case id, linkedSegmentID, description, cutStyle, notes }
+    enum CodingKeys: String, CodingKey { case id, textAnchor, linkedSegmentID, description, cutStyle, notes }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
+        textAnchor = try container.decodeIfPresent(TextAnchor.self, forKey: .textAnchor)
         linkedSegmentID = try container.decodeIfPresent(UUID.self, forKey: .linkedSegmentID)
         description = try container.decodeIfPresent(String.self, forKey: .description)
             ?? container.decodeIfPresent(String.self, forKey: .cutStyle)
@@ -186,6 +243,7 @@ struct EditingItemDTO: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(textAnchor, forKey: .textAnchor)
         try container.encodeIfPresent(linkedSegmentID, forKey: .linkedSegmentID)
         try container.encode(description, forKey: .description)
         try container.encode(notes, forKey: .notes)
@@ -194,6 +252,7 @@ struct EditingItemDTO: Codable {
     func makeEditingItem() -> EditingItem {
         EditingItem(
             id: id,
+            textAnchor: textAnchor,
             linkedSegmentID: linkedSegmentID,
             templateType: "",
             cutStyle: description,
@@ -242,7 +301,7 @@ struct AICommentDTO: Codable {
 enum FrameScriptFileStore {
     static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         return encoder
     }()

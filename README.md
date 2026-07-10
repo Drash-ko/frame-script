@@ -28,7 +28,7 @@ Then select the `FrameScript` scheme, choose `My Mac`, and press `Cmd+R`.
 - Scene-based script editor with English and Russian UI strings.
 - Script, B-roll, and editing modes over the same scene structure.
 - Built-in templates for blank, standard YouTube, educational, storytelling, product review, commentary/essay, and tutorial projects.
-- Project save/open using `.framescript` files.
+- Project save/open using `.fscr` files, with legacy `.framescript` import support.
 - Export as plain text, Markdown, CSV, or production outline.
 - AI review and production suggestions for OpenAI-compatible providers, OpenRouter, and Groq when configured with API keys.
 - API keys are stored in the macOS Keychain, not in project files.
@@ -42,7 +42,7 @@ FrameScript/
   Components/          Shared toolbar, sidebar, form, editor UI
   Core/                Theme, localization, duration utilities
   Features/            Script, B-roll, Editing, AI, Settings, commands
-  Models/              SwiftData models, settings, built-in templates, demo data
+  Models/              Observable document models, settings, built-in templates, demo data
   Services/            AI, export, file storage, Keychain
   Assets.xcassets      App icon and assets
 docs/

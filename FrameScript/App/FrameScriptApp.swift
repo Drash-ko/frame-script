@@ -1,27 +1,9 @@
-import SwiftData
 import SwiftUI
 
 @main
 struct FrameScriptApp: App {
     @State private var appState = AppState()
     @Environment(\.openSettings) private var openSettings
-
-    private var modelContainer: ModelContainer = {
-        let schema = Schema([
-            FrameProject.self,
-            Scene.self,
-            TextSegment.self,
-            BRollItem.self,
-            EditingItem.self,
-            AIComment.self
-        ])
-        let configuration = ModelConfiguration(schema: schema)
-        do {
-            return try ModelContainer(for: schema, configurations: [configuration])
-        } catch {
-            fatalError("Unable to create FrameScript model container: \(error)")
-        }
-    }()
 
     var body: some SwiftUI.Scene {
         WindowGroup {
@@ -30,7 +12,6 @@ struct FrameScriptApp: App {
             }
             .environment(appState)
         }
-        .modelContainer(modelContainer)
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 760)
         .commands {
@@ -43,7 +24,6 @@ struct FrameScriptApp: App {
             }
                 .environment(appState)
         }
-        .modelContainer(modelContainer)
     }
 
     @CommandsBuilder

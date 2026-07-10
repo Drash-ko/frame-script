@@ -102,10 +102,18 @@ struct BRollEditorView: View {
     private func linkMenu(_ item: BRollItem) -> some View {
         Menu {
             ForEach(Array(scene.textSegments.sortedByOrder.enumerated()), id: \.element.id) { index, segment in
-                Button(segmentTitle(index, segment)) { item.linkedSegmentID = segment.id; appState.touchProject() }
+                Button(segmentTitle(index, segment)) {
+                    item.linkedSegmentID = segment.id
+                    item.textAnchor = appState.projectStore.anchor(for: segment.id, in: scene)
+                    appState.touchProject()
+                }
             }
             Divider()
-            Button(appState.localized("production.unlinked")) { item.linkedSegmentID = nil; appState.touchProject() }
+            Button(appState.localized("production.unlinked")) {
+                item.linkedSegmentID = nil
+                item.textAnchor = nil
+                appState.touchProject()
+            }
         } label: { Label(linkLabel(item), systemImage: "link").font(.system(size: 12, weight: .medium)) }
         .menuStyle(.borderlessButton).fixedSize()
     }
@@ -115,13 +123,13 @@ struct BRollEditorView: View {
         let ids = Set(scene.textSegments.map(\.id)); return scene.bRollItems.filter { $0.linkedSegmentID.map { !ids.contains($0) } ?? true }
     }
     private func addEmptyItem(linkedTo id: UUID) {
-        scene.bRollItems.append(BRollItem(linkedSegmentID: id, templateType: "", sourceType: .custom, descriptionText: "")); appState.touchProject()
+        scene.bRollItems.append(BRollItem(textAnchor: appState.projectStore.anchor(for: id, in: scene), linkedSegmentID: id, templateType: "", sourceType: .custom, descriptionText: "")); appState.touchProject()
     }
     private func addItem(from preset: BRollPreset, linkedTo id: UUID) {
-        scene.bRollItems.append(BRollItem(linkedSegmentID: id, templateType: "", sourceType: preset.source, descriptionText: preset.description(appState), notes: preset.notes(appState))); appState.touchProject()
+        scene.bRollItems.append(BRollItem(textAnchor: appState.projectStore.anchor(for: id, in: scene), linkedSegmentID: id, templateType: "", sourceType: preset.source, descriptionText: preset.description(appState), notes: preset.notes(appState))); appState.touchProject()
     }
     private func duplicateItem(_ item: BRollItem) {
-        let copy = BRollItem(linkedSegmentID: item.linkedSegmentID, templateType: "", sourceType: item.sourceType, descriptionText: item.descriptionText, notes: item.notes)
+        let copy = BRollItem(textAnchor: item.textAnchor, linkedSegmentID: item.linkedSegmentID, templateType: "", sourceType: item.sourceType, descriptionText: item.descriptionText, notes: item.notes)
         if let index = scene.bRollItems.firstIndex(where: { $0.id == item.id }) { scene.bRollItems.insert(copy, at: index + 1) } else { scene.bRollItems.append(copy) }
         appState.touchProject()
     }

@@ -3,7 +3,7 @@ import Security
 
 enum KeychainStore {
     /// API keys stay in the user's login Keychain and are never serialized into
-    /// `.framescript` project files or sample data.
+    /// `.fscr` project files or sample data.
     static func saveAPIKey(_ key: String, account: String) throws {
         let data = Data(key.utf8)
         let query: [String: Any] = [
