@@ -29,7 +29,7 @@
 - Prevented stale SwiftUI revisions from replacing newer editor text while still applying external rewrites.
 - Restored the compact Script, B-roll, and Editing mode controls.
 - Improved autosave, structured AI response, Recent Project, Keychain, and file-operation error handling.
-- Updated editor metrics immediately after committed text edits, including untitled projects.
+- Updated word count plus editor, sidebar, and total project durations on every committed keystroke, including untitled projects and before autosave.
 - Localized ModeSwitcher accessibility state.
 - Avoided rewriting unchanged Recent Project storage during validation.
 - Removed silent failure handling from critical persistence and provider operations.

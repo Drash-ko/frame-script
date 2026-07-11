@@ -569,8 +569,11 @@ final class AppState {
         commitScriptTextChange(sceneID: sceneID)
     }
 
-    func commitScriptTextChange(sceneID: UUID) {
+    func commitScriptTextChange(sceneID: UUID, text: String? = nil) {
         projectStore.setSegmentSplitMode(settings.generalPreferences.defaultSplitMode)
+        if let text {
+            projectStore.commitScriptText(text, sceneID: sceneID)
+        }
         projectStore.updateCurrentSceneMetrics(sceneID: sceneID, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
         projectStore.markProjectDirty()
         scheduleSegmentRebuild(for: sceneID)
@@ -1402,9 +1405,14 @@ final class ProjectStore {
     private(set) var saveState: SaveState = .saved
     private(set) var hasUnsavedFileChanges = false
     private var segmentSplitMode: SegmentType = AppSettings.defaults.generalPreferences.defaultSplitMode
+    private let projectWriter: (FrameProject, URL) throws -> Void
 
-    init(project: FrameProject = SampleData.defaultProject) {
+    init(
+        project: FrameProject = SampleData.defaultProject,
+        projectWriter: @escaping (FrameProject, URL) throws -> Void = FrameScriptFileStore.write
+    ) {
         self.project = project
+        self.projectWriter = projectWriter
         recalculateDurations(wordsPerMinute: AppSettings.defaults.editorPreferences.wordsPerMinute)
     }
 
@@ -1445,7 +1453,7 @@ final class ProjectStore {
     func saveCurrentProject(to url: URL, wordsPerMinute: Int) throws {
         prepareForSave(wordsPerMinute: wordsPerMinute)
         do {
-            try FrameScriptFileStore.write(project: project, to: url)
+            try projectWriter(project, url)
         } catch {
             hasUnsavedFileChanges = true
             saveState = .edited
@@ -1705,6 +1713,11 @@ final class ProjectStore {
         project.updatedAt = Date()
         hasUnsavedFileChanges = true
         saveState = .edited
+    }
+
+    func commitScriptText(_ text: String, sceneID: UUID) {
+        guard let scene = project.scenes.first(where: { $0.id == sceneID }) else { return }
+        scene.scriptText = text
     }
 
     func updateCurrentSceneMetrics(sceneID: UUID, wordsPerMinute: Int) {

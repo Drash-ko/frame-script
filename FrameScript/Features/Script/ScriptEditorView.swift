@@ -37,7 +37,9 @@ struct ScriptEditorView: View {
                 editingColor: NSColor(theme.editingMarker),
                 addBRollLabel: appState.localized("production.addBRollForSelection"),
                 addEditingLabel: appState.localized("production.addEditingForSelection"),
-                onTextCommitted: { appState.commitScriptTextChange(sceneID: scene.id) },
+                onTextCommitted: { text in
+                    appState.commitScriptTextChange(sceneID: scene.id, text: text)
+                },
                 autocomplete: { context in await appState.autocompleteScript(context: context) },
                 onTeardown: { appState.flushActiveEditorBoundary() },
                 markerAction: appState.selectProductionItem,
@@ -176,7 +178,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
     let editingColor: NSColor
     let addBRollLabel: String
     let addEditingLabel: String
-    let onTextCommitted: () -> Void
+    let onTextCommitted: (String) -> Void
     let autocomplete: (String) async -> String?
     let onTeardown: () -> Void
     let markerAction: (UUID, WorkspaceMode) -> Void
@@ -348,7 +350,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             guard !isApplyingProgrammaticUpdate else { return }
-            _ = emitCurrentText(from: textView, origin: .user)
+            _ = emitCurrentText(from: textView, origin: .user, forceCommit: true)
             scheduleAutocomplete(for: textView)
             view?.invalidateMarkerGeometry()
             view?.needsDisplay = true
@@ -367,7 +369,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
         }
 
         @discardableResult
-        private func emitCurrentText(from textView: NSTextView, origin: ChangeOrigin) -> Bool {
+        private func emitCurrentText(from textView: NSTextView, origin: ChangeOrigin, forceCommit: Bool = false) -> Bool {
             let value = textView.string
             let changed = parent.text != value
             changeOrigin = origin
@@ -377,7 +379,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 pendingUserRevision = userRevision
             }
             parent.text = value
-            if changed { parent.onTextCommitted() }
+            if changed || forceCommit { parent.onTextCommitted(value) }
             return changed
         }
 

@@ -26,6 +26,7 @@ Then select the `FrameScript` scheme, choose `My Mac`, and press `Cmd+R`.
 ## Features
 
 - Scene-based script editor with English and Russian UI strings.
+- Live word counts and scene, sidebar, and project duration estimates update from each edit, independently of saving; saved projects still coalesce rapid edits into a single autosave.
 - Script, Visuals, and Editing workspaces over the same scene structure.
 - Built-in templates for blank, standard YouTube, educational, storytelling, product review, commentary/essay, and tutorial projects.
 - Project save/open using `.fscr` files, with legacy `.framescript` import support.

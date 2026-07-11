@@ -31,6 +31,99 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(box.value, "Exact new text")
     }
 
+    func testConsecutiveEditorEditsCommitTextAndMetricsBeforeAutosave() throws {
+        var writes = 0
+        let (appState, scene, _) = makeAppState(fileURL: temporaryProjectURL()) { project, url in
+            writes += 1
+            try FrameScriptFileStore.write(project: project, to: url)
+        }
+        let (coordinator, view) = makeCoordinator(appState: appState, scene: scene)
+
+        for text in ["one two", "one two three", "one two three four"] {
+            view.textView.string = text
+            coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+            XCTAssertEqual(scene.scriptText, text)
+            XCTAssertEqual(scene.estimatedDuration, DurationEstimator.estimate(text: text, wordsPerMinute: 150))
+        }
+
+        XCTAssertEqual(scene.scriptText.split { $0.isWhitespace || $0.isNewline }.count, 4)
+        XCTAssertEqual(writes, 0)
+        XCTAssertEqual(appState.saveState, .edited)
+    }
+
+    func testSceneAndTotalDurationObservationInvalidateFromEditorEdit() {
+        let first = Scene(order: 0, sectionType: .custom, title: "One", scriptText: "one")
+        let second = Scene(order: 1, sectionType: .custom, title: "Two", scriptText: "one two three")
+        let project = FrameProject(title: "Project", scenes: [first, second])
+        let (appState, _, _) = makeAppState(project: project, fileURL: nil)
+        let (coordinator, view) = makeCoordinator(appState: appState, scene: first)
+        nonisolated(unsafe) var invalidated = false
+        withObservationTracking {
+            _ = first.estimatedDuration
+            _ = appState.totalDuration
+        } onChange: {
+            invalidated = true
+        }
+
+        view.textView.string = "one two three four five six"
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+
+        let firstDuration = DurationEstimator.estimate(text: first.scriptText, wordsPerMinute: 150)
+        let secondDuration = DurationEstimator.estimate(text: second.scriptText, wordsPerMinute: 150)
+        XCTAssertEqual(first.estimatedDuration, firstDuration)
+        XCTAssertEqual(appState.totalDuration, firstDuration + secondDuration)
+        XCTAssertTrue(invalidated)
+    }
+
+    func testUntitledEditorEditUpdatesMetricsWithoutSaveAs() {
+        let (appState, scene, _) = makeAppState(fileURL: nil)
+        let (coordinator, view) = makeCoordinator(appState: appState, scene: scene)
+
+        view.textView.string = "untitled projects update right now"
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+
+        XCTAssertEqual(scene.scriptText, "untitled projects update right now")
+        XCTAssertEqual(scene.estimatedDuration, DurationEstimator.estimate(text: scene.scriptText, wordsPerMinute: 150))
+        XCTAssertNil(appState.projectStore.currentFileURL)
+        XCTAssertEqual(appState.saveState, .edited)
+    }
+
+    func testRapidEditorEditsCoalesceIntoOneAutosave() async throws {
+        let fileURL = temporaryProjectURL()
+        var writes = 0
+        let (appState, scene, _) = makeAppState(fileURL: fileURL) { project, url in
+            writes += 1
+            try FrameScriptFileStore.write(project: project, to: url)
+        }
+        let (coordinator, view) = makeCoordinator(appState: appState, scene: scene)
+
+        for text in ["first", "first second", "first second third"] {
+            view.textView.string = text
+            coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        }
+        try await Task.sleep(for: .milliseconds(140))
+
+        XCTAssertEqual(writes, 1)
+        XCTAssertEqual(appState.saveState, .saved)
+        XCTAssertEqual(try FrameScriptFileStore.read(from: fileURL).scenes.first?.scriptText, "first second third")
+    }
+
+    func testFailedAutosaveAfterEditorEditLeavesProjectDirty() async throws {
+        enum WriteFailure: Error { case expected }
+        let (appState, scene, _) = makeAppState(fileURL: temporaryProjectURL()) { _, _ in
+            throw WriteFailure.expected
+        }
+        let (coordinator, view) = makeCoordinator(appState: appState, scene: scene)
+
+        view.textView.string = "this write will fail"
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertTrue(appState.projectStore.hasUnsavedFileChanges)
+        XCTAssertEqual(appState.saveState, .edited)
+        XCTAssertEqual(appState.errorCenter.presentedError?.kind, .autosave)
+    }
+
     func testStaleRepresentableUpdateCannotReplaceLastUserText() {
         var emitted = ""
         let staleBinding = Binding<String>(get: { "Old model value" }, set: { emitted = $0 })
@@ -284,6 +377,7 @@ final class EditorPersistenceTests: XCTestCase {
         text: Binding<String>,
         loadState: @escaping () -> ScriptEditorRestorationState? = { nil },
         saveState: @escaping (ScriptEditorRestorationState) -> Void = { _ in },
+        onTextCommitted: @escaping (String) -> Void = { _ in },
         onTeardown: @escaping () -> Void = {}
     ) -> LinkedScriptTextView {
         LinkedScriptTextView(
@@ -305,7 +399,7 @@ final class EditorPersistenceTests: XCTestCase {
             editingColor: .systemGreen,
             addBRollLabel: "B-roll",
             addEditingLabel: "Editing",
-            onTextCommitted: {},
+            onTextCommitted: onTextCommitted,
             autocomplete: { _ in nil },
             onTeardown: onTeardown,
             markerAction: { _, _ in },
@@ -315,11 +409,12 @@ final class EditorPersistenceTests: XCTestCase {
 
     private func makeAppState(
         project: FrameProject? = nil,
-        fileURL: URL?
+        fileURL: URL?,
+        projectWriter: @escaping (FrameProject, URL) throws -> Void = FrameScriptFileStore.write
     ) -> (AppState, FrameScript.Scene, UserDefaults) {
         let scene = project?.scenes.first ?? Scene(order: 0, sectionType: .custom, title: "Scene", scriptText: "")
         let project = project ?? FrameProject(title: "Project", scenes: [scene])
-        let store = ProjectStore(project: project)
+        let store = ProjectStore(project: project, projectWriter: projectWriter)
         store.openProject(project, fileURL: fileURL, wordsPerMinute: 150, markUnsaved: false)
         let suite = UserDefaults(suiteName: "EditorPersistenceTests-\(UUID().uuidString)")!
         var settings = AppSettings.defaults
@@ -333,5 +428,22 @@ final class EditorPersistenceTests: XCTestCase {
         appState.editorState.selectedSceneID = scene.id
         appState.editorState.selectedMode = .script
         return (appState, scene, suite)
+    }
+
+    private func makeCoordinator(appState: AppState, scene: FrameScript.Scene) -> (LinkedScriptTextView.Coordinator, MarkerTextContainerView) {
+        let parent = makeRepresentable(
+            text: Binding(get: { scene.scriptText }, set: { _ in }),
+            onTextCommitted: { text in appState.commitScriptTextChange(sceneID: scene.id, text: text) }
+        )
+        let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
+        let view = MarkerTextContainerView()
+        coordinator.attach(to: view)
+        coordinator.applyModelTextIfNeeded()
+        return (coordinator, view)
+    }
+
+    private func temporaryProjectURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("EditorPersistenceTests-\(UUID().uuidString).fscr")
     }
 }
