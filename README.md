@@ -30,7 +30,7 @@ Then select the `FrameScript` scheme, choose `My Mac`, and press `Cmd+R`.
 - Built-in templates for blank, standard YouTube, educational, storytelling, product review, commentary/essay, and tutorial projects.
 - Project save/open using `.fscr` files, with legacy `.framescript` import support.
 - Export as plain text, Markdown, CSV, or production outline.
-- AI review, rewrites, inline autocomplete, and production suggestions for OpenAI-compatible endpoints, OpenRouter, Groq, and Google AI Studio when configured with API keys. Inline completion uses a short local context, appears as ghost text, accepts with Tab, and dismisses with Escape. AI output follows the script's dominant language, falling back to the interface language for empty scripts.
+- AI review, rewrites, inline autocomplete, and production suggestions for OpenAI-compatible endpoints, OpenRouter, Groq, and Google AI Studio when configured with API keys. Inline completion uses a short local context, appears as ghost text, accepts with Tab, and dismisses with Escape. AI output follows the script's dominant language, falling back to the resolved macOS language when the interface uses System.
 - API keys are stored in the macOS Keychain, not in project files.
 
 ## Project Structure
@@ -53,9 +53,9 @@ Built-in templates are defined in `FrameScript/Models/SampleData.swift`.
 
 ## Privacy And Security
 
-FrameScript project files contain project content only. AI provider keys entered in Settings are stored through the macOS Keychain under the `FrameScript` service name. Keychain keeps credentials out of UserDefaults, project files, exports, logs, and source-controlled configuration. FrameScript reads a selected provider's key only when testing that connection or making an AI request; opening Settings only consults local saved-key metadata.
+FrameScript project files contain project content only. AI provider keys entered in Settings are stored through the macOS Keychain under the `FrameScript` service name. Keychain keeps credentials out of UserDefaults, project files, exports, logs, and source-controlled configuration. FrameScript reads each selected provider's key on its first connection test or AI request in an app session, keeps it only in process memory, and reuses it until that key is saved, replaced, or deleted. Opening or navigating Settings only consults local saved-key metadata.
 
-AI review responses use a small validated structure, so malformed provider text is never inserted into the review panel. Existing review notes remain visible while a new analysis runs or if it fails.
+AI review requests use a documented JSON schema and centrally validate plain, fenced, and harmlessly wrapped structured responses, so malformed provider text and parser diagnostics are never inserted into the review panel or alerts. Existing review notes remain visible while a new analysis runs or if it fails.
 
 ## AI Connection Troubleshooting
 

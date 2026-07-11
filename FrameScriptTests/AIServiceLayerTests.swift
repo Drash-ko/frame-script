@@ -13,6 +13,13 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertTrue(prompts.systemPrompt(for: .bRollGeneration, language: .english).contains("English"))
     }
 
+    func testSystemFallbackResolvesMacOSLanguage() {
+        let prompts = PromptBuilder()
+
+        XCTAssertEqual(prompts.responseLanguage(for: "", fallback: .system, preferredLanguages: ["ru-RU"]), .russian)
+        XCTAssertEqual(prompts.responseLanguage(for: "", fallback: .system, preferredLanguages: ["en-GB"]), .english)
+    }
+
     func testAnalysisAcceptsOnlyCompleteStructuredResponseFields() async throws {
         let project = SampleData.demoProject(language: .english)
         let scene = try XCTUnwrap(project.scenes.first)
@@ -20,7 +27,7 @@ final class AIServiceLayerTests: XCTestCase {
         settings.provider = .openAICompatible
 
         let service = AnalysisService(provider: StaticResponseProvider(text: #"{"title":"Hook","severity":"suggestion","message":"Make the opening more concrete.","suggestion":"Name the viewer's immediate benefit."}"#))
-        let comments = try await service.analyze(scene: scene, project: project, settings: settings, interfaceLanguage: .english)
+        let comments = try await service.analyze(scene: scene, project: project, settings: settings, interfaceLanguage: .english, apiKey: "secret")
 
         XCTAssertEqual(comments.first?.type, "Hook")
         XCTAssertEqual(comments.first?.message, "Make the opening more concrete.")
@@ -34,7 +41,7 @@ final class AIServiceLayerTests: XCTestCase {
         let service = AnalysisService(provider: StaticResponseProvider(text: "**broken raw output"))
 
         do {
-            _ = try await service.analyze(scene: scene, project: project, settings: settings, interfaceLanguage: .english)
+            _ = try await service.analyze(scene: scene, project: project, settings: settings, interfaceLanguage: .english, apiKey: "secret")
             XCTFail("Expected malformed structured analysis")
         } catch let error as LLMProviderError {
             guard case .malformedResponse = error else { return XCTFail("Wrong error: \(error)") }
@@ -42,12 +49,55 @@ final class AIServiceLayerTests: XCTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
+
+    func testStructuredAnalysisDecodesPlainFencedWrappedAndExtraFields() throws {
+        let object = #"{"title":"Hook","severity":"suggestion","message":"Make the opening concrete.","suggestion":"Name the immediate benefit.","ignored":true}"#
+        let values = [
+            object,
+            "```json\n\(object)\n```",
+            "{\"analysis\":\(object)}",
+            "[\(object)]"
+        ]
+
+        for value in values {
+            XCTAssertEqual(try AnalysisResponse.decode(from: value).title, "Hook")
+        }
+    }
+
+    func testStructuredAnalysisRejectsIncompleteProse() {
+        for value in ["This scene needs a stronger hook.", #"{"title":"Hook","severity":"note","message":"Incomplete"}"#] {
+            XCTAssertThrowsError(try AnalysisResponse.decode(from: value))
+        }
+    }
+
+    func testOneAnalysisReadsKeyOnceAndSecondAnalysisAddsNoRead() async throws {
+        var reads = 0
+        let session = ProviderCredentialSession(reader: { _ in reads += 1; return "secret" })
+        let response = #"{"title":"Hook","severity":"suggestion","message":"Make the opening concrete.","suggestion":"Name the immediate benefit."}"#
+        let provider = StaticResponseProvider(text: response)
+        let dependencies = AppDependencies(
+            rewriteService: RewriteService(provider: provider),
+            analysisService: AnalysisService(provider: provider),
+            exportService: ExportService(),
+            llmProvider: provider,
+            providerCredentials: session
+        )
+        let appState = AppState(dependencies: dependencies)
+        appState.openDemoProject()
+        appState.settings.aiPreferences.provider = .openRouter
+
+        await appState.analyzeSelectedScene()
+        XCTAssertEqual(reads, 1)
+        await appState.analyzeSelectedScene()
+        XCTAssertEqual(reads, 1)
+    }
     func testConnectionTrimsKeyExactlyBeforeStorage() async throws {
         var stored = ""
         var tested = false
         try await AIConnectionTester.saveKeyAndTest(
             pendingAPIKey: "  secret-key\n",
             saveKey: { stored = $0 },
+            acquireKey: { "stored-key" },
             request: makeRequest(),
             test: { _, key in
                 XCTAssertEqual(key, "secret-key")
@@ -65,6 +115,7 @@ final class AIServiceLayerTests: XCTestCase {
             try await AIConnectionTester.saveKeyAndTest(
                 pendingAPIKey: "secret",
                 saveKey: { _ in throw Expected.storage },
+                acquireKey: { "stored-key" },
                 request: makeRequest(),
                 test: { _, _ in tested = true }
             )
@@ -85,7 +136,7 @@ final class AIServiceLayerTests: XCTestCase {
         var request = makeRequest()
         request.model = "gemini/custom model"
 
-        try await provider.testConnection(request: request)
+        try await provider.testConnection(request: request, apiKey: "secret")
 
         XCTAssertEqual(captured?.httpMethod, "GET")
         XCTAssertEqual(captured?.url?.absoluteString, "https://generativelanguage.googleapis.com/v1beta/openai/models/gemini%2Fcustom%20model")
@@ -98,7 +149,7 @@ final class AIServiceLayerTests: XCTestCase {
                 self.response(status: status, url: request.url!, body: #"{"error":{"message":"failure","status":"STATUS","code":1}}"#)
             }
             do {
-                try await provider.testConnection(request: makeRequest())
+                try await provider.testConnection(request: makeRequest(), apiKey: "secret")
                 XCTFail("Expected HTTP failure")
             } catch let error as LLMProviderError {
                 XCTAssertEqual(error, .httpStatus(status, "STATUS · 1"))
@@ -111,7 +162,7 @@ final class AIServiceLayerTests: XCTestCase {
             self.response(status: 200, url: request.url!, body: #"{"unexpected":true}"#)
         }
         do {
-            try await malformed.testConnection(request: makeRequest())
+            try await malformed.testConnection(request: makeRequest(), apiKey: "secret")
             XCTFail("Expected malformed response")
         } catch let error as LLMProviderError {
             guard case .malformedResponse = error else { return XCTFail("Wrong error: \(error)") }
@@ -123,7 +174,7 @@ final class AIServiceLayerTests: XCTestCase {
     func testGoogleConnectionMapsTransportFailureToNetworkError() async {
         let provider = makeProvider { _ in throw URLError(.notConnectedToInternet) }
         do {
-            try await provider.testConnection(request: makeRequest())
+            try await provider.testConnection(request: makeRequest(), apiKey: "secret")
             XCTFail("Expected network failure")
         } catch let error as LLMProviderError {
             XCTAssertEqual(error, .network(String(URLError.Code.notConnectedToInternet.rawValue)))
@@ -132,58 +183,72 @@ final class AIServiceLayerTests: XCTestCase {
         }
     }
 
-    func testEveryProviderConnectionReadsKeyExactlyOnce() async throws {
-        for providerKind in [AIProviderKind.openAICompatible, .openRouter, .groq, .googleAIStudio] {
-            var reads = 0
-            let provider = OpenAICompatibleLLMProvider(
-                transport: { request in
-                    if providerKind == .googleAIStudio {
-                        return self.response(status: 200, url: request.url!, body: #"{"id":"models/gemini"}"#)
-                    }
-                    return self.response(status: 200, url: request.url!, body: #"{"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}"#)
-                },
-                apiKeyReader: { _ in reads += 1; return "secret" }
-            )
-            var request = makeRequest()
-            request.provider = providerKind
-            request.baseURL = OpenAICompatibleLLMProvider.defaultBaseURL(for: providerKind)
-            request.model = AIProviderConfigurationStore.defaultModel(for: providerKind)
+    func testCredentialSessionReadsOnceThenReusesKey() throws {
+        var reads = 0
+        let session = ProviderCredentialSession(reader: { _ in reads += 1; return "secret" })
 
-            try await provider.testConnection(request: request)
-
-            XCTAssertEqual(reads, 1, "\(providerKind) should read Keychain once")
-        }
+        XCTAssertEqual(try session.apiKey(for: .openRouter), "secret")
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(try session.apiKey(for: .openRouter), "secret")
+        XCTAssertEqual(reads, 1)
     }
 
-    func testSuppliedSavedKeySkipsKeychainRead() async throws {
+    func testCredentialSaveAndDeleteInvalidationRequiresNextRead() throws {
         var reads = 0
-        let provider = OpenAICompatibleLLMProvider(
-            transport: { request in
-                self.response(status: 200, url: request.url!, body: #"{"id":"models/gemini"}"#)
-            },
-            apiKeyReader: { _ in reads += 1; return "unexpected" }
-        )
+        let session = ProviderCredentialSession(reader: { _ in reads += 1; return "secret-\(reads)" })
 
-        try await provider.testConnection(request: makeRequest(), apiKey: "saved-in-memory")
+        XCTAssertEqual(try session.apiKey(for: .groq), "secret-1")
+        session.invalidate(for: .groq)
+        XCTAssertEqual(try session.apiKey(for: .groq), "secret-2")
+        session.invalidate(for: .groq)
+        XCTAssertEqual(try session.apiKey(for: .groq), "secret-3")
+    }
 
+    func testSettingsNavigationDoesNotReadCredentials() {
+        var reads = 0
+        let session = ProviderCredentialSession(reader: { _ in reads += 1; return "secret" })
+        let provider = StaticResponseProvider(text: "unused")
+        let appState = AppState(dependencies: AppDependencies(
+            rewriteService: RewriteService(provider: provider),
+            analysisService: AnalysisService(provider: provider),
+            exportService: ExportService(),
+            llmProvider: provider,
+            providerCredentials: session
+        ))
+
+        appState.openSettings()
+        appState.openSettings(tab: .ai)
         XCTAssertEqual(reads, 0)
     }
 
-    func testGenerationReadsKeyExactlyOnce() async throws {
-        var reads = 0
-        let provider = OpenAICompatibleLLMProvider(
-            transport: { request in
-                self.response(status: 200, url: request.url!, body: #"{"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}"#)
-            },
-            apiKeyReader: { _ in reads += 1; return "secret" }
-        )
+    func testProviderUsesExplicitKeyWithoutCredentialLookup() async throws {
+        var authorization = ""
+        let provider = OpenAICompatibleLLMProvider(transport: { request in
+            authorization = request.value(forHTTPHeaderField: "Authorization") ?? ""
+            return self.response(status: 200, url: request.url!, body: #"{"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}"#)
+        })
         var request = makeRequest()
         request.provider = .openRouter
         request.baseURL = OpenAICompatibleLLMProvider.defaultBaseURL(for: .openRouter)
 
-        _ = try await provider.complete(request: request)
+        _ = try await provider.complete(request: request, apiKey: "secret")
+        XCTAssertEqual(authorization, "Bearer secret")
+    }
 
-        XCTAssertEqual(reads, 1)
+    func testAnalysisRequestIncludesJSONSchemaResponseFormat() async throws {
+        var body: [String: Any] = [:]
+        let provider = OpenAICompatibleLLMProvider(transport: { request in
+            body = try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any] ?? [:]
+            return self.response(status: 200, url: request.url!, body: #"{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}"#)
+        })
+        var request = makeRequest()
+        request.task = .analyze
+
+        _ = try await provider.complete(request: request, apiKey: "secret")
+
+        let format = try XCTUnwrap(body["response_format"] as? [String: Any])
+        XCTAssertEqual(format["type"] as? String, "json_schema")
+        XCTAssertNotNil(format["json_schema"])
     }
 
     func testStringAndTextPartArrayContentsDecode() async throws {
@@ -194,8 +259,8 @@ final class AIServiceLayerTests: XCTestCase {
             self.response(status: 200, url: request.url!, body: #"{"choices":[{"message":{"content":[{"type":"text","text":"Hello "},{"type":"text","text":"world"}]},"finish_reason":"stop"}]}"#)
         }
 
-        let stringResponse = try await stringProvider.complete(request: makeRequest())
-        let partsResponse = try await partsProvider.complete(request: makeRequest())
+        let stringResponse = try await stringProvider.complete(request: makeRequest(), apiKey: "secret")
+        let partsResponse = try await partsProvider.complete(request: makeRequest(), apiKey: "secret")
         XCTAssertEqual(stringResponse.text, "Hello")
         XCTAssertEqual(partsResponse.text, "Hello world")
     }
@@ -205,7 +270,7 @@ final class AIServiceLayerTests: XCTestCase {
             self.response(status: 200, url: request.url!, body: #"{"choices":[{"message":{"content":null},"finish_reason":"length"}]}"#)
         }
         do {
-            _ = try await provider.complete(request: makeRequest())
+            _ = try await provider.complete(request: makeRequest(), apiKey: "secret")
             XCTFail("Expected token limit diagnostic")
         } catch let error as LLMProviderError {
             XCTAssertEqual(error, .malformedResponse("The provider reached its token limit before returning text."))
@@ -217,7 +282,7 @@ final class AIServiceLayerTests: XCTestCase {
     private func makeProvider(
         transport: @escaping OpenAICompatibleLLMProvider.Transport
     ) -> OpenAICompatibleLLMProvider {
-        OpenAICompatibleLLMProvider(transport: transport, apiKeyReader: { _ in "secret" })
+        OpenAICompatibleLLMProvider(transport: transport)
     }
 
     private func makeRequest() -> LLMRequest {
@@ -248,7 +313,7 @@ final class AIServiceLayerTests: XCTestCase {
 private struct StaticResponseProvider: LLMProviderProtocol {
     let text: String
 
-    func complete(request: LLMRequest) async throws -> LLMResponse {
+    func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
         LLMResponse(text: text)
     }
 }

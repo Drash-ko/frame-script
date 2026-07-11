@@ -84,8 +84,7 @@ struct AppError: Identifiable, LocalizedError, Equatable, Sendable {
         if let fileName = context.fileName, !fileName.isEmpty {
             message += " \(String(format: L10n.tr("error.fileName", language: language), fileName))"
         }
-        if let reason = context.reason, !reason.isEmpty,
-           [.aiProvider, .aiMalformedResponse].contains(kind) {
+        if let reason = context.reason, !reason.isEmpty, kind == .aiProvider {
             message += " \(reason)"
         }
         let suggestion = recoveryAction.map {
@@ -302,7 +301,7 @@ extension AppError {
             case .network(let code):
                 return AppError(kind: .aiNetwork, context: AppErrorContext(diagnosticCode: code))
             case .malformedResponse(let reason):
-                return AppError(kind: .aiMalformedResponse, context: AppErrorContext(reason: reason))
+                return AppError(kind: .aiMalformedResponse, context: AppErrorContext(diagnosticCode: reason))
             }
         }
         if let urlError = error as? URLError {

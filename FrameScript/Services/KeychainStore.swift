@@ -13,12 +13,12 @@ enum KeychainStore {
             kSecAttrService as String: "FrameScript",
             kSecAttrAccount as String: account
         ]
-        let attributes = [kSecValueData as String: data]
-        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess { return }
-        guard updateStatus == errSecItemNotFound else {
-            logger.error("Keychain update failed. Status: \(updateStatus, privacy: .private)")
-            throw KeychainError.unhandledStatus(updateStatus)
+        // Saving is the explicit replacement action. Recreate the item without
+        // preserving access-control attributes from older restricted entries.
+        let deleteStatus = SecItemDelete(query as CFDictionary)
+        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
+            logger.error("Keychain replacement delete failed. Status: \(deleteStatus, privacy: .private)")
+            throw KeychainError.unhandledStatus(deleteStatus)
         }
 
         var addAttributes = query

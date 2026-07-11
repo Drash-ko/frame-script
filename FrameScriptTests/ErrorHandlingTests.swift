@@ -139,6 +139,16 @@ final class ErrorHandlingTests: XCTestCase {
         XCTAssertEqual(AppError.ai(GenerationError.invalidJSON)?.kind, .aiMalformedResponse)
     }
 
+    func testMalformedResponseAlertsNeverExposeParserDiagnostics() throws {
+        let error = try XCTUnwrap(AppError.ai(LLMProviderError.malformedResponse("The provider did not return a structured analysis response.")))
+
+        for language in [AppLanguage.english, .russian] {
+            let message = error.presentation(language: language).message
+            XCTAssertFalse(message.contains("structured analysis response"))
+            XCTAssertFalse(message.contains("analysis.invalid"))
+        }
+    }
+
     func testFailedKeychainSavePreventsAIConnectionRequest() async {
         enum ExpectedFailure: Error { case keychain }
         var didRequestConnection = false
@@ -157,6 +167,7 @@ final class ErrorHandlingTests: XCTestCase {
             try await AIConnectionTester.saveKeyAndTest(
                 pendingAPIKey: "secret",
                 saveKey: { _ in throw ExpectedFailure.keychain },
+                acquireKey: { "stored-key" },
                 request: request,
                 test: { _, _ in
                     didRequestConnection = true

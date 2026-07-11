@@ -3,17 +3,17 @@ import OSLog
 
 @MainActor
 protocol LLMProviderProtocol {
-    func complete(request: LLMRequest) async throws -> LLMResponse
+    func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse
 }
 
 @MainActor
 protocol RewriteServicing {
-    func rewrite(text: String, scene: Scene, settings: AIPreferences, interfaceLanguage: AppLanguage) async throws -> String
+    func rewrite(text: String, scene: Scene, settings: AIPreferences, interfaceLanguage: AppLanguage, apiKey: String) async throws -> String
 }
 
 @MainActor
 protocol AnalysisServicing {
-    func analyze(scene: Scene, project: FrameProject, settings: AIPreferences, interfaceLanguage: AppLanguage) async throws -> [AIComment]
+    func analyze(scene: Scene, project: FrameProject, settings: AIPreferences, interfaceLanguage: AppLanguage, apiKey: String) async throws -> [AIComment]
 }
 
 struct LLMRequest: Codable, Hashable {
@@ -41,7 +41,7 @@ enum AITask: String, Codable, Hashable {
 
 @MainActor
 struct MockLLMProvider: LLMProviderProtocol {
-    func complete(request: LLMRequest) async throws -> LLMResponse {
+    func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
         let russian = request.systemPrompt.contains("Russian")
         switch request.task {
         case .autocomplete:
@@ -68,33 +68,27 @@ struct MockLLMProvider: LLMProviderProtocol {
 struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "AI")
     typealias Transport = (URLRequest) async throws -> (Data, URLResponse)
-    typealias APIKeyReader = (String) throws -> String?
-
     private let transport: Transport
-    private let apiKeyReader: APIKeyReader
 
     init(
-        transport: @escaping Transport = { try await URLSession.shared.data(for: $0) },
-        apiKeyReader: @escaping APIKeyReader = { try KeychainStore.readAPIKey(account: $0) }
+        transport: @escaping Transport = { try await URLSession.shared.data(for: $0) }
     ) {
         self.transport = transport
-        self.apiKeyReader = apiKeyReader
     }
 
-    func complete(request: LLMRequest) async throws -> LLMResponse {
+    func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
         switch request.provider {
         case .disabled:
             return LLMResponse(text: "")
         case .openAICompatible, .openRouter, .groq, .googleAIStudio:
-            return try await completeChat(request: request, apiKey: nil)
+            return try await completeChat(request: request, apiKey: apiKey)
         }
     }
 
-    private func completeChat(request: LLMRequest, apiKey suppliedAPIKey: String?) async throws -> LLMResponse {
-        // The plaintext key exists only long enough to build the request header.
-        // User projects and exports contain script data, not provider secrets.
-        guard let apiKey = try suppliedAPIKey ?? apiKeyReader(request.provider.keychainAccount),
-              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    private func completeChat(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
+        // The session owner supplies the in-memory key. User projects and
+        // exports contain script data, not provider secrets.
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LLMProviderError.missingAPIKey
         }
 
@@ -114,7 +108,8 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
                 ChatMessage(role: "user", content: request.userPrompt)
             ],
             temperature: request.temperature,
-            maxTokens: request.maxTokens
+            maxTokens: request.maxTokens,
+            responseFormat: request.task == .analyze ? .analysis : nil
         ))
 
         let (data, response) = try await send(urlRequest)
@@ -153,9 +148,8 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
         return LLMResponse(text: text)
     }
 
-    func testConnection(request: LLMRequest, apiKey suppliedAPIKey: String? = nil) async throws {
-        guard let apiKey = try suppliedAPIKey ?? apiKeyReader(request.provider.keychainAccount),
-              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    func testConnection(request: LLMRequest, apiKey: String) async throws {
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LLMProviderError.missingAPIKey
         }
         if request.provider == .googleAIStudio {
@@ -279,6 +273,31 @@ struct AIProviderConfiguration: Equatable {
     var baseURL: String
 }
 
+@MainActor
+final class ProviderCredentialSession {
+    typealias Reader = (String) throws -> String?
+
+    private let reader: Reader
+    private var cachedKeys: [AIProviderKind: String] = [:]
+
+    init(reader: @escaping Reader = { try KeychainStore.readAPIKey(account: $0) }) {
+        self.reader = reader
+    }
+
+    func apiKey(for provider: AIProviderKind) throws -> String {
+        guard provider != .disabled else { throw LLMProviderError.missingAPIKey }
+        if let cached = cachedKeys[provider] { return cached }
+        guard let key = try reader(provider.keychainAccount)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !key.isEmpty else { throw LLMProviderError.missingAPIKey }
+        cachedKeys[provider] = key
+        return key
+    }
+
+    func invalidate(for provider: AIProviderKind) {
+        cachedKeys.removeValue(forKey: provider)
+    }
+}
+
 struct AIProviderConfigurationStore {
     private let userDefaults: UserDefaults
 
@@ -336,12 +355,13 @@ enum AIConnectionTester {
     static func saveKeyAndTest(
         pendingAPIKey: String,
         saveKey: (String) throws -> Void,
+        acquireKey: () throws -> String,
         request: LLMRequest,
-        test: (LLMRequest, String?) async throws -> Void
+        test: (LLMRequest, String) async throws -> Void
     ) async throws {
         let key = pendingAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !key.isEmpty { try saveKey(key) }
-        try await test(request, key.isEmpty ? nil : key)
+        try await test(request, key.isEmpty ? acquireKey() : key)
     }
 }
 
@@ -358,12 +378,66 @@ private struct ChatCompletionRequest: Codable {
     var messages: [ChatMessage]
     var temperature: Double
     var maxTokens: Int
+    var responseFormat: ChatResponseFormat?
 
     enum CodingKeys: String, CodingKey {
         case model
         case messages
         case temperature
         case maxTokens = "max_tokens"
+        case responseFormat = "response_format"
+    }
+}
+
+private struct ChatResponseFormat: Codable {
+    let type: String
+    let jsonSchema: JSONSchemaDefinition
+
+    static let analysis = ChatResponseFormat(
+        type: "json_schema",
+        jsonSchema: JSONSchemaDefinition(
+            name: "scene_analysis",
+            strict: true,
+            schema: JSONSchemaObject(
+                type: "object",
+                properties: [
+                    "title": JSONSchemaProperty(type: "string", enumValues: nil),
+                    "severity": JSONSchemaProperty(type: "string", enumValues: AICommentSeverity.allCases.map(\.rawValue)),
+                    "message": JSONSchemaProperty(type: "string", enumValues: nil),
+                    "suggestion": JSONSchemaProperty(type: "string", enumValues: nil)
+                ],
+                required: ["title", "severity", "message", "suggestion"],
+                additionalProperties: false
+            )
+        )
+    )
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case jsonSchema = "json_schema"
+    }
+}
+
+private struct JSONSchemaDefinition: Codable {
+    let name: String
+    let strict: Bool
+    let schema: JSONSchemaObject
+}
+
+private struct JSONSchemaObject: Codable {
+    let type: String
+    let properties: [String: JSONSchemaProperty]
+    let required: [String]
+    let additionalProperties: Bool
+}
+
+private struct JSONSchemaProperty: Codable {
+    let type: String
+    let enumValues: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case enumValues = "enum"
     }
 }
 
@@ -432,15 +506,21 @@ struct PromptBuilder {
         }
     }
 
-    func responseLanguage(for text: String, fallback: AppLanguage) -> AppLanguage {
+    func responseLanguage(for text: String, fallback: AppLanguage, preferredLanguages: [String] = Locale.preferredLanguages) -> AppLanguage {
         let cyrillic = text.unicodeScalars.filter { (0x0400...0x052F).contains($0.value) }.count
         let latin = text.unicodeScalars.filter { (0x0041...0x005A).contains($0.value) || (0x0061...0x007A).contains($0.value) }.count
-        guard cyrillic + latin >= 12 else { return fallback }
+        guard cyrillic + latin >= 12 else { return resolvedLanguage(fallback, preferredLanguages: preferredLanguages) }
         return cyrillic > latin ? .russian : .english
     }
 
+    func resolvedLanguage(_ language: AppLanguage, preferredLanguages: [String] = Locale.preferredLanguages) -> AppLanguage {
+        guard language == .system else { return language }
+        let code = preferredLanguages.first.flatMap { Locale(identifier: $0).language.languageCode?.identifier }
+        return code == "ru" ? .russian : .english
+    }
+
     private func languageName(for language: AppLanguage) -> String {
-        language == .russian ? "Russian" : "English"
+        resolvedLanguage(language) == .russian ? "Russian" : "English"
     }
 }
 
@@ -449,7 +529,7 @@ struct RewriteService: RewriteServicing {
     var provider: any LLMProviderProtocol
     var promptBuilder = PromptBuilder()
 
-    func rewrite(text: String, scene: Scene, settings: AIPreferences, interfaceLanguage: AppLanguage = .english) async throws -> String {
+    func rewrite(text: String, scene: Scene, settings: AIPreferences, interfaceLanguage: AppLanguage = .english, apiKey: String) async throws -> String {
         guard settings.provider != .disabled else { return text }
         let request = LLMRequest(
             task: .rewrite,
@@ -461,7 +541,7 @@ struct RewriteService: RewriteServicing {
             temperature: settings.temperature,
             maxTokens: settings.maxTokens
         )
-        return try await provider.complete(request: request).text
+        return try await provider.complete(request: request, apiKey: apiKey).text
     }
 }
 
@@ -470,7 +550,7 @@ struct AnalysisService: AnalysisServicing {
     var provider: any LLMProviderProtocol
     var promptBuilder = PromptBuilder()
 
-    func analyze(scene: Scene, project: FrameProject, settings: AIPreferences, interfaceLanguage: AppLanguage = .english) async throws -> [AIComment] {
+    func analyze(scene: Scene, project: FrameProject, settings: AIPreferences, interfaceLanguage: AppLanguage = .english, apiKey: String) async throws -> [AIComment] {
         let responseLanguage = promptBuilder.responseLanguage(for: scene.scriptText, fallback: interfaceLanguage)
         guard settings.provider != .disabled else {
             return [
@@ -495,7 +575,7 @@ struct AnalysisService: AnalysisServicing {
             temperature: settings.temperature,
             maxTokens: settings.maxTokens
         )
-        let response = try await provider.complete(request: request).text
+        let response = try await provider.complete(request: request, apiKey: apiKey).text
         let analysis = try AnalysisResponse.decode(from: response)
         return [
             AIComment(
@@ -521,23 +601,57 @@ struct AnalysisService: AnalysisServicing {
     }
 }
 
-private struct AnalysisResponse: Decodable {
+struct AnalysisResponse: Decodable {
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "AIParser")
     let title: String
     let severity: AICommentSeverity
     let message: String
     let suggestion: String
 
     static func decode(from response: String) throws -> AnalysisResponse {
-        guard let start = response.firstIndex(of: "{"), let end = response.lastIndex(of: "}"), start <= end,
-              let data = String(response[start...end]).data(using: .utf8) else {
-            throw LLMProviderError.malformedResponse("The provider did not return a structured analysis response.")
+        let value: Any
+        do {
+            value = try JSONSerialization.jsonObject(with: Data(strippingFence(from: response).utf8))
+        } catch {
+            logger.error("Structured analysis parse failed: \(String(describing: error), privacy: .private)")
+            throw LLMProviderError.malformedResponse("analysis.invalidJSON")
         }
-        let decoded = try JSONDecoder().decode(AnalysisResponse.self, from: data)
+        guard let object = unwrap(value) else {
+            logger.error("Structured analysis parse failed: unsupported or incomplete wrapper")
+            throw LLMProviderError.malformedResponse("analysis.incompleteWrapper")
+        }
+        let decoded: AnalysisResponse
+        do {
+            decoded = try JSONDecoder().decode(AnalysisResponse.self, from: JSONSerialization.data(withJSONObject: object))
+        } catch {
+            logger.error("Structured analysis decode failed: \(String(describing: error), privacy: .private)")
+            throw LLMProviderError.malformedResponse("analysis.incompleteFields")
+        }
         guard let title = sanitizedTitle(decoded.title), let message = sanitized(decoded.message),
               let suggestion = sanitized(decoded.suggestion) else {
-            throw LLMProviderError.malformedResponse("The provider returned incomplete analysis fields.")
+            logger.error("Structured analysis validation failed")
+            throw LLMProviderError.malformedResponse("analysis.invalidFields")
         }
         return AnalysisResponse(title: title, severity: decoded.severity, message: message, suggestion: suggestion)
+    }
+
+    private static func strippingFence(from response: String) -> String {
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = trimmed.components(separatedBy: .newlines)
+        guard lines.count >= 3, lines.first?.lowercased().hasPrefix("```") == true,
+              lines.last?.trimmingCharacters(in: .whitespacesAndNewlines) == "```" else { return trimmed }
+        return lines.dropFirst().dropLast().joined(separator: "\n")
+    }
+
+    private static func unwrap(_ value: Any) -> [String: Any]? {
+        if let object = value as? [String: Any] {
+            let required = ["title", "severity", "message", "suggestion"]
+            if required.allSatisfy({ object[$0] != nil }) { return object }
+            if object.count == 1, let nested = object.values.first { return unwrap(nested) }
+            return nil
+        }
+        if let array = value as? [Any], array.count == 1, let nested = array.first { return unwrap(nested) }
+        return nil
     }
 
     private static func sanitized(_ value: String) -> String? {

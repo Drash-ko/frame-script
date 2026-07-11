@@ -13,6 +13,8 @@
 
 - Renamed the user-facing B-roll workspace to Visuals (Видеоряд in Russian), aligned all workspace layouts, and consolidated their content inset metric.
 - Integrated the Keychain explanation into the AI Settings form and widened localized workspace controls.
+- Cached each provider credential in process memory after its first real AI operation and passed it explicitly through service and provider calls.
+- Requested schema-constrained analysis responses and centralized tolerant structured-response decoding.
 - Routed project, settings, export, Keychain, Recent Project, and current AI failures through one error center.
 - Coalesced saved-project autosaves into a cancellable 60 ms write window.
 
@@ -38,7 +40,9 @@
 - Improved sandbox bookmark handling for export folders.
 - Made AI analysis, rewrites, autocomplete, and production generation follow the script language with an interface-language fallback.
 - Validated structured AI analysis before display, localized the AI review and Keychain information UI, and preserved earlier results during failed analysis retries.
-- Replaced Keychain delete-and-add replacement with update-first storage and avoided Settings Keychain reads.
+- Avoided all Settings navigation Keychain reads and invalidated cached credentials after save or delete.
+- Recreated legacy restricted Keychain entries only during explicit replacement without adding biometric or user-presence access controls.
+- Resolved System response language from macOS and kept malformed-response parser diagnostics out of localized alerts.
 
 ## [0.2.0] - 2026-07-10
 

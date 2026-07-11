@@ -582,16 +582,18 @@ final class AppState {
               !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         do {
             let promptBuilder = PromptBuilder()
-            let response = try await OpenAICompatibleLLMProvider().complete(request: LLMRequest(
+            let provider = settings.aiPreferences.provider
+            let apiKey = try dependencies.providerCredentials.apiKey(for: provider)
+            let response = try await dependencies.llmProvider.complete(request: LLMRequest(
                 task: .autocomplete,
-                provider: settings.aiPreferences.provider,
+                provider: provider,
                 baseURL: settings.aiPreferences.baseURL,
                 systemPrompt: promptBuilder.systemPrompt(for: .autocomplete, language: promptBuilder.responseLanguage(for: context, fallback: currentLanguage)),
                 userPrompt: context,
                 model: settings.aiPreferences.model,
                 temperature: settings.aiPreferences.temperature,
                 maxTokens: min(settings.aiPreferences.maxTokens, 80)
-            ))
+            ), apiKey: apiKey)
             let completion = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
             return completion.isEmpty ? nil : " " + completion
         } catch is CancellationError {
@@ -748,16 +750,18 @@ final class AppState {
             ? segment.sourceText
             : "Scene: \(scene.title)\nFull scene: \(scene.scriptText)\nTarget segment: \(segment.sourceText)"
         do {
-            let response = try await OpenAICompatibleLLMProvider().complete(request: LLMRequest(
+            let provider = settings.aiPreferences.provider
+            let apiKey = try dependencies.providerCredentials.apiKey(for: provider)
+            let response = try await dependencies.llmProvider.complete(request: LLMRequest(
                 task: kind,
-                provider: settings.aiPreferences.provider,
+                provider: provider,
                 baseURL: settings.aiPreferences.baseURL,
                 systemPrompt: "\(PromptBuilder().systemPrompt(for: kind, language: PromptBuilder().responseLanguage(for: scene.scriptText, fallback: currentLanguage))) \(schema) Do not use Markdown fences.",
                 userPrompt: context,
                 model: settings.aiPreferences.model,
                 temperature: settings.aiPreferences.temperature,
                 maxTokens: settings.aiPreferences.maxTokens
-            ))
+            ), apiKey: apiKey)
             let data = try Self.structuredJSONData(from: response.text)
             switch kind {
             case .bRollGeneration:
@@ -799,9 +803,10 @@ final class AppState {
         aiState.didFailMostRecentAnalysis = false
         defer { aiState.isAnalyzing = false }
         do {
+            let apiKey = try providerAPIKeyIfNeeded()
             let comments = settings.aiPreferences.provider == .disabled
                 ? disabledAIComments(for: scene)
-                : try await dependencies.analysisService.analyze(scene: scene, project: project, settings: settings.aiPreferences, interfaceLanguage: currentLanguage)
+                : try await dependencies.analysisService.analyze(scene: scene, project: project, settings: settings.aiPreferences, interfaceLanguage: currentLanguage, apiKey: apiKey)
             scene.aiComments = comments
             touchProject()
         } catch {
@@ -815,10 +820,11 @@ final class AppState {
         aiState.isAnalyzing = true
         defer { aiState.isAnalyzing = false }
         do {
+            let apiKey = try providerAPIKeyIfNeeded()
             for scene in project.scenes.sortedByOrder {
                 let comments = settings.aiPreferences.provider == .disabled
                     ? disabledAIComments(for: scene)
-                    : try await dependencies.analysisService.analyze(scene: scene, project: project, settings: settings.aiPreferences, interfaceLanguage: currentLanguage)
+                    : try await dependencies.analysisService.analyze(scene: scene, project: project, settings: settings.aiPreferences, interfaceLanguage: currentLanguage, apiKey: apiKey)
                 scene.aiComments = comments
             }
             touchProject()
@@ -852,6 +858,18 @@ final class AppState {
         windowState.requestedSettingsTab = tab
         windowState.requestedSettingsHighlightKey = highlightKey
         windowState.settingsRequestID = UUID()
+    }
+
+    func providerAPIKey(for provider: AIProviderKind) throws -> String {
+        try dependencies.providerCredentials.apiKey(for: provider)
+    }
+
+    func invalidateProviderAPIKey(for provider: AIProviderKind) {
+        dependencies.providerCredentials.invalidate(for: provider)
+    }
+
+    private func providerAPIKeyIfNeeded() throws -> String {
+        settings.aiPreferences.provider == .disabled ? "" : try providerAPIKey(for: settings.aiPreferences.provider)
     }
 
     func performRecovery(_ action: AppRecoveryAction) {

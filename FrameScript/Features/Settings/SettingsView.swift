@@ -796,7 +796,9 @@ private struct AISettings: View {
     }
 
     private func saveAPIKey(_ value: String) throws {
+        let provider = settings.aiPreferences.provider
         try KeychainStore.saveAPIKey(value, account: accountName())
+        appState.invalidateProviderAPIKey(for: provider)
         apiKey = ""
         hasStoredKey = true
         configurationStore.setHasStoredKey(true, for: settings.aiPreferences.provider)
@@ -815,8 +817,10 @@ private struct AISettings: View {
     }
 
     private func deleteAPIKey() {
+        let provider = settings.aiPreferences.provider
         do {
             try KeychainStore.deleteAPIKey(account: accountName())
+            appState.invalidateProviderAPIKey(for: provider)
             apiKey = ""
             hasStoredKey = false
             configurationStore.setHasStoredKey(false, for: settings.aiPreferences.provider)
@@ -855,6 +859,7 @@ private struct AISettings: View {
             try await AIConnectionTester.saveKeyAndTest(
                 pendingAPIKey: pendingAPIKey,
                 saveKey: { value in try saveAPIKey(value) },
+                acquireKey: { try appState.providerAPIKey(for: settings.aiPreferences.provider) },
                 request: request,
                 test: { request, savedKey in
                     try await OpenAICompatibleLLMProvider().testConnection(request: request, apiKey: savedKey)
