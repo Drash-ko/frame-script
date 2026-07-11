@@ -4,7 +4,7 @@
 
 FrameScript is a native macOS SwiftUI app for writing YouTube scripts as structured production scenes. A scene keeps the voiceover script, B-roll plan, editing notes, AI review comments, and estimated duration together so writing and production planning stay in one focused workspace.
 
-This repository is prepared as the first public demo snapshot of the project.
+This repository is prepared as the FrameScript v0.2.0 demo snapshot.
 
 ## Status
 
@@ -69,13 +69,9 @@ See `SECURITY.md` for reporting guidance.
 ## Known Limitations
 
 - Inline AI completion and inline review markers are not exposed until the editor has real inline behavior.
-<<<<<<< HEAD
 - Anthropic-compatible and Gemini provider adapters are listed as future provider types but are not implemented.
-- Manual UI verification is still needed for exact cursor/caret alignment across macOS text rendering configurations.
-=======
 - Production markers use AppKit text-range geometry and should be verified when changing typography or editor layout.
 
 ## License
 
-No open-source license has been selected yet. Until a license is added, all rights are reserved by the repository owner.
->>>>>>> c819716 (Clean up production notes, AI providers, and exports)
+FrameScript is released under the MIT License. See `LICENSE` for details.
