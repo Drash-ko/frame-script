@@ -681,6 +681,7 @@ private struct AISettings: View {
     @State private var hasStoredKey = false
     @State private var status = ""
     @State private var isTesting = false
+    private let configurationStore = AIProviderConfigurationStore()
 
     private var providerDisabled: Bool {
         settings.aiPreferences.provider == .disabled
@@ -691,7 +692,7 @@ private struct AISettings: View {
             settings.aiPreferences = AppSettings.defaults.aiPreferences
             apiKey = ""
             status = ""
-            loadAPIKey()
+            loadKeyMetadata()
         }) {
             SettingsRow(appState.localized("settings.provider"), help: appState.localized("help.provider")) {
                 Picker("", selection: $settings.aiPreferences.provider) {
@@ -725,7 +726,7 @@ private struct AISettings: View {
                             .frame(width: 240)
                             .disabled(providerDisabled)
                         Button(hasStoredKey ? appState.localized("settings.replaceKey") : appState.localized("settings.saveKey")) {
-                            saveAPIKey()
+                            saveAPIKeyFromField()
                         }
                         .disabled(providerDisabled || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .clickableCursor(enabled: !providerDisabled && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -763,13 +764,17 @@ private struct AISettings: View {
                     .labelsHidden()
                     .disabled(providerDisabled)
             }
+            KeychainInformationCallout(
+                title: appState.localized("settings.keychainInfo.title"),
+                message: appState.localized("settings.keychainInfo.message")
+            )
         }
-        .task { loadAPIKey() }
+        .task { loadKeyMetadata() }
         .onChange(of: settings.aiPreferences.provider) { oldProvider, newProvider in
             saveProviderConfiguration(oldProvider)
             apiKey = ""
             status = ""
-            loadAPIKey()
+            loadKeyMetadata()
             loadProviderConfiguration(newProvider)
         }
         .onChange(of: settings.aiPreferences.model) { _, _ in saveProviderConfiguration(settings.aiPreferences.provider) }
@@ -781,30 +786,43 @@ private struct AISettings: View {
     }
 
     private func accountName() -> String {
-        settings.aiPreferences.provider.rawValue
+        settings.aiPreferences.provider.keychainAccount
     }
 
-    private func loadAPIKey() {
-        let stored = (try? KeychainStore.readAPIKey(account: accountName())) ?? ""
-        hasStoredKey = !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private func loadKeyMetadata() {
+        hasStoredKey = configurationStore.hasStoredKey(for: settings.aiPreferences.provider)
     }
 
-    private func saveAPIKey() {
+    private func saveAPIKey(_ value: String) throws {
+        try KeychainStore.saveAPIKey(value, account: accountName())
+        apiKey = ""
+        hasStoredKey = true
+        configurationStore.setHasStoredKey(true, for: settings.aiPreferences.provider)
+        status = appState.localized("settings.keySaved")
+        appState.errorCenter.showNotice(AppNotice(kind: .apiKeySaved))
+    }
+
+    private func saveAPIKeyFromField() {
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
-            try KeychainStore.saveAPIKey(apiKey, account: accountName())
-            apiKey = ""
-            hasStoredKey = true
-            status = appState.localized("settings.keySaved")
+            try saveAPIKey(trimmedKey)
         } catch {
-            status = appState.localized("settings.keyInvalid")
+            status = ""
+            appState.errorCenter.present(AppError.keychain(error, operation: .write))
         }
     }
 
     private func deleteAPIKey() {
-        KeychainStore.deleteAPIKey(account: accountName())
-        apiKey = ""
-        hasStoredKey = false
-        status = appState.localized("settings.keyNotStored")
+        do {
+            try KeychainStore.deleteAPIKey(account: accountName())
+            apiKey = ""
+            hasStoredKey = false
+            configurationStore.setHasStoredKey(false, for: settings.aiPreferences.provider)
+            status = appState.localized("settings.keyNotStored")
+            appState.errorCenter.showNotice(AppNotice(kind: .apiKeyDeleted))
+        } catch {
+            appState.errorCenter.present(AppError.keychain(error, operation: .delete))
+        }
     }
 
     private func testConnection() async {
@@ -816,74 +834,77 @@ private struct AISettings: View {
             status = appState.localized("settings.keyMissing")
             return
         }
-        if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            saveAPIKey()
-        }
-
         isTesting = true
         status = appState.localized("settings.testing")
         defer { isTesting = false }
 
+        let pendingAPIKey = apiKey
+        let request = LLMRequest(
+            task: .autocomplete,
+            provider: settings.aiPreferences.provider,
+            baseURL: settings.aiPreferences.baseURL,
+            systemPrompt: "Reply with OK.",
+            userPrompt: "OK",
+            model: settings.aiPreferences.model,
+            temperature: 0,
+            maxTokens: 128
+        )
         do {
-            _ = try await OpenAICompatibleLLMProvider().complete(request: LLMRequest(
-                task: .autocomplete,
-                provider: settings.aiPreferences.provider,
-                baseURL: settings.aiPreferences.baseURL,
-                systemPrompt: "Reply with OK.",
-                userPrompt: "OK",
-                model: settings.aiPreferences.model,
-                temperature: 0,
-                maxTokens: 4
-            ))
+            try await AIConnectionTester.saveKeyAndTest(
+                pendingAPIKey: pendingAPIKey,
+                saveKey: { value in try saveAPIKey(value) },
+                request: request,
+                test: { request, savedKey in
+                    try await OpenAICompatibleLLMProvider().testConnection(request: request, apiKey: savedKey)
+                }
+            )
             status = appState.localized("settings.success")
+        } catch let error as KeychainError {
+            status = ""
+            let operation: KeychainOperation = pendingAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .read : .write
+            appState.errorCenter.present(AppError.keychain(error, operation: operation))
+            return
         } catch {
-            status = "\(appState.localized("settings.failed")): \(error.localizedDescription)"
+            status = ""
+            appState.errorCenter.present(AppError.ai(error))
         }
     }
 
     private func defaultBaseURL(for provider: AIProviderKind) -> String {
-        switch provider {
-        case .openRouter:
-            "https://openrouter.ai/api/v1"
-        case .openAICompatible:
-            "https://api.openai.com/v1"
-        case .groq:
-            "https://api.groq.com/openai/v1"
-        case .disabled:
-            ""
-        }
+        provider == .disabled ? "" : OpenAICompatibleLLMProvider.defaultBaseURL(for: provider)
     }
 
     private func defaultModel(for provider: AIProviderKind) -> String {
-        switch provider {
-        case .groq: "llama-3.3-70b-versatile"
-        case .openRouter: "openai/gpt-4.1-mini"
-        case .openAICompatible: "gpt-4.1-mini"
-        case .disabled: ""
-        }
-    }
-
-    private func providerConfigurationKey(_ provider: AIProviderKind) -> String {
-        "FrameScript.ai.provider.\(provider.rawValue)"
+        AIProviderConfigurationStore.defaultModel(for: provider)
     }
 
     private func saveProviderConfiguration(_ provider: AIProviderKind) {
         guard provider != .disabled else { return }
-        UserDefaults.standard.set([
-            "model": settings.aiPreferences.model,
-            "baseURL": settings.aiPreferences.baseURL
-        ], forKey: providerConfigurationKey(provider))
+        configurationStore.save(
+            AIProviderConfiguration(model: settings.aiPreferences.model, baseURL: settings.aiPreferences.baseURL),
+            for: provider
+        )
     }
 
     private func loadProviderConfiguration(_ provider: AIProviderKind) {
-        guard provider != .disabled else {
-            settings.aiPreferences.model = ""
-            settings.aiPreferences.baseURL = ""
-            return
+        let configuration = configurationStore.load(for: provider)
+        settings.aiPreferences.model = configuration.model
+        settings.aiPreferences.baseURL = configuration.baseURL
+    }
+}
+
+private struct KeychainInformationCallout: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 12, weight: .medium))
+            Text(message).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        let stored = UserDefaults.standard.dictionary(forKey: providerConfigurationKey(provider)) as? [String: String]
-        settings.aiPreferences.model = stored?["model"] ?? defaultModel(for: provider)
-        settings.aiPreferences.baseURL = stored?["baseURL"] ?? defaultBaseURL(for: provider)
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

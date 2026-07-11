@@ -5,6 +5,7 @@ struct ScriptEditorView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     @Bindable var scene: Scene
+    let editorSessionID: UUID
     @State private var notesExpanded = false
     @State private var didApplyInitialNotesVisibility = false
     @State private var didManuallyToggleNotes = false
@@ -15,6 +16,14 @@ struct ScriptEditorView: View {
 
             LinkedScriptTextView(
                 text: $scene.scriptText,
+                sceneID: scene.id,
+                editorIdentity: editorSessionID,
+                loadRestorationState: {
+                    appState.editorState.scriptEditorState(sceneID: scene.id, editorIdentity: editorSessionID)
+                },
+                saveRestorationState: { state in
+                    appState.editorState.setScriptEditorState(state, sceneID: scene.id, editorIdentity: editorSessionID)
+                },
                 markers: productionMarkers,
                 fontSize: appState.settings.editorPreferences.fontSize,
                 lineSpacing: appState.settings.editorPreferences.lineHeight * 4,
@@ -28,6 +37,8 @@ struct ScriptEditorView: View {
                 editingColor: NSColor(theme.editingMarker),
                 addBRollLabel: appState.localized("production.addBRollForSelection"),
                 addEditingLabel: appState.localized("production.addEditingForSelection"),
+                onTextCommitted: { appState.commitScriptTextChange(sceneID: scene.id) },
+                onTeardown: { appState.flushActiveEditorBoundary() },
                 markerAction: appState.selectProductionItem,
                 addMarkerAction: { mode, anchor in
                     switch mode {
@@ -70,7 +81,6 @@ struct ScriptEditorView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(theme.editorSurface)
         .onAppear { applyInitialNotesVisibility() }
-        .onChange(of: scene.scriptText) { _, _ in appState.touchCurrentSceneText() }
         .onChange(of: scene.title) { _, _ in appState.touchProject() }
         .onChange(of: scene.notes) { _, _ in appState.touchProject() }
         .onChange(of: appState.settings.editorPreferences.defaultNotesVisibility) { _, newValue in
@@ -141,14 +151,18 @@ struct ScriptEditorView: View {
     }
 }
 
-private struct ProductionTextMarker: Hashable {
+struct ProductionTextMarker: Hashable {
     var itemID: UUID
     var mode: WorkspaceMode
     var anchor: TextAnchor
 }
 
-private struct LinkedScriptTextView: NSViewRepresentable {
+struct LinkedScriptTextView: NSViewRepresentable {
     @Binding var text: String
+    let sceneID: UUID
+    let editorIdentity: UUID
+    let loadRestorationState: () -> ScriptEditorRestorationState?
+    let saveRestorationState: (ScriptEditorRestorationState) -> Void
     let markers: [ProductionTextMarker]
     let fontSize: Double
     let lineSpacing: Double
@@ -162,6 +176,8 @@ private struct LinkedScriptTextView: NSViewRepresentable {
     let editingColor: NSColor
     let addBRollLabel: String
     let addEditingLabel: String
+    let onTextCommitted: () -> Void
+    let onTeardown: () -> Void
     let markerAction: (UUID, WorkspaceMode) -> Void
     let addMarkerAction: (WorkspaceMode, TextAnchor) -> Void
 
@@ -169,26 +185,31 @@ private struct LinkedScriptTextView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> MarkerTextContainerView {
         let view = MarkerTextContainerView()
-        view.coordinator = context.coordinator
-        context.coordinator.view = view
-        configure(view)
-        DispatchQueue.main.async { view.textView.window?.makeFirstResponder(view.textView) }
+        context.coordinator.attach(to: view)
+        configureAppearance(view)
+        context.coordinator.applyModelTextIfNeeded()
+        ActiveScriptEditorSession.shared.register(context.coordinator)
+        DispatchQueue.main.async {
+            context.coordinator.restoreEditorStateIfAvailable()
+            view.textView.window?.makeFirstResponder(view.textView)
+        }
         return view
     }
 
     func updateNSView(_ view: MarkerTextContainerView, context: Context) {
         context.coordinator.parent = self
-        configure(view)
+        configureAppearance(view)
+        context.coordinator.applyModelTextIfNeeded()
     }
 
-    private func configure(_ view: MarkerTextContainerView) {
-        if view.textView.string != text {
-            let selectedRange = view.textView.selectedRange()
-            let visibleOrigin = view.scrollView.contentView.bounds.origin
-            view.textView.string = text
-            view.textView.setSelectedRange(TextAnchorGeometry.clamp(selectedRange, toLength: (text as NSString).length))
-            view.scrollView.contentView.scroll(to: visibleOrigin)
-        }
+    static func dismantleNSView(_ view: MarkerTextContainerView, coordinator: Coordinator) {
+        coordinator.commitMarkedTextAndFlush()
+        ActiveScriptEditorSession.shared.unregister(coordinator)
+        coordinator.parent.onTeardown()
+        coordinator.detach(from: view)
+    }
+
+    private func configureAppearance(_ view: MarkerTextContainerView) {
         let font = NSFont.systemFont(ofSize: fontSize)
         let typographyChanged = view.cachedFontSize != fontSize || view.cachedLineSpacing != lineSpacing
         if view.textView.font != font { view.textView.font = font }
@@ -206,8 +227,8 @@ private struct LinkedScriptTextView: NSViewRepresentable {
         }
         view.cachedFontSize = fontSize
         view.cachedLineSpacing = lineSpacing
-        view.placeholder = placeholder
-        view.placeholderColor = placeholderColor
+        view.textView.placeholder = placeholder
+        view.textView.placeholderColor = placeholderColor
         view.markers = markers
         view.bRollColor = bRollColor
         view.editingColor = editingColor
@@ -216,16 +237,138 @@ private struct LinkedScriptTextView: NSViewRepresentable {
         view.invalidateMarkerGeometry()
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
+        enum ChangeOrigin {
+            case user
+            case externalModel
+            case programmaticTextView
+        }
+
         var parent: LinkedScriptTextView
         weak var view: MarkerTextContainerView?
-        init(parent: LinkedScriptTextView) { self.parent = parent }
+        private(set) var changeOrigin: ChangeOrigin = .externalModel
+        private(set) var lastUserEmittedValue: String?
+        private var lastObservedModelValue: String
+        private var pendingUserRevision: Int?
+        private var userRevision = 0
+        private var modelRevision = 0
+        private var isApplyingProgrammaticUpdate = false
+        private var pendingInitialRestorationState: ScriptEditorRestorationState?
+        init(parent: LinkedScriptTextView) {
+            self.parent = parent
+            self.lastObservedModelValue = parent.text
+        }
+
+        func attach(to view: MarkerTextContainerView) {
+            self.view = view
+            view.coordinator = self
+            pendingInitialRestorationState = parent.loadRestorationState()
+        }
+
+        func detach(from view: MarkerTextContainerView) {
+            if self.view === view { self.view = nil }
+            if view.coordinator === self { view.coordinator = nil }
+        }
+
+        @discardableResult
+        func commitMarkedTextAndFlush() -> Bool {
+            guard let textView = view?.textView else { return false }
+            if textView.hasMarkedText() {
+                textView.unmarkText()
+            }
+            let changed = emitCurrentText(from: textView, origin: .user)
+            captureRestorationState()
+            return changed
+        }
+
+        func captureRestorationState() {
+            guard let view, pendingInitialRestorationState == nil else { return }
+            parent.saveRestorationState(ScriptEditorRestorationState(
+                selectedRange: view.textView.selectedRange(),
+                visibleOrigin: view.scrollView.contentView.bounds.origin
+            ))
+        }
+
+        func restoreEditorStateIfAvailable() {
+            guard let view, let state = pendingInitialRestorationState ?? parent.loadRestorationState() else { return }
+            let length = (view.textView.string as NSString).length
+            view.textView.setSelectedRange(TextAnchorGeometry.clamp(state.selectedRange, toLength: length))
+            view.layoutSubtreeIfNeeded()
+            view.scrollView.contentView.scroll(to: state.visibleOrigin)
+            view.scrollView.reflectScrolledClipView(view.scrollView.contentView)
+            pendingInitialRestorationState = nil
+        }
+
+        func applyModelTextIfNeeded() {
+            guard let view else { return }
+            let textView = view.textView
+            let modelText = parent.text
+            guard textView.string != modelText else {
+                lastObservedModelValue = modelText
+                pendingUserRevision = nil
+                return
+            }
+
+            let hasMarkedText = textView.hasMarkedText()
+            let isUnacknowledgedUserRevision = pendingUserRevision != nil
+                && lastUserEmittedValue == textView.string
+                && modelText == lastObservedModelValue
+            if hasMarkedText || isUnacknowledgedUserRevision {
+                if isUnacknowledgedUserRevision { parent.text = textView.string }
+                return
+            }
+
+            modelRevision += 1
+            pendingUserRevision = nil
+            lastObservedModelValue = modelText
+            changeOrigin = .programmaticTextView
+            isApplyingProgrammaticUpdate = true
+            let selectedRange = textView.selectedRange()
+            let visibleOrigin = view.scrollView.contentView.bounds.origin
+            let undoManager = textView.undoManager
+            undoManager?.disableUndoRegistration()
+            textView.string = modelText
+            undoManager?.enableUndoRegistration()
+            textView.setSelectedRange(TextAnchorGeometry.clamp(selectedRange, toLength: (modelText as NSString).length))
+            view.scrollView.contentView.scroll(to: visibleOrigin)
+            isApplyingProgrammaticUpdate = false
+            changeOrigin = .externalModel
+            captureRestorationState()
+        }
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            parent.text = textView.string
+            guard !isApplyingProgrammaticUpdate else { return }
+            _ = emitCurrentText(from: textView, origin: .user)
             view?.invalidateMarkerGeometry()
             view?.needsDisplay = true
+        }
+
+        func textDidEndEditing(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            if textView.hasMarkedText() { textView.unmarkText() }
+            _ = emitCurrentText(from: textView, origin: .user)
+            captureRestorationState()
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            captureRestorationState()
+        }
+
+        @discardableResult
+        private func emitCurrentText(from textView: NSTextView, origin: ChangeOrigin) -> Bool {
+            let value = textView.string
+            let changed = parent.text != value
+            changeOrigin = origin
+            lastUserEmittedValue = value
+            if origin == .user {
+                userRevision += 1
+                pendingUserRevision = userRevision
+            }
+            parent.text = value
+            if changed { parent.onTextCommitted() }
+            return changed
         }
 
         func textView(_ textView: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
@@ -260,13 +403,73 @@ private struct LinkedScriptTextView: NSViewRepresentable {
     }
 }
 
-private final class MarkerTextContainerView: NSView {
+@MainActor
+protocol ActiveScriptEditor: AnyObject {
+    @discardableResult func commitMarkedTextAndFlush() -> Bool
+    var isActualFirstResponder: Bool { get }
+}
+
+extension LinkedScriptTextView.Coordinator: ActiveScriptEditor {
+    var isActualFirstResponder: Bool {
+        guard let textView = view?.textView else { return false }
+        return textView.window?.firstResponder === textView
+    }
+}
+
+@MainActor
+final class ActiveScriptEditorSession {
+    static let shared = ActiveScriptEditorSession()
+    private final class WeakEditor {
+        weak var value: ActiveScriptEditor?
+        init(_ value: ActiveScriptEditor) { self.value = value }
+    }
+    private var editors: [WeakEditor] = []
+
+    private init() {}
+
+    func register(_ editor: ActiveScriptEditor) {
+        editors.removeAll { $0.value == nil || $0.value === editor }
+        editors.append(WeakEditor(editor))
+    }
+
+    func unregister(_ editor: ActiveScriptEditor) {
+        editors.removeAll { $0.value == nil || $0.value === editor }
+    }
+
+    @discardableResult
+    func flush() -> Bool {
+        editors.removeAll { $0.value == nil }
+        guard let editor = editors.compactMap(\.value).first(where: \.isActualFirstResponder)
+                ?? editors.compactMap(\.value).last else { return false }
+        _ = editor.commitMarkedTextAndFlush()
+        return true
+    }
+}
+
+final class PlaceholderTextView: NSTextView {
+    var placeholder = "" { didSet { needsDisplay = true } }
+    var placeholderColor = NSColor.secondaryLabelColor { didSet { needsDisplay = true } }
+
+    var placeholderOrigin: NSPoint {
+        textContainerOrigin
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard string.isEmpty, !placeholder.isEmpty else { return }
+        (placeholder as NSString).draw(at: placeholderOrigin, withAttributes: [
+            .font: font ?? NSFont.systemFont(ofSize: 14),
+            .foregroundColor: placeholderColor,
+            .paragraphStyle: defaultParagraphStyle ?? NSParagraphStyle.default
+        ])
+    }
+}
+
+final class MarkerTextContainerView: NSView {
     let scrollView = NSScrollView()
-    let textView = NSTextView()
-    let markerView = TextRangeMarkerView()
+    let textView = PlaceholderTextView()
+    private let markerView = TextRangeMarkerView()
     weak var coordinator: LinkedScriptTextView.Coordinator?
-    var placeholder = ""
-    var placeholderColor = NSColor.secondaryLabelColor
     var markers: [ProductionTextMarker] = []
     var bRollColor = NSColor.systemBlue
     var editingColor = NSColor.systemGreen
@@ -286,7 +489,8 @@ private final class MarkerTextContainerView: NSView {
         textView.isEditable = true
         textView.isSelectable = true
         textView.allowsUndo = true
-        textView.textContainerInset = NSSize(width: 5, height: 7)
+        textView.textContainerInset = NSSize(width: 0, height: 7)
+        textView.textContainer?.lineFragmentPadding = 0
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
@@ -313,22 +517,17 @@ private final class MarkerTextContainerView: NSView {
         markerView.needsDisplay = true
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard textView.string.isEmpty else { return }
-        (placeholder as NSString).draw(at: NSPoint(x: 5, y: bounds.height - 7 - (textView.font?.ascender ?? 13)), withAttributes: [
-            .font: textView.font ?? NSFont.systemFont(ofSize: 14), .foregroundColor: placeholderColor
-        ])
+    @objc private func scrolled() {
+        markerView.needsDisplay = true
+        coordinator?.captureRestorationState()
     }
-
-    @objc private func scrolled() { markerView.needsDisplay = true }
 
     func invalidateMarkerGeometry() {
         markerCacheSignature = nil
         markerView.needsDisplay = true
     }
 
-    func markerRects() -> [ViewportMarkerRect] {
+    fileprivate func markerRects() -> [ViewportMarkerRect] {
         rebuildMarkerGeometryIfNeeded()
         let visible = scrollView.contentView.bounds
         return cachedDocumentMarkers.compactMap { marker in

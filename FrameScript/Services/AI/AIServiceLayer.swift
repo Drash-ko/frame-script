@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 @MainActor
 protocol LLMProviderProtocol {
@@ -7,12 +8,12 @@ protocol LLMProviderProtocol {
 
 @MainActor
 protocol RewriteServicing {
-    func rewrite(text: String, scene: Scene, settings: AIPreferences) async -> String
+    func rewrite(text: String, scene: Scene, settings: AIPreferences, interfaceLanguage: AppLanguage) async throws -> String
 }
 
 @MainActor
 protocol AnalysisServicing {
-    func analyze(scene: Scene, project: FrameProject, settings: AIPreferences) async -> [AIComment]
+    func analyze(scene: Scene, project: FrameProject, settings: AIPreferences, interfaceLanguage: AppLanguage) async throws -> [AIComment]
 }
 
 struct LLMRequest: Codable, Hashable {
@@ -41,47 +42,66 @@ enum AITask: String, Codable, Hashable {
 @MainActor
 struct MockLLMProvider: LLMProviderProtocol {
     func complete(request: LLMRequest) async throws -> LLMResponse {
+        let russian = request.systemPrompt.contains("Russian")
         switch request.task {
         case .autocomplete:
-            return LLMResponse(text: " with a clearer next beat.")
+            return LLMResponse(text: russian ? " с более ясным следующим акцентом." : " with a clearer next beat.")
         case .rewrite:
-            return LLMResponse(text: "Here is a cleaner, tighter version of the selected passage.")
+            return LLMResponse(text: russian ? "Вот более ясная и компактная версия выбранного фрагмента." : "Here is a cleaner, tighter version of the selected passage.")
         case .analyze:
-            return LLMResponse(text: "The hook is clear. Consider adding a more concrete example before the explanation.")
+            return LLMResponse(text: russian
+                ? #"{"title":"Хук","severity":"suggestion","message":"Хук понятен, но ему нужен более конкретный пример.","suggestion":"Добавьте пример перед объяснением."}"#
+                : #"{"title":"Hook","severity":"suggestion","message":"The hook is clear, but it needs a more concrete example.","suggestion":"Add the example before the explanation."}"#)
         case .bRollGeneration:
-            return LLMResponse(text: "Use a calm screen recording, a close-up insert, and one simple label animation.")
+            return LLMResponse(text: russian
+                ? #"{"source":"Custom","description":"Добавьте спокойную запись экрана с крупным планом.","notes":"Используйте одну простую подпись."}"#
+                : #"{"source":"Custom","description":"Use a calm screen recording with a close-up insert.","notes":"Use one simple label."}"#)
         case .editingGeneration:
-            return LLMResponse(text: "Keep hard cuts, subtle punch-ins, and keyword-only captions.")
+            return LLMResponse(text: russian
+                ? #"{"description":"Сохраните прямые склейки и легкие приближения.","notes":"Оставьте в субтитрах только ключевые слова."}"#
+                : #"{"description":"Keep hard cuts and subtle punch-ins.","notes":"Use keyword-only captions."}"#)
         }
     }
 }
 
 @MainActor
 struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "AI")
+    typealias Transport = (URLRequest) async throws -> (Data, URLResponse)
+    typealias APIKeyReader = (String) throws -> String?
+
+    private let transport: Transport
+    private let apiKeyReader: APIKeyReader
+
+    init(
+        transport: @escaping Transport = { try await URLSession.shared.data(for: $0) },
+        apiKeyReader: @escaping APIKeyReader = { try KeychainStore.readAPIKey(account: $0) }
+    ) {
+        self.transport = transport
+        self.apiKeyReader = apiKeyReader
+    }
+
     func complete(request: LLMRequest) async throws -> LLMResponse {
         switch request.provider {
         case .disabled:
             return LLMResponse(text: "")
-        case .openAICompatible, .openRouter, .groq:
-            return try await completeChat(request: request)
+        case .openAICompatible, .openRouter, .groq, .googleAIStudio:
+            return try await completeChat(request: request, apiKey: nil)
         }
     }
 
-    private func completeChat(request: LLMRequest) async throws -> LLMResponse {
-        let account = request.provider.rawValue
+    private func completeChat(request: LLMRequest, apiKey suppliedAPIKey: String?) async throws -> LLMResponse {
         // The plaintext key exists only long enough to build the request header.
         // User projects and exports contain script data, not provider secrets.
-        guard let apiKey = try KeychainStore.readAPIKey(account: account),
+        guard let apiKey = try suppliedAPIKey ?? apiKeyReader(request.provider.keychainAccount),
               !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LLMProviderError.missingAPIKey
         }
 
         let base = request.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? defaultBaseURL(for: request.provider)
+            ? Self.defaultBaseURL(for: request.provider)
             : request.baseURL
-        guard let url = URL(string: base.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/chat/completions") else {
-            throw LLMProviderError.invalidBaseURL
-        }
+        let url = try Self.endpointURL(baseURL: base)
 
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
@@ -97,31 +117,240 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
             maxTokens: request.maxTokens
         ))
 
-        let (data, response) = try await URLSession.shared.data(for: urlRequest)
-        guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
-            throw LLMProviderError.requestFailed
+        let (data, response) = try await send(urlRequest)
+        guard let http = response as? HTTPURLResponse else {
+            throw LLMProviderError.malformedResponse("Missing HTTP response.")
         }
-        let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
-        return LLMResponse(text: decoded.choices.first?.message.content ?? "")
+        let topLevel = Self.topLevelJSONObject(from: data)
+        guard 200..<300 ~= http.statusCode else {
+            Self.logResponse(http: http, data: data, topLevel: topLevel, finishReason: nil, request: request)
+            throw LLMProviderError.httpStatus(http.statusCode, Self.providerErrorDetail(from: topLevel))
+        }
+        guard topLevel != nil else {
+            Self.logResponse(http: http, data: data, topLevel: nil, finishReason: nil, request: request)
+            throw LLMProviderError.malformedResponse("The provider returned invalid JSON.")
+        }
+        let decoded: ChatCompletionResponse
+        do {
+            decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
+        } catch {
+            Self.logResponse(http: http, data: data, topLevel: topLevel, finishReason: nil, request: request)
+            throw LLMProviderError.malformedResponse("The provider returned invalid chat response fields.")
+        }
+        let choice = decoded.choices.first
+        let finishReason = choice?.finishReason
+        Self.logResponse(http: http, data: data, topLevel: topLevel, finishReason: finishReason, request: request)
+        guard let choice else {
+            throw LLMProviderError.malformedResponse("The provider returned no completion choices.")
+        }
+        let text = choice.message.content?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !text.isEmpty else {
+            if Self.isTokenLimitFinishReason(finishReason) {
+                throw LLMProviderError.malformedResponse("The provider reached its token limit before returning text.")
+            }
+            throw LLMProviderError.malformedResponse("The provider returned an empty completion.")
+        }
+        return LLMResponse(text: text)
     }
 
-    private func defaultBaseURL(for provider: AIProviderKind) -> String {
+    func testConnection(request: LLMRequest, apiKey suppliedAPIKey: String? = nil) async throws {
+        guard let apiKey = try suppliedAPIKey ?? apiKeyReader(request.provider.keychainAccount),
+              !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LLMProviderError.missingAPIKey
+        }
+        if request.provider == .googleAIStudio {
+            try await validateGoogleModel(apiKey: apiKey, model: request.model)
+            return
+        }
+        var completionRequest = request
+        completionRequest.systemPrompt = "Reply briefly to confirm availability."
+        completionRequest.userPrompt = "Connection check"
+        completionRequest.maxTokens = max(128, request.maxTokens)
+        _ = try await completeChat(request: completionRequest, apiKey: apiKey)
+    }
+
+    private func validateGoogleModel(apiKey: String, model: String) async throws {
+        let url = try Self.googleModelURL(model: model)
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse else {
+            throw LLMProviderError.malformedResponse("Missing HTTP response.")
+        }
+        let topLevel = Self.topLevelJSONObject(from: data)
+        Self.logResponse(http: http, data: data, topLevel: topLevel, finishReason: nil, provider: .googleAIStudio, model: model)
+        guard 200..<300 ~= http.statusCode else {
+            throw LLMProviderError.httpStatus(http.statusCode, Self.providerErrorDetail(from: topLevel))
+        }
+        guard let object = topLevel as? [String: Any],
+              ((object["id"] as? String)?.isEmpty == false || (object["name"] as? String)?.isEmpty == false) else {
+            throw LLMProviderError.malformedResponse("The model endpoint returned a malformed response.")
+        }
+    }
+
+    private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        do {
+            return try await transport(request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError {
+            Self.logger.error("AI transport failed. Code: \(error.code.rawValue, privacy: .private)")
+            throw LLMProviderError.network(String(error.code.rawValue))
+        } catch {
+            let value = error as NSError
+            Self.logger.error("AI transport failed. Code: \(value.code, privacy: .private)")
+            throw LLMProviderError.network(String(value.code))
+        }
+    }
+
+    static func endpointURL(baseURL: String) throws -> URL {
+        guard let url = URL(string: baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/chat/completions") else {
+            throw LLMProviderError.invalidBaseURL
+        }
+        return url
+    }
+
+    static func googleModelURL(model: String) throws -> URL {
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedModel.isEmpty,
+              let encodedModel = trimmedModel.addingPercentEncoding(
+                withAllowedCharacters: CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+              ),
+              let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/openai/models/\(encodedModel)") else {
+            throw LLMProviderError.invalidBaseURL
+        }
+        return url
+    }
+
+    private static func topLevelJSONObject(from data: Data) -> Any? {
+        try? JSONSerialization.jsonObject(with: data)
+    }
+
+    private static func providerErrorDetail(from topLevel: Any?) -> String? {
+        guard let root = topLevel as? [String: Any],
+              let error = root["error"] as? [String: Any] else { return nil }
+        let status = error["status"].map { String(describing: $0) }
+        let code = error["code"].map { String(describing: $0) }
+        // Provider messages can echo request content. Keep only non-content diagnostics.
+        let fields = [status, code].compactMap { $0 }
+        return fields.isEmpty ? nil : fields.joined(separator: " · ")
+    }
+
+    private static func isTokenLimitFinishReason(_ reason: String?) -> Bool {
+        guard let reason = reason?.lowercased() else { return false }
+        return reason == "length" || reason.contains("token") || reason.contains("max_tokens")
+    }
+
+    private static func logResponse(http: HTTPURLResponse, data: Data, topLevel: Any?, finishReason: String?, request: LLMRequest) {
+        logResponse(http: http, data: data, topLevel: topLevel, finishReason: finishReason, provider: request.provider, model: request.model)
+    }
+
+    private static func logResponse(
+        http: HTTPURLResponse,
+        data: Data,
+        topLevel: Any?,
+        finishReason: String?,
+        provider: AIProviderKind,
+        model: String
+    ) {
+        let keys = ((topLevel as? [String: Any])?.keys.sorted().joined(separator: ",")) ?? "none"
+        let mime = http.mimeType ?? "unknown"
+        let finish = finishReason ?? "none"
+        logger.info("AI response status=\(http.statusCode, privacy: .public) mime=\(mime, privacy: .public) bytes=\(data.count, privacy: .public) keys=\(keys, privacy: .public) finish=\(finish, privacy: .public) provider=\(provider.rawValue, privacy: .public) model=\(model, privacy: .public)")
+    }
+
+    nonisolated static func defaultBaseURL(for provider: AIProviderKind) -> String {
         switch provider {
         case .openRouter:
             "https://openrouter.ai/api/v1"
         case .groq:
             "https://api.groq.com/openai/v1"
+        case .googleAIStudio:
+            "https://generativelanguage.googleapis.com/v1beta/openai"
         default:
             "https://api.openai.com/v1"
         }
     }
 }
 
-private enum LLMProviderError: Error {
+struct AIProviderConfiguration: Equatable {
+    var model: String
+    var baseURL: String
+}
+
+struct AIProviderConfigurationStore {
+    private let userDefaults: UserDefaults
+
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+    }
+
+    func save(_ configuration: AIProviderConfiguration, for provider: AIProviderKind) {
+        guard provider != .disabled else { return }
+        userDefaults.set(
+            ["model": configuration.model, "baseURL": configuration.baseURL],
+            forKey: key(for: provider)
+        )
+    }
+
+    func load(for provider: AIProviderKind) -> AIProviderConfiguration {
+        guard provider != .disabled else { return AIProviderConfiguration(model: "", baseURL: "") }
+        let stored = userDefaults.dictionary(forKey: key(for: provider)) as? [String: String]
+        return AIProviderConfiguration(
+            model: stored?["model"] ?? Self.defaultModel(for: provider),
+            baseURL: stored?["baseURL"] ?? OpenAICompatibleLLMProvider.defaultBaseURL(for: provider)
+        )
+    }
+
+    func hasStoredKey(for provider: AIProviderKind) -> Bool {
+        provider != .disabled && userDefaults.bool(forKey: keyMetadataKey(for: provider))
+    }
+
+    func setHasStoredKey(_ value: Bool, for provider: AIProviderKind) {
+        guard provider != .disabled else { return }
+        userDefaults.set(value, forKey: keyMetadataKey(for: provider))
+    }
+
+    static func defaultModel(for provider: AIProviderKind) -> String {
+        switch provider {
+        case .groq: "llama-3.3-70b-versatile"
+        case .openRouter: "openai/gpt-4.1-mini"
+        case .openAICompatible: "gpt-4.1-mini"
+        case .googleAIStudio: "gemini-3.5-flash"
+        case .disabled: ""
+        }
+    }
+
+    private func key(for provider: AIProviderKind) -> String {
+        "FrameScript.ai.provider.\(provider.rawValue)"
+    }
+
+    private func keyMetadataKey(for provider: AIProviderKind) -> String {
+        "FrameScript.ai.hasStoredKey.\(provider.rawValue)"
+    }
+}
+
+@MainActor
+enum AIConnectionTester {
+    static func saveKeyAndTest(
+        pendingAPIKey: String,
+        saveKey: (String) throws -> Void,
+        request: LLMRequest,
+        test: (LLMRequest, String?) async throws -> Void
+    ) async throws {
+        let key = pendingAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !key.isEmpty { try saveKey(key) }
+        try await test(request, key.isEmpty ? nil : key)
+    }
+}
+
+enum LLMProviderError: Error, Equatable {
     case missingAPIKey
     case invalidBaseURL
-    case requestFailed
-    case unsupportedProvider
+    case httpStatus(Int, String?)
+    case network(String)
+    case malformedResponse(String?)
 }
 
 private struct ChatCompletionRequest: Codable {
@@ -143,28 +372,75 @@ private struct ChatMessage: Codable {
     var content: String
 }
 
-private struct ChatCompletionResponse: Codable {
+private struct ChatCompletionResponse: Decodable {
     var choices: [ChatChoice]
 }
 
-private struct ChatChoice: Codable {
-    var message: ChatMessage
+private struct ChatChoice: Decodable {
+    var message: ChatResponseMessage
+    var finishReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case message
+        case finishReason = "finish_reason"
+    }
+}
+
+private struct ChatResponseMessage: Decodable {
+    var content: ChatResponseContent?
+}
+
+private enum ChatResponseContent: Decodable {
+    case string(String)
+    case parts([ChatTextPart])
+
+    var text: String {
+        switch self {
+        case .string(let value): value
+        case .parts(let parts): parts.compactMap(\.text).joined()
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) {
+            self = .string(value)
+            return
+        }
+        self = .parts(try container.decode([ChatTextPart].self))
+    }
+}
+
+private struct ChatTextPart: Decodable {
+    var text: String?
 }
 
 struct PromptBuilder {
-    func systemPrompt(for task: AITask) -> String {
-        switch task {
+    func systemPrompt(for task: AITask, language: AppLanguage) -> String {
+        let languageInstruction = "Respond only in \(languageName(for: language))."
+        return switch task {
         case .autocomplete:
-            "Continue the YouTube script briefly. Stay natural, specific, and concise."
+            "Continue the YouTube script briefly. Stay natural, specific, and concise. \(languageInstruction)"
         case .rewrite:
-            "Rewrite selected script text while preserving intent and voice."
+            "Rewrite selected script text while preserving intent and voice. \(languageInstruction)"
         case .analyze:
-            "Review the scene for clarity, retention, pacing, repetition, concrete examples, and weak phrasing."
+            "Review the scene for clarity, retention, pacing, repetition, concrete examples, and weak phrasing. \(languageInstruction) Return only one JSON object with string fields title, severity, message, and suggestion. Severity must be note, suggestion, or important. Write complete plain-text sentences; do not use Markdown."
         case .bRollGeneration:
-            "Generate practical B-roll ideas that strengthen the meaning of the script."
+            "Generate practical B-roll ideas that strengthen the meaning of the script. \(languageInstruction)"
         case .editingGeneration:
-            "Generate restrained YouTube editing notes. Avoid timeline complexity."
+            "Generate restrained YouTube editing notes. Avoid timeline complexity. \(languageInstruction)"
         }
+    }
+
+    func responseLanguage(for text: String, fallback: AppLanguage) -> AppLanguage {
+        let cyrillic = text.unicodeScalars.filter { (0x0400...0x052F).contains($0.value) }.count
+        let latin = text.unicodeScalars.filter { (0x0041...0x005A).contains($0.value) || (0x0061...0x007A).contains($0.value) }.count
+        guard cyrillic + latin >= 12 else { return fallback }
+        return cyrillic > latin ? .russian : .english
+    }
+
+    private func languageName(for language: AppLanguage) -> String {
+        language == .russian ? "Russian" : "English"
     }
 }
 
@@ -173,19 +449,19 @@ struct RewriteService: RewriteServicing {
     var provider: any LLMProviderProtocol
     var promptBuilder = PromptBuilder()
 
-    func rewrite(text: String, scene: Scene, settings: AIPreferences) async -> String {
+    func rewrite(text: String, scene: Scene, settings: AIPreferences, interfaceLanguage: AppLanguage = .english) async throws -> String {
         guard settings.provider != .disabled else { return text }
         let request = LLMRequest(
             task: .rewrite,
             provider: settings.provider,
             baseURL: settings.baseURL,
-            systemPrompt: promptBuilder.systemPrompt(for: .rewrite),
+            systemPrompt: promptBuilder.systemPrompt(for: .rewrite, language: promptBuilder.responseLanguage(for: text, fallback: interfaceLanguage)),
             userPrompt: "Scene: \(scene.title)\n\n\(text)",
             model: settings.model,
             temperature: settings.temperature,
             maxTokens: settings.maxTokens
         )
-        return (try? await provider.complete(request: request).text) ?? text
+        return try await provider.complete(request: request).text
     }
 }
 
@@ -194,16 +470,17 @@ struct AnalysisService: AnalysisServicing {
     var provider: any LLMProviderProtocol
     var promptBuilder = PromptBuilder()
 
-    func analyze(scene: Scene, project: FrameProject, settings: AIPreferences) async -> [AIComment] {
+    func analyze(scene: Scene, project: FrameProject, settings: AIPreferences, interfaceLanguage: AppLanguage = .english) async throws -> [AIComment] {
+        let responseLanguage = promptBuilder.responseLanguage(for: scene.scriptText, fallback: interfaceLanguage)
         guard settings.provider != .disabled else {
             return [
                 AIComment(
                     sceneID: scene.id,
                     segmentID: scene.textSegments.sortedByOrder.first?.id,
-                    type: "AI setup",
+                    type: L10n.tr("ai.disabled.type", language: responseLanguage),
                     severity: .note,
-                    message: "Connect an AI provider to run deeper analysis.",
-                    suggestion: "The service layer is provider-neutral; add an adapter without touching the UI."
+                    message: L10n.tr("ai.disabled.message", language: responseLanguage),
+                    suggestion: L10n.tr("ai.disabled.suggestion", language: responseLanguage)
                 )
             ]
         }
@@ -212,21 +489,22 @@ struct AnalysisService: AnalysisServicing {
             task: .analyze,
             provider: settings.provider,
             baseURL: settings.baseURL,
-            systemPrompt: promptBuilder.systemPrompt(for: .analyze),
+            systemPrompt: promptBuilder.systemPrompt(for: .analyze, language: responseLanguage),
             userPrompt: userPrompt(scene: scene, project: project, privacyMode: settings.privacyMode),
             model: settings.model,
             temperature: settings.temperature,
             maxTokens: settings.maxTokens
         )
-        let response = (try? await provider.complete(request: request).text) ?? "No analysis returned."
+        let response = try await provider.complete(request: request).text
+        let analysis = try AnalysisResponse.decode(from: response)
         return [
             AIComment(
                 sceneID: scene.id,
                 segmentID: scene.textSegments.sortedByOrder.first?.id,
-                type: "Analysis",
-                severity: .suggestion,
-                message: response,
-                suggestion: "Review this scene before recording."
+                type: analysis.title,
+                severity: analysis.severity,
+                message: analysis.message,
+                suggestion: analysis.suggestion
             )
         ]
     }
@@ -240,5 +518,40 @@ struct AnalysisService: AnalysisServicing {
             return "[\(marker)] \(other.title)\n\(other.scriptText)"
         }.joined(separator: "\n\n")
         return "Project: \(project.title)\n\n\(context)"
+    }
+}
+
+private struct AnalysisResponse: Decodable {
+    let title: String
+    let severity: AICommentSeverity
+    let message: String
+    let suggestion: String
+
+    static func decode(from response: String) throws -> AnalysisResponse {
+        guard let start = response.firstIndex(of: "{"), let end = response.lastIndex(of: "}"), start <= end,
+              let data = String(response[start...end]).data(using: .utf8) else {
+            throw LLMProviderError.malformedResponse("The provider did not return a structured analysis response.")
+        }
+        let decoded = try JSONDecoder().decode(AnalysisResponse.self, from: data)
+        guard let title = sanitizedTitle(decoded.title), let message = sanitized(decoded.message),
+              let suggestion = sanitized(decoded.suggestion) else {
+            throw LLMProviderError.malformedResponse("The provider returned incomplete analysis fields.")
+        }
+        return AnalysisResponse(title: title, severity: decoded.severity, message: message, suggestion: suggestion)
+    }
+
+    private static func sanitized(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 600,
+              !trimmed.contains("```"), !trimmed.contains("**"), !trimmed.contains("##") else { return nil }
+        let complete = trimmed.last.map { ".!?…»”.".contains($0) } ?? false
+        return complete ? trimmed : nil
+    }
+
+    private static func sanitizedTitle(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 80,
+              !trimmed.contains("```"), !trimmed.contains("**"), !trimmed.contains("##") else { return nil }
+        return trimmed
     }
 }

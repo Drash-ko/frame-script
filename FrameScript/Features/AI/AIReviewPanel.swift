@@ -38,6 +38,15 @@ struct AIReviewPanel: View {
                         }
                     }
 
+                    if appState.aiState.isAnalyzing {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(appState.localized("ai.analyzing"))
+                        }
+                        .font(.system(size: 12))
+                        .foregroundStyle(theme.secondaryText)
+                    }
+
                     Button(appState.localized("ai.analyzeCurrentScene")) {
                         analyzeCurrentScene()
                     }
@@ -46,6 +55,15 @@ struct AIReviewPanel: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(theme.primaryText)
                     .padding(.top, 4)
+
+                    if appState.aiState.didFailMostRecentAnalysis {
+                        Button(appState.localized("ai.retry")) {
+                            analyzeCurrentScene()
+                        }
+                        .buttonStyle(.cursorPlain)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(theme.secondaryText)
+                    }
                 }
                 .padding(16)
             }

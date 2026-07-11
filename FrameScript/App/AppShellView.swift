@@ -6,6 +6,10 @@ struct AppRootView: View {
 
     var body: some View {
         @Bindable var windowState = appState.windowState
+        let presentedError = Binding<AppError?>(
+            get: { appState.errorCenter.presentedError },
+            set: { if $0 == nil { appState.errorCenter.dismissCurrent() } }
+        )
         Group {
             if appState.hasOpenProject {
                 AppShellView()
@@ -14,8 +18,8 @@ struct AppRootView: View {
             }
         }
             .overlay(alignment: .bottom) {
-                if let noticeMessage = appState.windowState.noticeMessage {
-                    Text(noticeMessage)
+                if let notice = appState.errorCenter.notice {
+                    Text(notice.message(language: appState.currentLanguage))
                         .font(.system(size: 13, weight: .medium))
                         .padding(.horizontal, 14)
                         .padding(.vertical, 9)
@@ -24,12 +28,30 @@ struct AppRootView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .animation(.easeOut(duration: 0.18), value: appState.windowState.noticeMessage)
+            .animation(.easeOut(duration: 0.18), value: appState.errorCenter.notice)
             .task {
                 appState.configure()
             }
-            .onChange(of: appState.recentProjectStore.storeError, initial: true) { _, error in
-                appState.presentRecentProjectStoreError(error)
+            .alert(item: presentedError) { error in
+                let presentation = error.presentation(language: appState.currentLanguage)
+                let message = [presentation.message, presentation.recoverySuggestion]
+                    .compactMap { $0 }
+                    .joined(separator: "\n\n")
+                if let action = error.recoveryAction {
+                    return Alert(
+                        title: Text(presentation.title),
+                        message: Text(message),
+                        primaryButton: .default(Text(appState.localized("recovery.\(action.localizationKey).button"))) {
+                            appState.performRecovery(action)
+                        },
+                        secondaryButton: .cancel(Text(appState.localized("error.dismiss")))
+                    )
+                }
+                return Alert(
+                    title: Text(presentation.title),
+                    message: Text(message),
+                    dismissButton: .default(Text(appState.localized("error.dismiss")))
+                )
             }
             .sheet(item: $windowState.newProjectRequest) { request in
                 Group {
@@ -55,6 +77,7 @@ struct AppShellView: View {
     @Environment(\.frameTheme) private var theme
     @Environment(\.openSettings) private var openSettings
     @State private var sidebarDragStartWidth: Double?
+    @State private var editorSessionID = UUID()
 
     var body: some View {
         @Bindable var windowState = appState.windowState
@@ -109,6 +132,9 @@ struct AppShellView: View {
                 .environment(appState)
                 .environment(\.frameTheme, theme)
         }
+        .onDisappear {
+            appState.flushActiveEditorBoundary()
+        }
     }
 
     private func performPendingPaletteAction() {
@@ -125,7 +151,7 @@ struct AppShellView: View {
         if let scene = appState.selectedScene {
             switch appState.selectedMode {
             case .script:
-                ScriptEditorView(scene: scene)
+                ScriptEditorView(scene: scene, editorSessionID: editorSessionID)
             case .bRoll:
                 BRollEditorView(scene: scene)
             case .editing:

@@ -32,7 +32,7 @@ struct ModeSwitcher: View {
                     }
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(selection == mode ? theme.primaryText : theme.secondaryText)
-                    .frame(minWidth: 92, maxWidth: 112, minHeight: 28)
+                    .frame(width: 86, height: 28)
                     .contentShape(Rectangle())
                     .background {
                         if selection == mode {
@@ -45,7 +45,13 @@ struct ModeSwitcher: View {
                 .contentShape(Rectangle())
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(title(for: mode))
-                .accessibilityValue(selection == mode ? "selected" : "not selected")
+                .accessibilityValue(
+                    appState.localized(
+                        selection == mode
+                            ? "accessibility.selected"
+                            : "accessibility.notSelected"
+                    )
+                )
                 .accessibilityAddTraits(selection == mode ? [.isSelected] : [])
                 .accessibilityIdentifier(accessibilityIdentifier(for: mode))
             }

@@ -2,9 +2,8 @@ import XCTest
 
 @MainActor
 final class ModeSwitcherHitAreaUITests: XCTestCase {
-    // Adaptive metrics restored from pre-Phase-1 commit 4b19b9b5a4983e7307c2d21ede7aa262447d802c.
-    private let expectedButtonWidthRange: ClosedRange<CGFloat> = 92...112
-    private let expectedSwitcherWidthRange: ClosedRange<CGFloat> = 286...346
+    private let expectedButtonWidth: CGFloat = 86
+    private let expectedSwitcherWidth: CGFloat = 268
     private let expectedButtonHeight: CGFloat = 28
     private let expectedSwitcherHeight: CGFloat = 34
     private let tolerance: CGFloat = 0.5
@@ -30,15 +29,13 @@ final class ModeSwitcherHitAreaUITests: XCTestCase {
         let controls = identifiers.map { modeControl($0, in: app) }
         XCTAssertTrue(controls[0].waitForExistence(timeout: 5))
         controls.forEach { control in
-            XCTAssertGreaterThanOrEqual(control.frame.width, expectedButtonWidthRange.lowerBound - tolerance)
-            XCTAssertLessThanOrEqual(control.frame.width, expectedButtonWidthRange.upperBound + tolerance)
+            XCTAssertEqual(control.frame.width, expectedButtonWidth, accuracy: tolerance)
             XCTAssertEqual(control.frame.height, expectedButtonHeight, accuracy: tolerance)
         }
 
         let switcher = app.descendants(matching: .any)["mode-switcher"]
         XCTAssertTrue(switcher.exists)
-        XCTAssertGreaterThanOrEqual(switcher.frame.width, expectedSwitcherWidthRange.lowerBound - tolerance)
-        XCTAssertLessThanOrEqual(switcher.frame.width, expectedSwitcherWidthRange.upperBound + tolerance)
+        XCTAssertEqual(switcher.frame.width, expectedSwitcherWidth, accuracy: tolerance)
         XCTAssertEqual(switcher.frame.height, expectedSwitcherHeight, accuracy: tolerance)
 
         let insidePoints = [

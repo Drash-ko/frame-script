@@ -130,6 +130,7 @@ final class RecentProjectStore {
     @discardableResult
     func validateEntriesNow() -> RecentValidationResult {
         guard !hasUndecodableStoredData else { return RecentValidationResult() }
+        let previousEntries = entries
         let snapshot = entries.sorted { $0.lastOpenedAt > $1.lastOpenedAt }
         var validated: [RecentProjectEntry] = []
         var available: Set<UUID> = []
@@ -175,7 +176,9 @@ final class RecentProjectStore {
 #if DEBUG
         skipsNextUITestValidation = false
 #endif
-        persist()
+        if entries != previousEntries {
+            persist()
+        }
         return result
     }
 
@@ -256,12 +259,22 @@ final class RecentProjectStore {
 #endif
 
     func validatedURL(for entry: RecentProjectEntry) throws -> URL {
-        validateEntriesNow()
-        guard let entry = entries.first(where: { $0.id == entry.id }) else {
+        guard let storedEntry = entries.first(where: { $0.id == entry.id }) else {
             let url = URL(fileURLWithPath: entry.lastKnownPath)
             throw fileManager.fileExists(atPath: url.path) ? RecentProjectStoreError.unreadableFile(url) : RecentProjectStoreError.missingFile(url)
         }
-        return try resolveEntry(entry).url
+        let url: URL
+        do {
+            url = try resolveEntry(storedEntry).url
+        } catch {
+            throw RecentProjectStoreError.invalidBookmark
+        }
+        let status = securityScope.withAccess(to: url) {
+            (exists: fileManager.fileExists(atPath: url.path), readable: isReadableRegularFile(url))
+        }
+        guard status.exists else { throw RecentProjectStoreError.missingFile(url) }
+        guard status.readable else { throw RecentProjectStoreError.unreadableFile(url) }
+        return url
     }
 
     func availability(for entry: RecentProjectEntry) -> Bool {

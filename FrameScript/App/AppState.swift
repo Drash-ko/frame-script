@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Observation
+import OSLog
 import SwiftUI
 
 private struct GeneratedBRollSuggestion: Decodable {
@@ -14,7 +15,7 @@ private struct GeneratedEditingSuggestion: Decodable {
     let notes: String
 }
 
-private enum GenerationError: LocalizedError {
+enum GenerationError: LocalizedError {
     case invalidJSON
     case emptyDescription
 
@@ -73,6 +74,8 @@ struct NewProjectRequest: Identifiable, Equatable {
 @MainActor
 @Observable
 final class AppState {
+    private static let projectFilesLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "ProjectFiles")
+    private static let exportLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "Export")
     typealias ExportFolderBookmarkCreator = @MainActor @Sendable (URL) throws -> Data
     typealias ExportFolderBookmarkResolver = @MainActor @Sendable (Data, inout Bool) throws -> URL
 
@@ -82,6 +85,7 @@ final class AppState {
     let settingsStore: SettingsStore
     let aiState: AIState
     let windowState: WindowState
+    let errorCenter: ErrorCenter
     let themeManager: ResolvedThemeManager
     let dependencies: AppDependencies
     private let securityScope: SecurityScopedResourceAccess
@@ -96,6 +100,7 @@ final class AppState {
     private var didApplyUITestLaunchArguments = false
 #endif
     private var appActivationObserver: NSObjectProtocol?
+    private var appResignationObserver: NSObjectProtocol?
 
     init(
         projectStore: ProjectStore = ProjectStore(),
@@ -104,6 +109,7 @@ final class AppState {
         settingsStore: SettingsStore = SettingsStore(),
         aiState: AIState = AIState(),
         windowState: WindowState = WindowState(),
+        errorCenter: ErrorCenter = ErrorCenter(),
         themeManager: ResolvedThemeManager = ResolvedThemeManager(),
         dependencies: AppDependencies = .live,
         securityScope: SecurityScopedResourceAccess = .live,
@@ -121,6 +127,7 @@ final class AppState {
         self.settingsStore = settingsStore
         self.aiState = aiState
         self.windowState = windowState
+        self.errorCenter = errorCenter
         self.themeManager = themeManager
         self.dependencies = dependencies
         self.securityScope = securityScope
@@ -130,6 +137,9 @@ final class AppState {
         self.templates = Self.mergedTemplates(builtIns: templates.filter(\.builtIn), customTemplates: Self.loadCustomTemplates())
         self.windowState.isSidebarVisible = settingsStore.settings.windowPreferences.sidebarDefaultVisible
         self.projectStore.setSegmentSplitMode(settingsStore.settings.generalPreferences.defaultSplitMode)
+        settingsStore.setErrorReporter { [weak errorCenter] error in
+            errorCenter?.present(error)
+        }
     }
 
     func configure() {
@@ -142,14 +152,17 @@ final class AppState {
             do {
                 try recentProjectStore.addUITestEntry(url: requestedURL)
             } catch {
-                showNotice(localized("notice.recentBookmarkFailed"))
+                showNotice(.recentBookmarkWarning)
             }
         } else {
-            recentProjectStore.validateEntriesNow()
+            let result = recentProjectStore.validateEntriesNow()
+            presentAutomaticRecentRemovalNotice(count: result.removedMissingCount)
         }
 #else
-        recentProjectStore.validateEntriesNow()
+        let result = recentProjectStore.validateEntriesNow()
+        presentAutomaticRecentRemovalNotice(count: result.removedMissingCount)
 #endif
+        consumeRecentProjectStoreError()
         installAppActivationObserverIfNeeded()
         projectStore.configure(
             wordsPerMinute: settings.editorPreferences.wordsPerMinute
@@ -194,7 +207,7 @@ final class AppState {
 
     var selectedMode: WorkspaceMode {
         get { editorState.selectedMode }
-        set { editorState.selectedMode = newValue }
+        set { selectMode(newValue) }
     }
 
     var selectedScene: Scene? {
@@ -255,18 +268,19 @@ final class AppState {
     }
 
     func selectMode(_ mode: WorkspaceMode) {
-        editorState.selectedMode = mode
+        guard editorState.selectedMode != mode else { return }
+        transitionEditorContext(mode: mode)
     }
 
     func selectProductionSegment(_ segmentID: UUID, mode: WorkspaceMode) {
         editorState.selectedProductionSegmentID = segmentID
-        editorState.selectedMode = mode
+        selectMode(mode)
     }
 
     @discardableResult
     func showProjectBrowser() -> Bool {
         guard closeProject() else { return false }
-        editorState.selectedSceneID = nil
+        setEditorContextAfterFlush(sceneID: .some(nil))
         return true
     }
 
@@ -288,6 +302,7 @@ final class AppState {
     }
 
     func createNewProject(named name: String, template: FrameTemplate? = nil) {
+        guard prepareForProjectReplacement() else { return }
         let selectedTemplate = template ?? templates.first { $0.name == settings.generalPreferences.defaultNewProjectTemplate } ?? templates.first
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? localized("project.untitled") : name.trimmingCharacters(in: .whitespacesAndNewlines)
         let project = SampleData.project(
@@ -300,17 +315,17 @@ final class AppState {
         )
         projectStore.openProject(project, fileURL: nil, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: true)
         projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
-        editorState.selectedSceneID = project.scenes.sortedByOrder.first?.id
-        editorState.selectedMode = .script
+        setEditorContextAfterFlush(sceneID: .some(project.scenes.sortedByOrder.first?.id), mode: .script)
         editorState.isFocusModeEnabled = false
         windowState.newProjectRequest = nil
     }
 
     func openDemoProject() {
+        guard prepareForProjectReplacement() else { return }
         let project = SampleData.demoProject(language: currentLanguage)
         projectStore.openProject(project, fileURL: nil, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: true)
         projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
-        editorState.selectedSceneID = project.scenes.sortedByOrder.first?.id
+        setEditorContextAfterFlush(sceneID: .some(project.scenes.sortedByOrder.first?.id))
     }
 
     func openProject() {
@@ -325,6 +340,7 @@ final class AppState {
     }
 
     func openProject(at url: URL) {
+        guard prepareForProjectReplacement() else { return }
         do {
             let project = try securityScope.withAccess(to: url) {
                 try FrameScriptFileStore.read(from: url)
@@ -332,9 +348,10 @@ final class AppState {
             projectStore.openProject(project, fileURL: url, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
             rememberRecentProject(url)
             projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
-            editorState.selectedSceneID = project.scenes.sortedByOrder.first?.id
+            setEditorContextAfterFlush(sceneID: .some(project.scenes.sortedByOrder.first?.id))
         } catch {
-            presentError(localized("error.openProject"), details: error.localizedDescription)
+            Self.projectFilesLogger.error("Operation project-open failed. Code: \(self.diagnosticCode(for: error), privacy: .public)")
+            errorCenter.present(AppError.project(error, fileURL: url, operation: .read))
         }
     }
 
@@ -343,6 +360,7 @@ final class AppState {
         reportsMissingNotice: Bool = true,
         presentsErrors: Bool = true
     ) {
+        guard prepareForProjectReplacement() else { return }
 #if DEBUG
         if recentProjectStore.isUITestEntry(entry),
            ProcessInfo.processInfo.arguments.contains("--framescript-ui-test-recent-path") {
@@ -356,17 +374,17 @@ final class AppState {
                 projectStore.openProject(project, fileURL: url, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
                 rememberRecentProject(url)
                 projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
-                editorState.selectedSceneID = project.scenes.sortedByOrder.first?.id
+                setEditorContextAfterFlush(sceneID: .some(project.scenes.sortedByOrder.first?.id))
             }
         } catch RecentProjectStoreError.missingFile {
             recentProjectStore.remove(id: entry.id)
-            if reportsMissingNotice { showNotice(localized("notice.recentMissingRemoved")) }
-        } catch RecentProjectStoreError.unreadableFile {
-            recentProjectStore.remove(id: entry.id)
-            if presentsErrors { presentError(localized("error.openProject"), details: localized("error.recentUnreadable")) }
+            consumeRecentProjectStoreError()
+            if reportsMissingNotice { showNotice(.recentMissingRemoved) }
+        } catch let error as RecentProjectStoreError {
+            if presentsErrors { errorCenter.present(AppError.recent(error, recentID: entry.id)) }
         } catch {
             if presentsErrors {
-                presentError(localized("error.openProject"), details: error.localizedDescription)
+                errorCenter.present(AppError.project(error, fileURL: URL(fileURLWithPath: entry.lastKnownPath), operation: .read))
             }
         }
     }
@@ -378,8 +396,10 @@ final class AppState {
     @discardableResult
     func saveProject() -> Bool {
         guard hasOpenProject else { return false }
+        flushActiveEditorBoundary(saveImmediately: false)
         do {
             try projectStore.saveCurrentProject(wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            errorCenter.clearAutosaveFailureSuppression()
             if let currentFileURL = projectStore.currentFileURL {
                 rememberRecentProject(currentFileURL)
             }
@@ -387,7 +407,8 @@ final class AppState {
         } catch ProjectStore.ProjectFileError.missingFileURL {
             return saveProjectAs()
         } catch {
-            presentError(localized("error.saveProject"), details: error.localizedDescription)
+            Self.projectFilesLogger.error("Operation project-save failed. Code: \(self.diagnosticCode(for: error), privacy: .public)")
+            errorCenter.present(AppError.project(error, fileURL: projectStore.currentFileURL, operation: .write))
             return false
         }
     }
@@ -395,6 +416,7 @@ final class AppState {
     @discardableResult
     func saveProjectAs() -> Bool {
         guard hasOpenProject else { return false }
+        flushActiveEditorBoundary(saveImmediately: false)
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.frameScript]
         panel.canCreateDirectories = true
@@ -403,10 +425,12 @@ final class AppState {
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         do {
             try projectStore.saveCurrentProject(to: url, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            errorCenter.clearAutosaveFailureSuppression()
             rememberRecentProject(url)
             return true
         } catch {
-            presentError(localized("error.saveProject"), details: error.localizedDescription)
+            Self.projectFilesLogger.error("Operation project-save-as failed. Code: \(self.diagnosticCode(for: error), privacy: .public)")
+            errorCenter.present(AppError.project(error, fileURL: url, operation: .write))
             return false
         }
     }
@@ -422,7 +446,12 @@ final class AppState {
             let rendered = dependencies.exportService.render(project: project, format: format, preferences: preferences, language: currentLanguage)
             try rendered.write(to: url, atomically: true, encoding: .utf8)
         } catch {
-            presentError(localized("error.exportProject"), details: error.localizedDescription)
+            Self.exportLogger.error("Operation export-write failed. Code: \(self.diagnosticCode(for: error), privacy: .public)")
+            errorCenter.present(AppError(
+                kind: .export,
+                context: AppErrorContext(fileName: url.lastPathComponent, diagnosticCode: diagnosticCode(for: error)),
+                recoveryAction: .chooseExportFolder
+            ))
         }
     }
 
@@ -430,21 +459,29 @@ final class AppState {
         guard hasOpenProject else { return }
         let rendered = dependencies.exportService.render(project: project, format: format, preferences: preferences, language: currentLanguage)
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(rendered, forType: .string)
+        guard NSPasteboard.general.setString(rendered, forType: .string) else {
+            Self.exportLogger.error("Operation export-clipboard-write failed. Code: clipboard-write")
+            errorCenter.present(AppError(kind: .export, context: AppErrorContext(diagnosticCode: "clipboard-write")))
+            return
+        }
     }
 
     func duplicateProject() {
         guard hasOpenProject else { return }
-        let copy = projectStore.duplicateProject(copySuffix: localized("templates.copySuffix"))
-        editorState.selectedSceneID = copy.scenes.sortedByOrder.first?.id
+        var copy: FrameProject?
+        transitionEditorContext {
+            copy = projectStore.duplicateProject(copySuffix: localized("templates.copySuffix"))
+        }
+        setEditorContextAfterFlush(sceneID: .some(copy?.scenes.sortedByOrder.first?.id))
     }
 
     @discardableResult
     func closeProject() -> Bool {
         guard hasOpenProject else { return true }
+        flushActiveEditorBoundary()
         guard confirmCloseProjectIfNeeded() else { return false }
         projectStore.closeProject()
-        editorState.selectedSceneID = nil
+        setEditorContextAfterFlush(sceneID: .some(nil))
         return true
     }
 
@@ -457,8 +494,14 @@ final class AppState {
         do {
             let url = try recentProjectStore.validatedURL(for: entry)
             securityScope.withAccess(to: url) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        } catch RecentProjectStoreError.missingFile {
+            recentProjectStore.remove(id: entry.id)
+            consumeRecentProjectStoreError()
+            showNotice(.recentMissingRemoved)
+        } catch let error as RecentProjectStoreError {
+            errorCenter.present(AppError.recent(error, recentID: entry.id))
         } catch {
-            showNotice(localized("notice.recentMissingRemoved"))
+            errorCenter.present(AppError.recent(error, recentID: entry.id))
         }
     }
 
@@ -482,12 +525,34 @@ final class AppState {
            !confirm(title: localized("dialog.deleteProject.title"), message: localized("dialog.deleteProject.message")) {
             return
         }
-        projectStore.deleteCurrentProject()
-        editorState.selectedSceneID = nil
+        transitionEditorContext(sceneID: .some(nil)) {
+            projectStore.deleteCurrentProject()
+        }
     }
 
     func selectScene(_ sceneID: UUID) {
-        editorState.selectedSceneID = sceneID
+        guard editorState.selectedSceneID != sceneID else { return }
+        transitionEditorContext(sceneID: .some(sceneID))
+    }
+
+    private func transitionEditorContext(
+        sceneID: UUID?? = nil,
+        mode: WorkspaceMode? = nil,
+        mutation: () -> Void = {}
+    ) {
+        flushActiveEditorBoundary()
+        mutation()
+        setEditorContextAfterFlush(sceneID: sceneID, mode: mode)
+    }
+
+    private func setEditorContextAfterFlush(sceneID: UUID?? = nil, mode: WorkspaceMode? = nil) {
+        if let sceneID { editorState.selectedSceneID = sceneID }
+        if let mode { editorState.selectedMode = mode }
+    }
+
+    private func prepareForProjectReplacement() -> Bool {
+        flushActiveEditorBoundary()
+        return !hasOpenProject || confirmCloseProjectIfNeeded()
     }
 
     func touchProject() {
@@ -496,15 +561,37 @@ final class AppState {
     }
 
     func touchCurrentSceneText() {
-        guard let scene = selectedScene else {
+        guard let sceneID = selectedScene?.id else {
             touchProject()
             return
         }
+        commitScriptTextChange(sceneID: sceneID)
+    }
+
+    func commitScriptTextChange(sceneID: UUID) {
         projectStore.setSegmentSplitMode(settings.generalPreferences.defaultSplitMode)
-        projectStore.updateCurrentSceneMetrics(sceneID: scene.id, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+        projectStore.updateCurrentSceneMetrics(sceneID: sceneID, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
         projectStore.markProjectDirty()
-        scheduleSegmentRebuild(for: scene.id)
+        scheduleSegmentRebuild(for: sceneID)
         scheduleAutosaveIfNeeded()
+    }
+
+    func flushActiveEditorBoundary(saveImmediately: Bool = true) {
+        let hadActiveScriptEditor = ActiveScriptEditorSession.shared.flush()
+        guard hasOpenProject else { return }
+        if hadActiveScriptEditor {
+            projectStore.markProjectDirty()
+        }
+        if let sceneID = editorState.selectedSceneID ?? selectedScene?.id {
+            flushSegmentRebuild(for: sceneID)
+        }
+        if saveImmediately {
+            autosaveTask?.cancel()
+            autosaveTask = nil
+            performAutosave()
+        } else {
+            scheduleAutosaveIfNeeded()
+        }
     }
 
     func rebuildProductionSegments(markUnsaved: Bool = true) {
@@ -518,31 +605,34 @@ final class AppState {
 
     func addBRollItem(sceneID: UUID, anchor: TextAnchor) {
         guard let scene = project.scenes.first(where: { $0.id == sceneID }) else { return }
-        scene.bRollItems.append(BRollItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", sourceType: .custom, descriptionText: anchor.selectedText))
-        editorState.selectedMode = .bRoll
-        touchProject()
+        transitionEditorContext(mode: .bRoll) {
+            scene.bRollItems.append(BRollItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", sourceType: .custom, descriptionText: anchor.selectedText))
+            touchProject()
+        }
     }
 
     func addEditingItem(sceneID: UUID, anchor: TextAnchor) {
         guard let scene = project.scenes.first(where: { $0.id == sceneID }) else { return }
-        scene.editingItems.append(EditingItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", cutStyle: anchor.selectedText, transition: "", subtitleStyle: ""))
-        editorState.selectedMode = .editing
-        touchProject()
+        transitionEditorContext(mode: .editing) {
+            scene.editingItems.append(EditingItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", cutStyle: anchor.selectedText, transition: "", subtitleStyle: ""))
+            touchProject()
+        }
     }
 
     func selectProductionItem(_ itemID: UUID, mode: WorkspaceMode) {
-        editorState.selectedProductionItemID = itemID
-        editorState.selectedProductionSegmentID = projectStore.segmentID(forProductionItem: itemID, mode: mode)
-        editorState.selectedMode = mode
+        transitionEditorContext(mode: mode) {
+            editorState.selectedProductionItemID = itemID
+            editorState.selectedProductionSegmentID = projectStore.segmentID(forProductionItem: itemID, mode: mode)
+        }
     }
 
     func addScene() {
         guard hasOpenProject else { return }
         let scene = projectStore.makeScene(order: project.scenes.count, title: localized("templates.defaultScene"))
-        projectStore.addScene(scene, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
-        editorState.selectedSceneID = scene.id
-        editorState.selectedMode = .script
-        scheduleAutosaveIfNeeded()
+        transitionEditorContext(sceneID: .some(scene.id), mode: .script) {
+            projectStore.addScene(scene, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            scheduleAutosaveIfNeeded()
+        }
     }
 
     func addScene(after sceneID: UUID) {
@@ -550,18 +640,19 @@ final class AppState {
         let ordered = project.scenes.sortedByOrder
         let targetIndex = ordered.firstIndex { $0.id == sceneID } ?? max(0, ordered.count - 1)
         let scene = projectStore.makeScene(order: targetIndex + 1, title: localized("templates.defaultScene"))
-        projectStore.addScene(scene, afterSortedIndex: targetIndex, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
-        editorState.selectedSceneID = scene.id
-        editorState.selectedMode = .script
-        scheduleAutosaveIfNeeded()
+        transitionEditorContext(sceneID: .some(scene.id), mode: .script) {
+            projectStore.addScene(scene, afterSortedIndex: targetIndex, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            scheduleAutosaveIfNeeded()
+        }
     }
 
     func duplicateSelectedScene() {
         guard let scene = selectedScene else { return }
         let copy = projectStore.duplicate(scene, copySuffix: localized("templates.copySuffix"))
-        projectStore.addScene(copy, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
-        editorState.selectedSceneID = copy.id
-        scheduleAutosaveIfNeeded()
+        transitionEditorContext(sceneID: .some(copy.id)) {
+            projectStore.addScene(copy, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            scheduleAutosaveIfNeeded()
+        }
     }
 
     func deleteSelectedScene() {
@@ -570,9 +661,13 @@ final class AppState {
             return
         }
         guard let selectedSceneIndex else { return }
-        projectStore.deleteScene(at: selectedSceneIndex, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
-        editorState.selectedSceneID = project.scenes[safe: min(selectedSceneIndex, project.scenes.count - 1)]?.id
-        scheduleAutosaveIfNeeded()
+        let nextID = project.scenes.indices.contains(selectedSceneIndex + 1)
+            ? project.scenes[selectedSceneIndex + 1].id
+            : project.scenes.indices.contains(selectedSceneIndex - 1) ? project.scenes[selectedSceneIndex - 1].id : nil
+        transitionEditorContext(sceneID: .some(nextID)) {
+            projectStore.deleteScene(at: selectedSceneIndex, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            scheduleAutosaveIfNeeded()
+        }
     }
 
     func moveSelectedSceneUp() {
@@ -609,14 +704,14 @@ final class AppState {
 
     private func generateProductionSuggestion(kind: AITask) async {
         guard settings.aiPreferences.provider != .disabled else {
-            presentError(localized("ai.generationUnavailable.title"), details: localized("ai.generationConnect"))
+            errorCenter.present(AppError(kind: .aiConfiguration, recoveryAction: .openAISettings))
             return
         }
         guard let scene = selectedScene else { return }
         rebuildProductionSegments(markUnsaved: false)
         let segments = scene.textSegments.sortedByOrder
         guard let segment = segments.first(where: { $0.id == editorState.selectedProductionSegmentID }) ?? segments.first else {
-            presentError(localized("ai.generationFailed.title"), details: localized("ai.generationNoSegment"))
+            errorCenter.present(AppError(kind: .invalidProjectData))
             return
         }
 
@@ -631,7 +726,7 @@ final class AppState {
                 task: kind,
                 provider: settings.aiPreferences.provider,
                 baseURL: settings.aiPreferences.baseURL,
-                systemPrompt: "\(PromptBuilder().systemPrompt(for: kind)) \(schema) Do not use Markdown fences.",
+                systemPrompt: "\(PromptBuilder().systemPrompt(for: kind, language: PromptBuilder().responseLanguage(for: scene.scriptText, fallback: currentLanguage))) \(schema) Do not use Markdown fences.",
                 userPrompt: context,
                 model: settings.aiPreferences.model,
                 temperature: settings.aiPreferences.temperature,
@@ -644,18 +739,18 @@ final class AppState {
                 guard !value.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GenerationError.emptyDescription }
                 let source = BRollSourceType.allCases.first { $0.rawValue.caseInsensitiveCompare(value.source) == .orderedSame } ?? .custom
                 scene.bRollItems.append(BRollItem(textAnchor: projectStore.anchor(for: segment.id, in: scene), linkedSegmentID: segment.id, templateType: "", sourceType: source, descriptionText: value.description, notes: value.notes))
-                selectedMode = .bRoll
+                selectMode(.bRoll)
             case .editingGeneration:
                 let value = try JSONDecoder().decode(GeneratedEditingSuggestion.self, from: data)
                 guard !value.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GenerationError.emptyDescription }
                 scene.editingItems.append(EditingItem(textAnchor: projectStore.anchor(for: segment.id, in: scene), linkedSegmentID: segment.id, templateType: "", cutStyle: value.description, transition: "", subtitleStyle: "", notes: value.notes))
-                selectedMode = .editing
+                selectMode(.editing)
             default: return
             }
             editorState.selectedProductionSegmentID = segment.id
             touchProject()
         } catch {
-            presentError(localized("ai.generationFailed.title"), details: "\(localized("ai.generationFailed.message")) \(error.localizedDescription)")
+            errorCenter.present(AppError.ai(error))
         }
     }
 
@@ -668,45 +763,59 @@ final class AppState {
     func moveSelection(_ delta: Int) {
         guard let selectedSceneIndex else { return }
         let nextIndex = max(0, min(project.scenes.count - 1, selectedSceneIndex + delta))
-        editorState.selectedSceneID = project.scenes[nextIndex].id
+        selectScene(project.scenes[nextIndex].id)
     }
 
     func analyzeSelectedScene() async {
+        guard !aiState.isAnalyzing else { return }
         guard let scene = selectedScene else { return }
         aiState.isAnalyzing = true
-        let comments = settings.aiPreferences.provider == .disabled
-            ? disabledAIComments(for: scene)
-            : await dependencies.analysisService.analyze(scene: scene, project: project, settings: settings.aiPreferences)
-        scene.aiComments = comments
-        touchProject()
-        aiState.isAnalyzing = false
+        aiState.didFailMostRecentAnalysis = false
+        defer { aiState.isAnalyzing = false }
+        do {
+            let comments = settings.aiPreferences.provider == .disabled
+                ? disabledAIComments(for: scene)
+                : try await dependencies.analysisService.analyze(scene: scene, project: project, settings: settings.aiPreferences, interfaceLanguage: currentLanguage)
+            scene.aiComments = comments
+            touchProject()
+        } catch {
+            aiState.didFailMostRecentAnalysis = true
+            errorCenter.present(AppError.ai(error))
+        }
     }
 
     func analyzeFullScript() async {
-        for scene in project.scenes.sortedByOrder {
-            aiState.isAnalyzing = true
-            let comments = settings.aiPreferences.provider == .disabled
-                ? disabledAIComments(for: scene)
-                : await dependencies.analysisService.analyze(scene: scene, project: project, settings: settings.aiPreferences)
-            scene.aiComments = comments
+        guard !aiState.isAnalyzing else { return }
+        aiState.isAnalyzing = true
+        defer { aiState.isAnalyzing = false }
+        do {
+            for scene in project.scenes.sortedByOrder {
+                let comments = settings.aiPreferences.provider == .disabled
+                    ? disabledAIComments(for: scene)
+                    : try await dependencies.analysisService.analyze(scene: scene, project: project, settings: settings.aiPreferences, interfaceLanguage: currentLanguage)
+                scene.aiComments = comments
+            }
+            touchProject()
+        } catch {
+            errorCenter.present(AppError.ai(error))
         }
-        touchProject()
-        aiState.isAnalyzing = false
     }
 
     func clearRecentProjects() {
         recentProjectStore.removeAll()
-        showNotice(localized("notice.recentsCleared"))
+        showNotice(.recentsCleared)
     }
 
     func removeRecentProject(_ entry: RecentProjectEntry) {
         recentProjectStore.remove(id: entry.id)
-        showNotice(localized("notice.recentRemoved"))
+        consumeRecentProjectStoreError()
+        showNotice(.recentRemoved)
     }
 
     func removeRecentProject(id: UUID) {
         recentProjectStore.remove(id: id)
-        showNotice(localized("notice.recentRemoved"))
+        consumeRecentProjectStoreError()
+        showNotice(.recentRemoved)
     }
 
     func compactParentFolder(for entry: RecentProjectEntry) -> String {
@@ -717,6 +826,22 @@ final class AppState {
         windowState.requestedSettingsTab = tab
         windowState.requestedSettingsHighlightKey = highlightKey
         windowState.settingsRequestID = UUID()
+    }
+
+    func performRecovery(_ action: AppRecoveryAction) {
+        switch action {
+        case .retry:
+            break // No retry is offered unless a future typed retry descriptor can execute safely.
+        case .saveAs:
+            _ = saveProjectAs()
+        case .chooseExportFolder:
+            chooseDefaultExportFolder()
+        case .openAISettings:
+            openSettings(tab: .ai)
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        case .removeRecent(let id):
+            removeRecentProject(id: id)
+        }
     }
 
     func resetSidebarWidth() {
@@ -738,7 +863,8 @@ final class AppState {
             settings.exportPreferences.defaultExportFolder = url.path
         } catch {
             clearDefaultExportFolder()
-            showNotice(localized("notice.exportFolderUnavailable"))
+            showNotice(.exportFolderPermissionLost)
+            errorCenter.present(AppError(kind: .bookmark, recoveryAction: .chooseExportFolder))
         }
     }
 
@@ -767,7 +893,7 @@ final class AppState {
                 return url
             } catch {
                 clearDefaultExportFolder()
-                showNotice(localized("notice.exportFolderUnavailable"))
+                showNotice(.exportFolderPermissionLost)
                 return nil
             }
         }
@@ -786,20 +912,21 @@ final class AppState {
             return url
         } catch {
             clearDefaultExportFolder()
-            showNotice(localized("notice.exportFolderUnavailable"))
+            showNotice(.exportFolderPermissionLost)
             return nil
         }
     }
 
-    func presentRecentProjectStoreError(_ error: RecentProjectStoreError?) {
+    func consumeRecentProjectStoreError() {
+        let error = recentProjectStore.storeError
         guard let error else { return }
         switch error {
         case .persistenceFailed:
-            showNotice(localized("notice.recentsPersistenceError"))
+            showNotice(.recentPersistenceWarning)
         case .corruptedStorage:
-            showNotice(localized("notice.recentsStorageError"))
+            showNotice(.recentStorageWarning)
         default:
-            break
+            errorCenter.present(AppError.recent(error))
         }
         recentProjectStore.acknowledgeStoreError()
     }
@@ -846,13 +973,8 @@ final class AppState {
               projectStore.hasUnsavedFileChanges else {
             return
         }
-        let delay = UInt64(settings.generalPreferences.autosaveIntervalSeconds) * 1_000_000_000
         autosaveTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: delay)
-            } catch {
-                return
-            }
+            await Task.yield()
             guard !Task.isCancelled else { return }
             self?.performAutosave()
         }
@@ -877,6 +999,17 @@ final class AppState {
         }
     }
 
+    private func flushSegmentRebuild(for sceneID: UUID) {
+        segmentRebuildTasks[sceneID]?.cancel()
+        segmentRebuildTasks[sceneID] = nil
+        projectStore.synchronizeTextSegments(
+            forSceneID: sceneID,
+            splitMode: settings.generalPreferences.defaultSplitMode,
+            wordsPerMinute: settings.editorPreferences.wordsPerMinute,
+            markUnsaved: false
+        )
+    }
+
     private func performAutosave() {
         guard settings.generalPreferences.autosaveEnabled,
               projectStore.currentFileURL != nil,
@@ -885,62 +1018,62 @@ final class AppState {
         }
         do {
             try projectStore.saveCurrentProject(wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            errorCenter.clearAutosaveFailureSuppression()
         } catch {
-            presentError(localized("error.saveProject"), details: error.localizedDescription)
+            Self.projectFilesLogger.error("Operation autosave failed. Code: \(self.diagnosticCode(for: error), privacy: .public)")
+            errorCenter.presentAutosave(AppError.project(error, fileURL: projectStore.currentFileURL, operation: .autosave))
         }
     }
 
-    private func presentError(_ title: String, details: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = details
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: localized("dialog.ok"))
-        alert.runModal()
-    }
-
-    private func showNotice(_ message: String) {
-        windowState.noticeMessage = message
-        let noticeID = UUID()
-        windowState.noticeID = noticeID
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(3))
-            if windowState.noticeID == noticeID {
-                windowState.noticeMessage = nil
-            }
-        }
+    private func showNotice(_ kind: AppNoticeKind, count: Int? = nil) {
+        errorCenter.showNotice(AppNotice(kind: kind, count: count))
     }
 
     private func rememberRecentProject(_ url: URL) {
         do {
             try recentProjectStore.add(url: url)
         } catch {
-            showNotice(localized("notice.recentBookmarkFailed"))
+            showNotice(.recentBookmarkWarning)
         }
+        consumeRecentProjectStoreError()
     }
 
     private func installAppActivationObserverIfNeeded() {
-        guard appActivationObserver == nil else { return }
-        appActivationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                let result = await self.recentProjectStore.validateEntries()
-                self.presentAutomaticRecentRemovalNotice(count: result.removedMissingCount)
+        if appActivationObserver == nil {
+            appActivationObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    let result = await self.recentProjectStore.validateEntries()
+                    self.presentAutomaticRecentRemovalNotice(count: result.removedMissingCount)
+                    self.consumeRecentProjectStoreError()
+                }
+            }
+        }
+        if appResignationObserver == nil {
+            appResignationObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.willResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.flushActiveEditorBoundary()
+                }
             }
         }
     }
 
     private func presentAutomaticRecentRemovalNotice(count: Int) {
         guard count > 0 else { return }
-        if count == 1 {
-            showNotice(localized("notice.recentMissingRemoved"))
-        } else {
-            showNotice(String(format: localized("notice.recentMissingRemovedMultiple"), count))
-        }
+        showNotice(.recentMissingRemoved, count: count == 1 ? nil : count)
+    }
+
+    private func diagnosticCode(for error: Error) -> String {
+        let value = error as NSError
+        return "\(value.domain):\(value.code)"
     }
 
     private func isReadableRegularFile(_ url: URL) -> Bool {
@@ -1105,7 +1238,12 @@ final class AppState {
             return
         }
         for provider in AIProviderKind.allCases {
-            KeychainStore.deleteAPIKey(account: provider.rawValue)
+            do {
+                try KeychainStore.deleteAPIKey(account: provider.keychainAccount)
+                AIProviderConfigurationStore().setHasStoredKey(false, for: provider)
+            } catch {
+                errorCenter.present(AppError.keychain(error, operation: .delete))
+            }
         }
     }
 
@@ -1256,7 +1394,13 @@ final class ProjectStore {
 
     func saveCurrentProject(to url: URL, wordsPerMinute: Int) throws {
         prepareForSave(wordsPerMinute: wordsPerMinute)
-        try FrameScriptFileStore.write(project: project, to: url)
+        do {
+            try FrameScriptFileStore.write(project: project, to: url)
+        } catch {
+            hasUnsavedFileChanges = true
+            saveState = .edited
+            throw error
+        }
         currentFileURL = url
         hasUnsavedFileChanges = false
         saveState = .saved
@@ -1660,6 +1804,25 @@ final class EditorState {
     var selectedProductionSegmentID: UUID?
     var selectedProductionItemID: UUID?
     var isFocusModeEnabled = false
+    private var scriptEditorStates: [ScriptEditorRestorationKey: ScriptEditorRestorationState] = [:]
+
+    func scriptEditorState(sceneID: UUID, editorIdentity: UUID) -> ScriptEditorRestorationState? {
+        scriptEditorStates[ScriptEditorRestorationKey(sceneID: sceneID, editorIdentity: editorIdentity)]
+    }
+
+    func setScriptEditorState(_ state: ScriptEditorRestorationState, sceneID: UUID, editorIdentity: UUID) {
+        scriptEditorStates[ScriptEditorRestorationKey(sceneID: sceneID, editorIdentity: editorIdentity)] = state
+    }
+}
+
+struct ScriptEditorRestorationKey: Hashable {
+    let sceneID: UUID
+    let editorIdentity: UUID
+}
+
+struct ScriptEditorRestorationState: Equatable {
+    var selectedRange: NSRange
+    var visibleOrigin: NSPoint
 }
 
 enum TextAnchorRepair {
@@ -1758,36 +1921,86 @@ enum TextAnchorRepair {
     }
 }
 
+@MainActor
 @Observable
 final class SettingsStore {
+    typealias SettingsEncoder = (AppSettings) throws -> Data
+    typealias SettingsDecoder = (Data) throws -> AppSettings
+
     var settings: AppSettings {
         didSet { save() }
     }
 
-    private let key = "FrameScript.settings.v1"
+    private(set) var errorEvent: AppError?
+    private let userDefaults: UserDefaults
+    private let key: String
+    private let encoder: SettingsEncoder
+    private var errorReporter: ((AppError) -> Void)?
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "Settings")
 
-    init(settings: AppSettings? = nil) {
-        self.settings = settings ?? Self.load() ?? .defaults
+    init(
+        settings: AppSettings? = nil,
+        userDefaults: UserDefaults = .standard,
+        key: String = "FrameScript.settings.v1",
+        encoder: @escaping SettingsEncoder = { try JSONEncoder().encode($0) },
+        decoder: SettingsDecoder = { try JSONDecoder().decode(AppSettings.self, from: $0) }
+    ) {
+        self.userDefaults = userDefaults
+        self.key = key
+        self.encoder = encoder
+        if let settings {
+            self.settings = settings
+        } else if let data = userDefaults.data(forKey: key) {
+            do {
+                self.settings = try decoder(data)
+            } catch {
+                self.settings = .defaults
+                self.errorEvent = AppError(
+                    kind: .settingsRead,
+                    context: AppErrorContext(diagnosticCode: Self.diagnosticCode(error))
+                )
+                logger.error("Settings read failed. Diagnostic: \(Self.diagnosticCode(error), privacy: .private)")
+            }
+        } else {
+            self.settings = .defaults
+        }
     }
 
     func reset() {
         settings = .defaults
     }
 
-    private func save() {
-        guard let data = try? JSONEncoder().encode(settings) else { return }
-        UserDefaults.standard.set(data, forKey: key)
+    func setErrorReporter(_ reporter: @escaping (AppError) -> Void) {
+        errorReporter = reporter
+        if let errorEvent { reporter(errorEvent) }
     }
 
-    private static func load() -> AppSettings? {
-        guard let data = UserDefaults.standard.data(forKey: "FrameScript.settings.v1") else { return nil }
-        return try? JSONDecoder().decode(AppSettings.self, from: data)
+    private func save() {
+        do {
+            let data = try encoder(settings)
+            userDefaults.set(data, forKey: key)
+            errorEvent = nil
+        } catch {
+            let appError = AppError(
+                kind: .settingsWrite,
+                context: AppErrorContext(diagnosticCode: Self.diagnosticCode(error))
+            )
+            errorEvent = appError
+            errorReporter?(appError)
+            logger.error("Settings write failed. Diagnostic: \(Self.diagnosticCode(error), privacy: .private)")
+        }
+    }
+
+    private static func diagnosticCode(_ error: Error) -> String {
+        let value = error as NSError
+        return "\(value.domain):\(value.code)"
     }
 }
 
 @Observable
 final class AIState {
     var isAnalyzing = false
+    var didFailMostRecentAnalysis = false
 }
 
 @Observable
@@ -1803,8 +2016,6 @@ final class WindowState {
     var isExportPresented = false
     var pendingSettingsTab: SettingsTab?
     var pendingSettingsHighlightKey: String?
-    var noticeMessage: String?
-    var noticeID = UUID()
 }
 
 enum SaveState: String {

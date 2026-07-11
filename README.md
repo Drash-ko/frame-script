@@ -30,7 +30,7 @@ Then select the `FrameScript` scheme, choose `My Mac`, and press `Cmd+R`.
 - Built-in templates for blank, standard YouTube, educational, storytelling, product review, commentary/essay, and tutorial projects.
 - Project save/open using `.fscr` files, with legacy `.framescript` import support.
 - Export as plain text, Markdown, CSV, or production outline.
-- AI review and production suggestions for OpenAI-compatible providers, OpenRouter, and Groq when configured with API keys.
+- AI review, rewrites, autocomplete, and production suggestions for OpenAI-compatible endpoints, OpenRouter, Groq, and Google AI Studio when configured with API keys. AI output follows the script's dominant language, falling back to the interface language for empty scripts.
 - API keys are stored in the macOS Keychain, not in project files.
 
 ## Project Structure
@@ -53,7 +53,13 @@ Built-in templates are defined in `FrameScript/Models/SampleData.swift`.
 
 ## Privacy And Security
 
-FrameScript project files contain project content only. AI provider keys entered in Settings are stored through the macOS Keychain under the `FrameScript` service name.
+FrameScript project files contain project content only. AI provider keys entered in Settings are stored through the macOS Keychain under the `FrameScript` service name. Keychain keeps credentials out of UserDefaults, project files, exports, logs, and source-controlled configuration. FrameScript reads a selected provider's key only when testing that connection or making an AI request; opening Settings only consults local saved-key metadata.
+
+AI review responses use a small validated structure, so malformed provider text is never inserted into the review panel. Existing review notes remain visible while a new analysis runs or if it fails.
+
+## AI Connection Troubleshooting
+
+FrameScript supports OpenAI-compatible endpoints, OpenRouter, Groq, and Google AI Studio. If a connection test fails, verify that the selected provider matches the key, the model identifier is available to that account, and any custom base URL ends at the provider's OpenAI-compatible API root. Authentication errors indicate an invalid or unauthorized key, model-unavailable errors indicate an incorrect or inaccessible model, and rate-limit errors should be retried after the provider's limit resets. Re-saving a key explicitly replaces its existing Keychain entry.
 
 Before publishing builds or branches, keep generated files out of Git:
 
@@ -69,7 +75,7 @@ See `SECURITY.md` for reporting guidance.
 ## Known Limitations
 
 - Inline AI completion and inline review markers are not exposed until the editor has real inline behavior.
-- Anthropic-compatible and Gemini provider adapters are listed as future provider types but are not implemented.
+- Anthropic-compatible provider adapters are not implemented.
 - Production markers use AppKit text-range geometry and should be verified when changing typography or editor layout.
 
 ## License

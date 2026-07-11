@@ -530,8 +530,16 @@ enum AIProviderKind: String, Codable, CaseIterable, Identifiable {
     case openAICompatible = "OpenAI-compatible"
     case openRouter = "OpenRouter"
     case groq = "Groq"
+    case googleAIStudio = "Google AI Studio"
 
     var id: String { rawValue }
+
+    var keychainAccount: String {
+        switch self {
+        case .googleAIStudio: "FrameScript.GoogleAIStudio"
+        default: rawValue
+        }
+    }
 
     init(from decoder: Decoder) throws {
         let value = try decoder.singleValueContainer().decode(String.self)

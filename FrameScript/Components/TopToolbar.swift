@@ -6,8 +6,6 @@ struct TopToolbar: View {
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        @Bindable var editorState = appState.editorState
-
         HStack(spacing: 14) {
             Menu {
                 Button(appState.localized("project.rename")) { appState.renameProject() }
@@ -39,7 +37,10 @@ struct TopToolbar: View {
 
             Spacer(minLength: 8)
 
-            ModeSwitcher(selection: $editorState.selectedMode)
+            ModeSwitcher(selection: Binding(
+                get: { appState.selectedMode },
+                set: { appState.selectMode($0) }
+            ))
 
             Spacer(minLength: 8)
 

@@ -4,15 +4,36 @@
 
 ### Added
 
+- Added Google AI Studio as a configurable AI provider.
+- Added centralized, localized application error presentation and recovery actions.
 - Added manual removal and clearing controls for Recent Projects.
+
+### Changed
+
+- Routed project, settings, export, Keychain, Recent Project, and current AI failures through one error center.
 
 ### Fixed
 
+- Prevented script text loss when switching modes, scenes, windows, or macOS desktops.
+- Aligned the script caret, placeholder, and text with the editor column.
+- Made text edits commit immediately and flush before context changes.
+- Corrected Google AI Studio key storage, connection validation, and response decoding.
+- Accepted the documented Google OpenAI-compatible model object, eliminated duplicate provider Keychain reads, and kept connection failures distinct.
+- Preserved each scene's caret, selection, and scroll position independently per editor window.
+- Prevented stale SwiftUI revisions from replacing newer editor text while still applying external rewrites.
+- Restored the compact Script, B-roll, and Editing mode controls.
+- Improved autosave, structured AI response, Recent Project, Keychain, and file-operation error handling.
+- Localized ModeSwitcher accessibility state.
+- Avoided rewriting unchanged Recent Project storage during validation.
+- Removed silent failure handling from critical persistence and provider operations.
 - Made the complete existing surface of the Script, B-roll, and Editing controls clickable while preserving their previous visual layout.
 - Removed missing Recent Projects when the application becomes active.
 - Improved Recent Project bookmark validation and manual removal.
 - Preserved legacy Recent data when migration persistence fails.
 - Improved sandbox bookmark handling for export folders.
+- Made AI analysis, rewrites, autocomplete, and production generation follow the script language with an interface-language fallback.
+- Validated structured AI analysis before display, localized the AI review and Keychain information UI, and preserved earlier results during failed analysis retries.
+- Replaced Keychain delete-and-add replacement with update-first storage and avoided Settings Keychain reads.
 
 ## [0.2.0] - 2026-07-10
 
