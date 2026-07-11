@@ -46,15 +46,32 @@ struct FrameScriptApp: App {
             Button(appState.localized("menu.open")) { appState.openProject() }
                 .keyboardShortcut("o", modifiers: .command)
             Menu(appState.localized("menu.openRecent")) {
-                if appState.recentProjectURLs.isEmpty {
+                if appState.recentProjectEntries.isEmpty {
                     Text(appState.localized("menu.noRecentProjects"))
                 } else {
-                    ForEach(appState.recentProjectURLs, id: \.path) { url in
-                        Button(url.deletingPathExtension().lastPathComponent) {
-                            appState.openProject(at: url)
+                    ForEach(appState.recentProjectEntries) { entry in
+                        Button(entry.displayName) {
+                            appState.openRecentProject(entry)
                         }
                     }
                     Divider()
+                    Menu(appState.localized("recent.manage")) {
+                        ForEach(appState.recentProjectEntries) { entry in
+                            Menu(entry.displayName) {
+                                Button(appState.localized("recent.open")) {
+                                    appState.openRecentProject(entry)
+                                }
+                                Button(appState.localized("project.reveal")) {
+                                    appState.revealRecentProjectInFinder(entry)
+                                }
+                                .disabled(!appState.canRevealRecentProject(entry))
+                                Divider()
+                                Button(appState.localized("recent.remove")) {
+                                    appState.removeRecentProject(entry)
+                                }
+                            }
+                        }
+                    }
                     Button(appState.localized("menu.clearMenu")) { appState.clearRecentProjects() }
                 }
             }

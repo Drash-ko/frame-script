@@ -13,8 +13,23 @@ struct AppRootView: View {
                 WelcomeView()
             }
         }
+            .overlay(alignment: .bottom) {
+                if let noticeMessage = appState.windowState.noticeMessage {
+                    Text(noticeMessage)
+                        .font(.system(size: 13, weight: .medium))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .padding(.bottom, 18)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.18), value: appState.windowState.noticeMessage)
             .task {
                 appState.configure()
+            }
+            .onChange(of: appState.recentProjectStore.storeError, initial: true) { _, error in
+                appState.presentRecentProjectStoreError(error)
             }
             .sheet(item: $windowState.newProjectRequest) { request in
                 Group {
@@ -156,6 +171,7 @@ struct WelcomeView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     @State private var isTemplatePickerPresented = false
+    @FocusState private var focusedRecentID: UUID?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -193,7 +209,7 @@ struct WelcomeView: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(theme.primaryText)
 
-                if appState.recentProjectURLs.isEmpty {
+                if appState.recentProjectEntries.isEmpty {
                     Text(appState.localized("welcome.noRecent"))
                         .font(.system(size: 14))
                         .foregroundStyle(theme.secondaryText)
@@ -201,35 +217,14 @@ struct WelcomeView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 8) {
-                            ForEach(appState.recentProjectURLs, id: \.path) { url in
-                                Button {
-                                    appState.openProject(at: url)
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        Image(systemName: "doc.text")
-                                            .foregroundStyle(theme.accent.color)
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(url.deletingPathExtension().lastPathComponent)
-                                                .font(.system(size: 14, weight: .medium))
-                                                .foregroundStyle(theme.primaryText)
-                                            Text(url.path)
-                                                .font(.system(size: 12))
-                                                .foregroundStyle(theme.secondaryText)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                    }
-                                    .padding(.vertical, 10)
-                                    .padding(.horizontal, 12)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.cursorPlain)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(theme.hover)
-                                )
+                            ForEach(appState.recentProjectEntries) { entry in
+                                RecentProjectRow(entry: entry, focusedRecentID: $focusedRecentID)
                             }
                         }
+                    }
+                    .onDeleteCommand {
+                        guard let focusedRecentID else { return }
+                        appState.removeRecentProject(id: focusedRecentID)
                     }
                 }
 
@@ -245,6 +240,89 @@ struct WelcomeView: View {
             TemplatePickerView()
                 .environment(appState)
                 .environment(\.frameTheme, theme)
+        }
+        .task {
+            await appState.recentProjectStore.validateEntries()
+        }
+    }
+}
+
+private struct RecentProjectRow: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.frameTheme) private var theme
+    let entry: RecentProjectEntry
+    @FocusState.Binding var focusedRecentID: UUID?
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                focusedRecentID = entry.id
+                appState.openRecentProject(entry)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "doc.text")
+                        .foregroundStyle(theme.accent.color)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(entry.displayName)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(theme.primaryText)
+                        Text(appState.compactParentFolder(for: entry))
+                            .font(.system(size: 12))
+                            .foregroundStyle(theme.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 8)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.cursorPlain)
+            .focusable()
+            .focused($focusedRecentID, equals: entry.id)
+            .accessibilityLabel(entry.displayName)
+            .accessibilityIdentifier("recent-row-\(entry.displayName)")
+            .accessibilityAction(named: Text(appState.localized("recent.remove"))) {
+                appState.removeRecentProject(entry)
+            }
+
+            Button {
+                appState.removeRecentProject(entry)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.cursorPlain)
+            .focusable(false)
+            .foregroundStyle(theme.secondaryText)
+            .opacity(isHovered ? 1 : 0)
+            .allowsHitTesting(isHovered)
+            .help(appState.localized("recent.remove"))
+            .accessibilityLabel(appState.localized("recent.remove"))
+            .accessibilityIdentifier("recent-remove-\(entry.displayName)")
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(theme.hover)
+        )
+        .contentShape(Rectangle())
+        .onHover { isHovered = $0 }
+        .contextMenu {
+            Button(appState.localized("recent.open")) {
+                appState.openRecentProject(entry)
+            }
+            Button(appState.localized("project.reveal")) {
+                appState.revealRecentProjectInFinder(entry)
+            }
+            .disabled(!appState.canRevealRecentProject(entry))
+            Divider()
+            Button(appState.localized("recent.remove")) {
+                appState.removeRecentProject(entry)
+            }
         }
     }
 }
@@ -671,11 +749,14 @@ private struct ExportSheetView: View {
         panel.canCreateDirectories = true
         panel.nameFieldStringValue = "\(appState.project.title).\(format.fileExtension)"
         panel.message = appState.localized("dialog.exportProject.message")
-        if !preferences.defaultExportFolder.isEmpty {
-            let folder = URL(fileURLWithPath: preferences.defaultExportFolder)
-            if FileManager.default.fileExists(atPath: folder.path) {
-                panel.directoryURL = folder
+        if let folder = appState.resolvedDefaultExportFolder() {
+            let didStartAccessing = folder.startAccessingSecurityScopedResource()
+            defer {
+                if didStartAccessing {
+                    folder.stopAccessingSecurityScopedResource()
+                }
             }
+            panel.directoryURL = folder
         }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         appState.saveExport(format: format, preferences: effectivePreferences, to: url)

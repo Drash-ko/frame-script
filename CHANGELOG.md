@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added manual removal and clearing controls for Recent Projects.
+
 ### Fixed
 
 - Made the complete existing surface of the Script, B-roll, and Editing controls clickable while preserving their previous visual layout.
+- Removed missing Recent Projects when the application becomes active.
+- Improved Recent Project bookmark validation and manual removal.
+- Preserved legacy Recent data when migration persistence fails.
+- Improved sandbox bookmark handling for export folders.
 
 ## [0.2.0] - 2026-07-10
 

@@ -73,37 +73,59 @@ struct NewProjectRequest: Identifiable, Equatable {
 @MainActor
 @Observable
 final class AppState {
+    typealias ExportFolderBookmarkCreator = @MainActor @Sendable (URL) throws -> Data
+    typealias ExportFolderBookmarkResolver = @MainActor @Sendable (Data, inout Bool) throws -> URL
+
     let projectStore: ProjectStore
+    let recentProjectStore: RecentProjectStore
     let editorState: EditorState
     let settingsStore: SettingsStore
     let aiState: AIState
     let windowState: WindowState
     let themeManager: ResolvedThemeManager
     let dependencies: AppDependencies
+    private let securityScope: SecurityScopedResourceAccess
+    private let exportFolderBookmarkCreator: ExportFolderBookmarkCreator
+    private let exportFolderBookmarkResolver: ExportFolderBookmarkResolver
 
     var templates: [FrameTemplate]
     private let builtInTemplates: [FrameTemplate]
     private var autosaveTask: Task<Void, Never>?
     private var segmentRebuildTasks: [UUID: Task<Void, Never>] = [:]
+#if DEBUG
     private var didApplyUITestLaunchArguments = false
+#endif
+    private var appActivationObserver: NSObjectProtocol?
 
     init(
         projectStore: ProjectStore = ProjectStore(),
+        recentProjectStore: RecentProjectStore = RecentProjectStore(),
         editorState: EditorState = EditorState(),
         settingsStore: SettingsStore = SettingsStore(),
         aiState: AIState = AIState(),
         windowState: WindowState = WindowState(),
         themeManager: ResolvedThemeManager = ResolvedThemeManager(),
         dependencies: AppDependencies = .live,
+        securityScope: SecurityScopedResourceAccess = .live,
+        exportFolderBookmarkCreator: @escaping ExportFolderBookmarkCreator = { url in
+            try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+        },
+        exportFolderBookmarkResolver: @escaping ExportFolderBookmarkResolver = { data, isStale in
+            try URL(resolvingBookmarkData: data, options: [.withSecurityScope], relativeTo: nil, bookmarkDataIsStale: &isStale)
+        },
         templates: [FrameTemplate] = SampleData.templates
     ) {
         self.projectStore = projectStore
+        self.recentProjectStore = recentProjectStore
         self.editorState = editorState
         self.settingsStore = settingsStore
         self.aiState = aiState
         self.windowState = windowState
         self.themeManager = themeManager
         self.dependencies = dependencies
+        self.securityScope = securityScope
+        self.exportFolderBookmarkCreator = exportFolderBookmarkCreator
+        self.exportFolderBookmarkResolver = exportFolderBookmarkResolver
         self.builtInTemplates = templates.filter(\.builtIn)
         self.templates = Self.mergedTemplates(builtIns: templates.filter(\.builtIn), customTemplates: Self.loadCustomTemplates())
         self.windowState.isSidebarVisible = settingsStore.settings.windowPreferences.sidebarDefaultVisible
@@ -111,21 +133,50 @@ final class AppState {
     }
 
     func configure() {
+        let arguments = ProcessInfo.processInfo.arguments
+        recentProjectStore.load()
+#if DEBUG
+        if let flagIndex = arguments.firstIndex(of: "--framescript-ui-test-recent-path"),
+           arguments.indices.contains(flagIndex + 1) {
+            let requestedURL = URL(fileURLWithPath: arguments[flagIndex + 1])
+            do {
+                try recentProjectStore.addUITestEntry(url: requestedURL)
+            } catch {
+                showNotice(localized("notice.recentBookmarkFailed"))
+            }
+        } else {
+            recentProjectStore.validateEntriesNow()
+        }
+#else
+        recentProjectStore.validateEntriesNow()
+#endif
+        installAppActivationObserverIfNeeded()
         projectStore.configure(
-            restoreLastProjectOnLaunch: settings.generalPreferences.restoreLastProjectOnLaunch && !settings.generalPreferences.showProjectBrowserOnLaunch,
             wordsPerMinute: settings.editorPreferences.wordsPerMinute
         )
-        let arguments = ProcessInfo.processInfo.arguments
+#if DEBUG
         if arguments.contains("--framescript-ui-test-language-english") {
             settings.generalPreferences.language = .english
         } else if arguments.contains("--framescript-ui-test-language-russian") {
             settings.generalPreferences.language = .russian
         }
+        if arguments.contains("--framescript-ui-test-show-browser") {
+            settings.generalPreferences.showProjectBrowserOnLaunch = true
+        }
+#endif
+        if settings.generalPreferences.restoreLastProjectOnLaunch,
+           !settings.generalPreferences.showProjectBrowserOnLaunch,
+           !hasOpenProject,
+           let entry = recentProjectStore.entries.first {
+            openRecentProject(entry, reportsMissingNotice: false, presentsErrors: false)
+        }
+#if DEBUG
         if !didApplyUITestLaunchArguments,
            arguments.contains("--framescript-ui-test-open-demo") {
             didApplyUITestLaunchArguments = true
             openDemoProject()
         }
+#endif
         projectStore.setSegmentSplitMode(settings.generalPreferences.defaultSplitMode)
         if editorState.selectedSceneID == nil {
             editorState.selectedSceneID = project.scenes.first?.id
@@ -154,8 +205,8 @@ final class AppState {
         projectStore.hasOpenProject
     }
 
-    var recentProjectURLs: [URL] {
-        projectStore.recentProjectURLs
+    var recentProjectEntries: [RecentProjectEntry] {
+        recentProjectStore.entries
     }
 
     var selectedSceneIndex: Int? {
@@ -275,12 +326,48 @@ final class AppState {
 
     func openProject(at url: URL) {
         do {
-            let project = try FrameScriptFileStore.read(from: url)
+            let project = try securityScope.withAccess(to: url) {
+                try FrameScriptFileStore.read(from: url)
+            }
             projectStore.openProject(project, fileURL: url, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
+            rememberRecentProject(url)
             projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
             editorState.selectedSceneID = project.scenes.sortedByOrder.first?.id
         } catch {
             presentError(localized("error.openProject"), details: error.localizedDescription)
+        }
+    }
+
+    func openRecentProject(
+        _ entry: RecentProjectEntry,
+        reportsMissingNotice: Bool = true,
+        presentsErrors: Bool = true
+    ) {
+#if DEBUG
+        if recentProjectStore.isUITestEntry(entry),
+           ProcessInfo.processInfo.arguments.contains("--framescript-ui-test-recent-path") {
+            return
+        }
+#endif
+        do {
+            let url = try recentProjectStore.validatedURL(for: entry)
+            try securityScope.withAccess(to: url) {
+                let project = try FrameScriptFileStore.read(from: url)
+                projectStore.openProject(project, fileURL: url, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
+                rememberRecentProject(url)
+                projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: false)
+                editorState.selectedSceneID = project.scenes.sortedByOrder.first?.id
+            }
+        } catch RecentProjectStoreError.missingFile {
+            recentProjectStore.remove(id: entry.id)
+            if reportsMissingNotice { showNotice(localized("notice.recentMissingRemoved")) }
+        } catch RecentProjectStoreError.unreadableFile {
+            recentProjectStore.remove(id: entry.id)
+            if presentsErrors { presentError(localized("error.openProject"), details: localized("error.recentUnreadable")) }
+        } catch {
+            if presentsErrors {
+                presentError(localized("error.openProject"), details: error.localizedDescription)
+            }
         }
     }
 
@@ -293,6 +380,9 @@ final class AppState {
         guard hasOpenProject else { return false }
         do {
             try projectStore.saveCurrentProject(wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            if let currentFileURL = projectStore.currentFileURL {
+                rememberRecentProject(currentFileURL)
+            }
             return true
         } catch ProjectStore.ProjectFileError.missingFileURL {
             return saveProjectAs()
@@ -313,6 +403,7 @@ final class AppState {
         guard panel.runModal() == .OK, let url = panel.url else { return false }
         do {
             try projectStore.saveCurrentProject(to: url, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            rememberRecentProject(url)
             return true
         } catch {
             presentError(localized("error.saveProject"), details: error.localizedDescription)
@@ -359,7 +450,20 @@ final class AppState {
 
     func revealProjectInFinder() {
         guard let url = projectStore.currentFileURL else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        securityScope.withAccess(to: url) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+    }
+
+    func revealRecentProjectInFinder(_ entry: RecentProjectEntry) {
+        do {
+            let url = try recentProjectStore.validatedURL(for: entry)
+            securityScope.withAccess(to: url) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        } catch {
+            showNotice(localized("notice.recentMissingRemoved"))
+        }
+    }
+
+    func canRevealRecentProject(_ entry: RecentProjectEntry) -> Bool {
+        recentProjectStore.availability(for: entry)
     }
 
     func renameProject() {
@@ -591,7 +695,22 @@ final class AppState {
     }
 
     func clearRecentProjects() {
-        projectStore.clearRecentProjects()
+        recentProjectStore.removeAll()
+        showNotice(localized("notice.recentsCleared"))
+    }
+
+    func removeRecentProject(_ entry: RecentProjectEntry) {
+        recentProjectStore.remove(id: entry.id)
+        showNotice(localized("notice.recentRemoved"))
+    }
+
+    func removeRecentProject(id: UUID) {
+        recentProjectStore.remove(id: id)
+        showNotice(localized("notice.recentRemoved"))
+    }
+
+    func compactParentFolder(for entry: RecentProjectEntry) -> String {
+        recentProjectStore.compactParentFolder(for: entry)
     }
 
     func openSettings(tab: SettingsTab = .general, highlightKey: String? = nil) {
@@ -612,11 +731,77 @@ final class AppState {
         panel.canCreateDirectories = true
         panel.message = localized("dialog.exportFolder.message")
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        settings.exportPreferences.defaultExportFolder = url.path
+        do {
+            settings.exportPreferences.defaultExportFolderBookmarkData = try securityScope.withAccess(to: url) {
+                try exportFolderBookmarkCreator(url)
+            }
+            settings.exportPreferences.defaultExportFolder = url.path
+        } catch {
+            clearDefaultExportFolder()
+            showNotice(localized("notice.exportFolderUnavailable"))
+        }
     }
 
     func clearDefaultExportFolder() {
         settings.exportPreferences.defaultExportFolder = ""
+        settings.exportPreferences.defaultExportFolderBookmarkData = nil
+    }
+
+    func resolvedDefaultExportFolder() -> URL? {
+        if let bookmarkData = settings.exportPreferences.defaultExportFolderBookmarkData {
+            do {
+                var isStale = false
+                let url = try exportFolderBookmarkResolver(bookmarkData, &isStale).standardizedFileURL
+                let refreshedBookmark = try securityScope.withAccess(to: url) { () throws -> Data? in
+                    guard isReadableDirectory(url) else {
+                        throw RecentProjectStoreError.unreadableFile(url)
+                    }
+                    return isStale ? try exportFolderBookmarkCreator(url) : nil
+                }
+                if let refreshedBookmark {
+                    settings.exportPreferences.defaultExportFolderBookmarkData = refreshedBookmark
+                }
+                if settings.exportPreferences.defaultExportFolder != url.path {
+                    settings.exportPreferences.defaultExportFolder = url.path
+                }
+                return url
+            } catch {
+                clearDefaultExportFolder()
+                showNotice(localized("notice.exportFolderUnavailable"))
+                return nil
+            }
+        }
+
+        guard !settings.exportPreferences.defaultExportFolder.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: settings.exportPreferences.defaultExportFolder).standardizedFileURL
+        do {
+            let bookmark = try securityScope.withAccess(to: url) { () throws -> Data in
+                guard isReadableDirectory(url) else {
+                    throw RecentProjectStoreError.unreadableFile(url)
+                }
+                return try exportFolderBookmarkCreator(url)
+            }
+            settings.exportPreferences.defaultExportFolderBookmarkData = bookmark
+            settings.exportPreferences.defaultExportFolder = url.path
+            return url
+        } catch {
+            clearDefaultExportFolder()
+            showNotice(localized("notice.exportFolderUnavailable"))
+            return nil
+        }
+    }
+
+    func presentRecentProjectStoreError(_ error: RecentProjectStoreError?) {
+        guard let error else { return }
+        switch error {
+        case .persistenceFailed:
+            showNotice(localized("notice.recentsPersistenceError"))
+        case .corruptedStorage:
+            showNotice(localized("notice.recentsStorageError"))
+        default:
+            break
+        }
+        recentProjectStore.acknowledgeStoreError()
     }
 
     private func confirmCloseProjectIfNeeded() -> Bool {
@@ -712,6 +897,70 @@ final class AppState {
         alert.alertStyle = .warning
         alert.addButton(withTitle: localized("dialog.ok"))
         alert.runModal()
+    }
+
+    private func showNotice(_ message: String) {
+        windowState.noticeMessage = message
+        let noticeID = UUID()
+        windowState.noticeID = noticeID
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            if windowState.noticeID == noticeID {
+                windowState.noticeMessage = nil
+            }
+        }
+    }
+
+    private func rememberRecentProject(_ url: URL) {
+        do {
+            try recentProjectStore.add(url: url)
+        } catch {
+            showNotice(localized("notice.recentBookmarkFailed"))
+        }
+    }
+
+    private func installAppActivationObserverIfNeeded() {
+        guard appActivationObserver == nil else { return }
+        appActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let result = await self.recentProjectStore.validateEntries()
+                self.presentAutomaticRecentRemovalNotice(count: result.removedMissingCount)
+            }
+        }
+    }
+
+    private func presentAutomaticRecentRemovalNotice(count: Int) {
+        guard count > 0 else { return }
+        if count == 1 {
+            showNotice(localized("notice.recentMissingRemoved"))
+        } else {
+            showNotice(String(format: localized("notice.recentMissingRemovedMultiple"), count))
+        }
+    }
+
+    private func isReadableRegularFile(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              FileManager.default.isReadableFile(atPath: url.path) else {
+            return false
+        }
+        return true
+    }
+
+    private func isReadableDirectory(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              FileManager.default.isReadableFile(atPath: url.path) else {
+            return false
+        }
+        return true
     }
 
     private func confirm(title: String, message: String, confirmButtonTitle: String? = nil) -> Bool {
@@ -964,13 +1213,10 @@ final class ProjectStore {
     private(set) var currentFileURL: URL?
     private(set) var saveState: SaveState = .saved
     private(set) var hasUnsavedFileChanges = false
-    private let recentProjectsKey = "FrameScript.recentProjectPaths"
-    private(set) var recentProjectURLs: [URL] = []
     private var segmentSplitMode: SegmentType = AppSettings.defaults.generalPreferences.defaultSplitMode
 
     init(project: FrameProject = SampleData.defaultProject) {
         self.project = project
-        recentProjectURLs = UserDefaults.standard.stringArray(forKey: recentProjectsKey)?.map(URL.init(fileURLWithPath:)) ?? []
         recalculateDurations(wordsPerMinute: AppSettings.defaults.editorPreferences.wordsPerMinute)
     }
 
@@ -978,22 +1224,7 @@ final class ProjectStore {
         segmentSplitMode = splitMode
     }
 
-    func configure(
-        restoreLastProjectOnLaunch: Bool,
-        wordsPerMinute: Int
-    ) {
-        if !isConfigured, restoreLastProjectOnLaunch {
-            pruneMissingRecentProjectURLs()
-            if let url = recentProjectURLs.first {
-                do {
-                    let restoredProject = try FrameScriptFileStore.read(from: url)
-                    openProject(restoredProject, fileURL: url, wordsPerMinute: wordsPerMinute, markUnsaved: false)
-                } catch {
-                    recentProjectURLs.removeAll { $0.path == url.path }
-                    UserDefaults.standard.set(recentProjectURLs.map(\.path), forKey: recentProjectsKey)
-                }
-            }
-        }
+    func configure(wordsPerMinute: Int) {
         isConfigured = true
         recalculateDurations(wordsPerMinute: wordsPerMinute)
     }
@@ -1002,9 +1233,6 @@ final class ProjectStore {
         self.project = project
         currentFileURL = fileURL
         hasOpenProject = true
-        if let fileURL {
-            rememberRecentProject(fileURL)
-        }
         recalculateDurations(wordsPerMinute: wordsPerMinute)
         hasUnsavedFileChanges = markUnsaved || fileURL == nil
         saveState = hasUnsavedFileChanges ? .edited : .saved
@@ -1030,7 +1258,6 @@ final class ProjectStore {
         prepareForSave(wordsPerMinute: wordsPerMinute)
         try FrameScriptFileStore.write(project: project, to: url)
         currentFileURL = url
-        rememberRecentProject(url)
         hasUnsavedFileChanges = false
         saveState = .saved
     }
@@ -1424,22 +1651,6 @@ final class ProjectStore {
         }
     }
 
-    private func rememberRecentProject(_ url: URL) {
-        recentProjectURLs.removeAll { $0.path == url.path }
-        recentProjectURLs.insert(url, at: 0)
-        recentProjectURLs = Array(recentProjectURLs.prefix(8))
-        UserDefaults.standard.set(recentProjectURLs.map(\.path), forKey: recentProjectsKey)
-    }
-
-    private func pruneMissingRecentProjectURLs() {
-        recentProjectURLs = recentProjectURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
-        UserDefaults.standard.set(recentProjectURLs.map(\.path), forKey: recentProjectsKey)
-    }
-
-    func clearRecentProjects() {
-        recentProjectURLs = []
-        UserDefaults.standard.removeObject(forKey: recentProjectsKey)
-    }
 }
 
 @Observable
@@ -1592,6 +1803,8 @@ final class WindowState {
     var isExportPresented = false
     var pendingSettingsTab: SettingsTab?
     var pendingSettingsHighlightKey: String?
+    var noticeMessage: String?
+    var noticeID = UUID()
 }
 
 enum SaveState: String {

@@ -564,6 +564,7 @@ struct ExportPreferences: Codable, Hashable {
     var includeAINotes: Bool
     var teleprompterFormatting: Bool
     var defaultExportFolder: String
+    var defaultExportFolderBookmarkData: Data?
 }
 
 struct WindowPreferences: Codable, Hashable {
@@ -646,7 +647,8 @@ extension AppSettings {
             includeEditingNotes: true,
             includeAINotes: false,
             teleprompterFormatting: false,
-            defaultExportFolder: ""
+            defaultExportFolder: "",
+            defaultExportFolderBookmarkData: nil
         ),
         windowPreferences: WindowPreferences(
             sidebarDefaultVisible: true,

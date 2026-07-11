@@ -6,11 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXFileReference section */
-		FS00000000000000000000001 /* FrameScript.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FrameScript.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		FS00000000000000000000016 /* FrameScriptUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FrameScriptUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-/* End PBXFileReference section */
-
 /* Begin PBXContainerItemProxy section */
 		FS00000000000000000000018 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -19,7 +14,20 @@
 			remoteGlobalIDString = FS00000000000000000000006;
 			remoteInfo = FrameScript;
 		};
+		FS00000000000000000000038 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FS00000000000000000000010 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FS00000000000000000000006;
+			remoteInfo = FrameScript;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		FS00000000000000000000001 /* FrameScript.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FrameScript.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FS00000000000000000000016 /* FrameScriptUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FrameScriptUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FS00000000000000000000028 /* FrameScriptTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FrameScriptTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		FS00000000000000000000002 /* FrameScript */ = {
@@ -30,6 +38,11 @@
 		FS00000000000000000000017 /* FrameScriptUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = FrameScriptUITests;
+			sourceTree = "<group>";
+		};
+		FS00000000000000000000029 /* FrameScriptTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = FrameScriptTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -49,6 +62,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FS00000000000000000000035 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -56,6 +76,7 @@
 			isa = PBXGroup;
 			children = (
 				FS00000000000000000000002 /* FrameScript */,
+				FS00000000000000000000029 /* FrameScriptTests */,
 				FS00000000000000000000017 /* FrameScriptUITests */,
 				FS00000000000000000000005 /* Products */,
 			);
@@ -65,6 +86,7 @@
 			isa = PBXGroup;
 			children = (
 				FS00000000000000000000001 /* FrameScript.app */,
+				FS00000000000000000000028 /* FrameScriptTests.xctest */,
 				FS00000000000000000000016 /* FrameScriptUITests.xctest */,
 			);
 			name = Products;
@@ -118,6 +140,29 @@
 			productReference = FS00000000000000000000016 /* FrameScriptUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		FS00000000000000000000030 /* FrameScriptTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FS00000000000000000000031 /* Build configuration list for PBXNativeTarget "FrameScriptTests" */;
+			buildPhases = (
+				FS00000000000000000000034 /* Sources */,
+				FS00000000000000000000035 /* Frameworks */,
+				FS00000000000000000000036 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FS00000000000000000000039 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FS00000000000000000000029 /* FrameScriptTests */,
+			);
+			name = FrameScriptTests;
+			packageProductDependencies = (
+			);
+			productName = FrameScriptTests;
+			productReference = FS00000000000000000000028 /* FrameScriptTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -133,6 +178,10 @@
 						ProvisioningStyle = Automatic;
 					};
 					FS00000000000000000000020 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = FS00000000000000000000006;
+					};
+					FS00000000000000000000030 = {
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = FS00000000000000000000006;
 					};
@@ -153,6 +202,7 @@
 			projectRoot = "";
 			targets = (
 				FS00000000000000000000006 /* FrameScript */,
+				FS00000000000000000000030 /* FrameScriptTests */,
 				FS00000000000000000000020 /* FrameScriptUITests */,
 			);
 		};
@@ -167,6 +217,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		FS00000000000000000000025 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FS00000000000000000000036 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -190,6 +247,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FS00000000000000000000034 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -197,6 +261,11 @@
 			isa = PBXTargetDependency;
 			target = FS00000000000000000000006 /* FrameScript */;
 			targetProxy = FS00000000000000000000018 /* PBXContainerItemProxy */;
+		};
+		FS00000000000000000000039 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FS00000000000000000000006 /* FrameScript */;
+			targetProxy = FS00000000000000000000038 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -406,6 +475,44 @@
 			};
 			name = Release;
 		};
+		FS00000000000000000000032 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				ENABLE_TESTING_SEARCH_PATHS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.drashko.FrameScriptTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FrameScript.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FrameScript";
+			};
+			name = Debug;
+		};
+		FS00000000000000000000033 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				ENABLE_TESTING_SEARCH_PATHS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.drashko.FrameScriptTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/FrameScript.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/FrameScript";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -432,6 +539,15 @@
 			buildConfigurations = (
 				FS00000000000000000000026 /* Debug */,
 				FS00000000000000000000027 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FS00000000000000000000031 /* Build configuration list for PBXNativeTarget "FrameScriptTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FS00000000000000000000032 /* Debug */,
+				FS00000000000000000000033 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
