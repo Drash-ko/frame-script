@@ -2,8 +2,8 @@ import XCTest
 
 @MainActor
 final class ModeSwitcherHitAreaUITests: XCTestCase {
-    private let expectedButtonWidth: CGFloat = 86
-    private let expectedSwitcherWidth: CGFloat = 268
+    private let expectedButtonWidth: CGFloat = 112
+    private let expectedSwitcherWidth: CGFloat = 346
     private let expectedButtonHeight: CGFloat = 28
     private let expectedSwitcherHeight: CGFloat = 34
     private let tolerance: CGFloat = 0.5
@@ -13,14 +13,20 @@ final class ModeSwitcherHitAreaUITests: XCTestCase {
     }
 
     func testEnglishHitAreasAndMetrics() throws {
-        try verifyHitAreasAndMetrics(languageArgument: "--framescript-ui-test-language-english")
+        try verifyHitAreasAndMetrics(
+            languageArgument: "--framescript-ui-test-language-english",
+            expectedVisualsTitle: "Visuals"
+        )
     }
 
     func testRussianHitAreasAndMetrics() throws {
-        try verifyHitAreasAndMetrics(languageArgument: "--framescript-ui-test-language-russian")
+        try verifyHitAreasAndMetrics(
+            languageArgument: "--framescript-ui-test-language-russian",
+            expectedVisualsTitle: "Видеоряд"
+        )
     }
 
-    private func verifyHitAreasAndMetrics(languageArgument: String) throws {
+    private func verifyHitAreasAndMetrics(languageArgument: String, expectedVisualsTitle: String) throws {
         let app = XCUIApplication()
         app.launchArguments = ["--framescript-ui-test-open-demo", languageArgument]
         app.launch()
@@ -28,6 +34,7 @@ final class ModeSwitcherHitAreaUITests: XCTestCase {
         let identifiers = ["mode-switcher-script", "mode-switcher-broll", "mode-switcher-editing"]
         let controls = identifiers.map { modeControl($0, in: app) }
         XCTAssertTrue(controls[0].waitForExistence(timeout: 5))
+        XCTAssertEqual(controls[1].label, expectedVisualsTitle)
         controls.forEach { control in
             XCTAssertEqual(control.frame.width, expectedButtonWidth, accuracy: tolerance)
             XCTAssertEqual(control.frame.height, expectedButtonHeight, accuracy: tolerance)

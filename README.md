@@ -2,13 +2,13 @@
 
 ![FrameScript demo banner](docs/banner.svg)
 
-FrameScript is a native macOS SwiftUI app for writing YouTube scripts as structured production scenes. A scene keeps the voiceover script, B-roll plan, editing notes, AI review comments, and estimated duration together so writing and production planning stay in one focused workspace.
+FrameScript is a native macOS SwiftUI app for writing YouTube scripts as structured production scenes. A scene keeps the voiceover script, visuals plan, editing notes, AI review comments, and estimated duration together so writing and production planning stay in one focused workspace.
 
 This repository is prepared as the FrameScript v0.2.0 demo snapshot.
 
 ## Status
 
-FrameScript is an early demo. The core app shell, local project format, templates, script/B-roll/editing workflows, export renderer, and Keychain-backed AI configuration are implemented.
+FrameScript is an early demo. The core app shell, local project format, templates, Script/Visuals/Editing workspaces, export renderer, and Keychain-backed AI configuration are implemented.
 
 ## Requirements
 
@@ -26,7 +26,7 @@ Then select the `FrameScript` scheme, choose `My Mac`, and press `Cmd+R`.
 ## Features
 
 - Scene-based script editor with English and Russian UI strings.
-- Script, B-roll, and editing modes over the same scene structure.
+- Script, Visuals, and Editing workspaces over the same scene structure.
 - Built-in templates for blank, standard YouTube, educational, storytelling, product review, commentary/essay, and tutorial projects.
 - Project save/open using `.fscr` files, with legacy `.framescript` import support.
 - Export as plain text, Markdown, CSV, or production outline.
@@ -41,7 +41,7 @@ FrameScript/
   App/                 App entry, shell, state, dependencies
   Components/          Shared toolbar, sidebar, form, editor UI
   Core/                Theme, localization, duration utilities
-  Features/            Script, B-roll, Editing, AI, Settings, commands
+  Features/            Script, Visuals, Editing, AI, Settings, commands
   Models/              Observable document models, settings, built-in templates, demo data
   Services/            AI, export, file storage, Keychain
   Assets.xcassets      App icon and assets

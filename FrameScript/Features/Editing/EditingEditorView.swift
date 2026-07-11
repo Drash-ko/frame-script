@@ -21,8 +21,9 @@ struct EditingEditorView: View {
                         }
                     }
                 }
-                .frame(maxWidth: 720, alignment: .leading)
-                .padding(.horizontal, 32).padding(.vertical, 32).frame(maxWidth: .infinity)
+                .frame(maxWidth: appState.settings.editorPreferences.editorWidth, alignment: .leading)
+                .padding(WorkspaceLayout.contentInset(isFocusModeEnabled: appState.isFocusModeEnabled))
+                .frame(maxWidth: .infinity)
             }
             .onAppear { appState.rebuildProductionSegments(markUnsaved: false); scrollToSelection(proxy) }
             .onChange(of: appState.editorState.selectedProductionSegmentID) { _, _ in scrollToSelection(proxy) }

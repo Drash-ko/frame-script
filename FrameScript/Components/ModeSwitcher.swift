@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ModeSwitcher: View {
+    private static let buttonWidth: CGFloat = 112
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     @Binding var selection: WorkspaceMode
@@ -32,7 +33,7 @@ struct ModeSwitcher: View {
                     }
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(selection == mode ? theme.primaryText : theme.secondaryText)
-                    .frame(width: 86, height: 28)
+                    .frame(width: Self.buttonWidth, height: 28)
                     .contentShape(Rectangle())
                     .background {
                         if selection == mode {

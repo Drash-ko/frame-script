@@ -11,6 +11,8 @@
 
 ### Changed
 
+- Renamed the user-facing B-roll workspace to Visuals (Видеоряд in Russian), aligned all workspace layouts, and consolidated their content inset metric.
+- Integrated the Keychain explanation into the AI Settings form and widened localized workspace controls.
 - Routed project, settings, export, Keychain, Recent Project, and current AI failures through one error center.
 - Coalesced saved-project autosaves into a cancellable 60 ms write window.
 

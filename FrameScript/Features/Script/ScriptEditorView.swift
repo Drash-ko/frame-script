@@ -77,8 +77,7 @@ struct ScriptEditorView: View {
             .tint(theme.secondaryText)
         }
         .frame(maxWidth: appState.settings.editorPreferences.editorWidth, alignment: .leading)
-        .padding(.horizontal, appState.isFocusModeEnabled ? 80 : 48)
-        .padding(.vertical, appState.isFocusModeEnabled ? 72 : 42)
+        .padding(WorkspaceLayout.contentInset(isFocusModeEnabled: appState.isFocusModeEnabled))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(theme.editorSurface)
         .onAppear { applyInitialNotesVisibility() }

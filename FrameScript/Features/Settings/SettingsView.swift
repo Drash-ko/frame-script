@@ -764,10 +764,12 @@ private struct AISettings: View {
                     .labelsHidden()
                     .disabled(providerDisabled)
             }
-            KeychainInformationCallout(
-                title: appState.localized("settings.keychainInfo.title"),
-                message: appState.localized("settings.keychainInfo.message")
-            )
+            SettingsRow(appState.localized("settings.keychainInfo.title")) {
+                Text(appState.localized("settings.keychainInfo.message"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .task { loadKeyMetadata() }
         .onChange(of: settings.aiPreferences.provider) { oldProvider, newProvider in
@@ -890,21 +892,6 @@ private struct AISettings: View {
         let configuration = configurationStore.load(for: provider)
         settings.aiPreferences.model = configuration.model
         settings.aiPreferences.baseURL = configuration.baseURL
-    }
-}
-
-private struct KeychainInformationCallout: View {
-    let title: String
-    let message: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 12, weight: .medium))
-            Text(message).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

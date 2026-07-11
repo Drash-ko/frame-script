@@ -23,9 +23,8 @@ struct BRollEditorView: View {
                         }
                     }
                 }
-                .frame(maxWidth: 720, alignment: .leading)
-                .padding(.horizontal, 32)
-                .padding(.vertical, 32)
+                .frame(maxWidth: appState.settings.editorPreferences.editorWidth, alignment: .leading)
+                .padding(WorkspaceLayout.contentInset(isFocusModeEnabled: appState.isFocusModeEnabled))
                 .frame(maxWidth: .infinity)
             }
             .onAppear {
