@@ -170,14 +170,14 @@ struct WelcomeView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
-                    WelcomeAction(title: appState.localized("welcome.newBlankProject"), systemImage: "plus", action: {
+                    WelcomeAction(title: appState.localized("welcome.newBlankProject"), systemImage: "plus", accessibilityIdentifier: "welcome-new-blank-project", action: {
                         appState.requestNewProject(template: appState.scriptTemplates().first { $0.isBlank }, locksTemplate: true)
                     })
-                    WelcomeAction(title: appState.localized("welcome.newFromTemplate"), systemImage: "doc.badge.plus", action: {
+                    WelcomeAction(title: appState.localized("welcome.newFromTemplate"), systemImage: "doc.badge.plus", accessibilityIdentifier: "welcome-new-from-template", action: {
                         isTemplatePickerPresented = true
                     })
-                    WelcomeAction(title: appState.localized("welcome.openProject"), systemImage: "folder", action: appState.openProject)
-                    WelcomeAction(title: appState.localized("welcome.openDemo"), systemImage: "play.rectangle", action: appState.openDemoProject)
+                    WelcomeAction(title: appState.localized("welcome.openProject"), systemImage: "folder", accessibilityIdentifier: "welcome-open-project", action: appState.openProject)
+                    WelcomeAction(title: appState.localized("welcome.openDemo"), systemImage: "play.rectangle", accessibilityIdentifier: "welcome-open-demo", action: appState.openDemoProject)
                 }
                 .frame(width: 260)
 
@@ -252,15 +252,18 @@ struct WelcomeView: View {
 private struct WelcomeAction: View {
     let title: String
     let systemImage: String
+    let accessibilityIdentifier: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
         .clickableCursor()
+        .accessibilityIdentifier(accessibilityIdentifier)
     }
 }
 

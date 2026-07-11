@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Made the complete existing surface of the Script, B-roll, and Editing controls clickable while preserving their previous visual layout.
+
 ## [0.2.0] - 2026-07-10
 
 ### Added

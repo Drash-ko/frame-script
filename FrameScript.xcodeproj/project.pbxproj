@@ -8,7 +8,18 @@
 
 /* Begin PBXFileReference section */
 		FS00000000000000000000001 /* FrameScript.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = FrameScript.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FS00000000000000000000016 /* FrameScriptUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FrameScriptUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXContainerItemProxy section */
+		FS00000000000000000000018 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FS00000000000000000000010 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FS00000000000000000000006;
+			remoteInfo = FrameScript;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		FS00000000000000000000002 /* FrameScript */ = {
@@ -16,10 +27,22 @@
 			path = FrameScript;
 			sourceTree = "<group>";
 		};
+		FS00000000000000000000017 /* FrameScriptUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = FrameScriptUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		FS00000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FS00000000000000000000024 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				FS00000000000000000000002 /* FrameScript */,
+				FS00000000000000000000017 /* FrameScriptUITests */,
 				FS00000000000000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				FS00000000000000000000001 /* FrameScript.app */,
+				FS00000000000000000000016 /* FrameScriptUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +95,29 @@
 			productReference = FS00000000000000000000001 /* FrameScript.app */;
 			productType = "com.apple.product-type.application";
 		};
+		FS00000000000000000000020 /* FrameScriptUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FS00000000000000000000021 /* Build configuration list for PBXNativeTarget "FrameScriptUITests" */;
+			buildPhases = (
+				FS00000000000000000000023 /* Sources */,
+				FS00000000000000000000024 /* Frameworks */,
+				FS00000000000000000000025 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FS00000000000000000000019 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				FS00000000000000000000017 /* FrameScriptUITests */,
+			);
+			name = FrameScriptUITests;
+			packageProductDependencies = (
+			);
+			productName = FrameScriptUITests;
+			productReference = FS00000000000000000000016 /* FrameScriptUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -83,6 +131,10 @@
 					FS00000000000000000000006 = {
 						CreatedOnToolsVersion = 26.6;
 						ProvisioningStyle = Automatic;
+					};
+					FS00000000000000000000020 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = FS00000000000000000000006;
 					};
 				};
 			};
@@ -101,12 +153,20 @@
 			projectRoot = "";
 			targets = (
 				FS00000000000000000000006 /* FrameScript */,
+				FS00000000000000000000020 /* FrameScriptUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		FS00000000000000000000009 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FS00000000000000000000025 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -123,7 +183,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FS00000000000000000000023 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FS00000000000000000000019 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FS00000000000000000000006 /* FrameScript */;
+			targetProxy = FS00000000000000000000018 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		FS00000000000000000000012 /* Debug */ = {
@@ -295,6 +370,42 @@
 			};
 			name = Release;
 		};
+		FS00000000000000000000026 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				ENABLE_TESTING_SEARCH_PATHS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.drashko.FrameScriptUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = FrameScript;
+			};
+			name = Debug;
+		};
+		FS00000000000000000000027 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				ENABLE_TESTING_SEARCH_PATHS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.drashko.FrameScriptUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = FrameScript;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -312,6 +423,15 @@
 			buildConfigurations = (
 				FS00000000000000000000012 /* Debug */,
 				FS00000000000000000000013 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FS00000000000000000000021 /* Build configuration list for PBXNativeTarget "FrameScriptUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FS00000000000000000000026 /* Debug */,
+				FS00000000000000000000027 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

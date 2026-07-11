@@ -21,6 +21,20 @@
                ReferencedContainer = "container:FrameScript.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "FS00000000000000000000020"
+               BuildableName = "FrameScriptUITests.xctest"
+               BlueprintName = "FrameScriptUITests"
+               ReferencedContainer = "container:FrameScript.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -29,7 +43,27 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES">
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "FS00000000000000000000020"
+               BuildableName = "FrameScriptUITests.xctest"
+               BlueprintName = "FrameScriptUITests"
+               ReferencedContainer = "container:FrameScript.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "FS00000000000000000000006"
+            BuildableName = "FrameScript.app"
+            BlueprintName = "FrameScript"
+            ReferencedContainer = "container:FrameScript.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

@@ -85,6 +85,7 @@ final class AppState {
     private let builtInTemplates: [FrameTemplate]
     private var autosaveTask: Task<Void, Never>?
     private var segmentRebuildTasks: [UUID: Task<Void, Never>] = [:]
+    private var didApplyUITestLaunchArguments = false
 
     init(
         projectStore: ProjectStore = ProjectStore(),
@@ -114,6 +115,17 @@ final class AppState {
             restoreLastProjectOnLaunch: settings.generalPreferences.restoreLastProjectOnLaunch && !settings.generalPreferences.showProjectBrowserOnLaunch,
             wordsPerMinute: settings.editorPreferences.wordsPerMinute
         )
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--framescript-ui-test-language-english") {
+            settings.generalPreferences.language = .english
+        } else if arguments.contains("--framescript-ui-test-language-russian") {
+            settings.generalPreferences.language = .russian
+        }
+        if !didApplyUITestLaunchArguments,
+           arguments.contains("--framescript-ui-test-open-demo") {
+            didApplyUITestLaunchArguments = true
+            openDemoProject()
+        }
         projectStore.setSegmentSplitMode(settings.generalPreferences.defaultSplitMode)
         if editorState.selectedSceneID == nil {
             editorState.selectedSceneID = project.scenes.first?.id
