@@ -30,7 +30,7 @@ Then select the `FrameScript` scheme, choose `My Mac`, and press `Cmd+R`.
 - Built-in templates for blank, standard YouTube, educational, storytelling, product review, commentary/essay, and tutorial projects.
 - Project save/open using `.fscr` files, with legacy `.framescript` import support.
 - Export as plain text, Markdown, CSV, or production outline.
-- AI review, rewrites, autocomplete, and production suggestions for OpenAI-compatible endpoints, OpenRouter, Groq, and Google AI Studio when configured with API keys. AI output follows the script's dominant language, falling back to the interface language for empty scripts.
+- AI review, rewrites, inline autocomplete, and production suggestions for OpenAI-compatible endpoints, OpenRouter, Groq, and Google AI Studio when configured with API keys. Inline completion uses a short local context, appears as ghost text, accepts with Tab, and dismisses with Escape. AI output follows the script's dominant language, falling back to the interface language for empty scripts.
 - API keys are stored in the macOS Keychain, not in project files.
 
 ## Project Structure
@@ -74,7 +74,7 @@ See `SECURITY.md` for reporting guidance.
 
 ## Known Limitations
 
-- Inline AI completion and inline review markers are not exposed until the editor has real inline behavior.
+- Inline review markers are not yet exposed in the editor.
 - Anthropic-compatible provider adapters are not implemented.
 - Production markers use AppKit text-range geometry and should be verified when changing typography or editor layout.
 

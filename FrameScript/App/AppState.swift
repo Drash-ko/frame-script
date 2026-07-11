@@ -398,14 +398,15 @@ final class AppState {
         guard hasOpenProject else { return false }
         flushActiveEditorBoundary(saveImmediately: false)
         do {
-            try projectStore.saveCurrentProject(wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            guard let url = projectStore.currentFileURL else { return saveProjectAs() }
+            try securityScope.withAccess(to: url) {
+                try projectStore.saveCurrentProject(wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            }
             errorCenter.clearAutosaveFailureSuppression()
             if let currentFileURL = projectStore.currentFileURL {
                 rememberRecentProject(currentFileURL)
             }
             return true
-        } catch ProjectStore.ProjectFileError.missingFileURL {
-            return saveProjectAs()
         } catch {
             Self.projectFilesLogger.error("Operation project-save failed. Code: \(self.diagnosticCode(for: error), privacy: .public)")
             errorCenter.present(AppError.project(error, fileURL: projectStore.currentFileURL, operation: .write))
@@ -574,6 +575,31 @@ final class AppState {
         projectStore.markProjectDirty()
         scheduleSegmentRebuild(for: sceneID)
         scheduleAutosaveIfNeeded()
+    }
+
+    func autocompleteScript(context: String) async -> String? {
+        guard settings.aiPreferences.provider != .disabled,
+              !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        do {
+            let promptBuilder = PromptBuilder()
+            let response = try await OpenAICompatibleLLMProvider().complete(request: LLMRequest(
+                task: .autocomplete,
+                provider: settings.aiPreferences.provider,
+                baseURL: settings.aiPreferences.baseURL,
+                systemPrompt: promptBuilder.systemPrompt(for: .autocomplete, language: promptBuilder.responseLanguage(for: context, fallback: currentLanguage)),
+                userPrompt: context,
+                model: settings.aiPreferences.model,
+                temperature: settings.aiPreferences.temperature,
+                maxTokens: min(settings.aiPreferences.maxTokens, 80)
+            ))
+            let completion = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return completion.isEmpty ? nil : " " + completion
+        } catch is CancellationError {
+            return nil
+        } catch {
+            errorCenter.present(AppError.ai(error))
+            return nil
+        }
     }
 
     func flushActiveEditorBoundary(saveImmediately: Bool = true) {
@@ -974,7 +1000,11 @@ final class AppState {
             return
         }
         autosaveTask = Task { @MainActor [weak self] in
-            await Task.yield()
+            do {
+                try await Task.sleep(for: .milliseconds(60))
+            } catch {
+                return
+            }
             guard !Task.isCancelled else { return }
             self?.performAutosave()
         }
@@ -1012,12 +1042,14 @@ final class AppState {
 
     private func performAutosave() {
         guard settings.generalPreferences.autosaveEnabled,
-              projectStore.currentFileURL != nil,
+              let url = projectStore.currentFileURL,
               projectStore.hasUnsavedFileChanges else {
             return
         }
         do {
-            try projectStore.saveCurrentProject(wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            try securityScope.withAccess(to: url) {
+                try projectStore.saveCurrentProject(wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+            }
             errorCenter.clearAutosaveFailureSuppression()
         } catch {
             Self.projectFilesLogger.error("Operation autosave failed. Code: \(self.diagnosticCode(for: error), privacy: .public)")

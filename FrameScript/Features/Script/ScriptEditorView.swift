@@ -38,6 +38,7 @@ struct ScriptEditorView: View {
                 addBRollLabel: appState.localized("production.addBRollForSelection"),
                 addEditingLabel: appState.localized("production.addEditingForSelection"),
                 onTextCommitted: { appState.commitScriptTextChange(sceneID: scene.id) },
+                autocomplete: { context in await appState.autocompleteScript(context: context) },
                 onTeardown: { appState.flushActiveEditorBoundary() },
                 markerAction: appState.selectProductionItem,
                 addMarkerAction: { mode, anchor in
@@ -177,6 +178,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
     let addBRollLabel: String
     let addEditingLabel: String
     let onTextCommitted: () -> Void
+    let autocomplete: (String) async -> String?
     let onTeardown: () -> Void
     let markerAction: (UUID, WorkspaceMode) -> Void
     let addMarkerAction: (WorkspaceMode, TextAnchor) -> Void
@@ -204,6 +206,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
 
     static func dismantleNSView(_ view: MarkerTextContainerView, coordinator: Coordinator) {
         coordinator.commitMarkedTextAndFlush()
+        coordinator.cancelAutocomplete()
         ActiveScriptEditorSession.shared.unregister(coordinator)
         coordinator.parent.onTeardown()
         coordinator.detach(from: view)
@@ -255,6 +258,8 @@ struct LinkedScriptTextView: NSViewRepresentable {
         private var modelRevision = 0
         private var isApplyingProgrammaticUpdate = false
         private var pendingInitialRestorationState: ScriptEditorRestorationState?
+        private var autocompleteTask: Task<Void, Never>?
+        private var autocompleteRevision = 0
         init(parent: LinkedScriptTextView) {
             self.parent = parent
             self.lastObservedModelValue = parent.text
@@ -263,12 +268,14 @@ struct LinkedScriptTextView: NSViewRepresentable {
         func attach(to view: MarkerTextContainerView) {
             self.view = view
             view.coordinator = self
+            view.textView.ghostAction = { [weak self] action in self?.handleGhostAction(action) }
             pendingInitialRestorationState = parent.loadRestorationState()
         }
 
         func detach(from view: MarkerTextContainerView) {
             if self.view === view { self.view = nil }
             if view.coordinator === self { view.coordinator = nil }
+            view.textView.ghostAction = nil
         }
 
         @discardableResult
@@ -319,6 +326,8 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 return
             }
 
+            cancelAutocomplete()
+
             modelRevision += 1
             pendingUserRevision = nil
             lastObservedModelValue = modelText
@@ -341,6 +350,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             guard !isApplyingProgrammaticUpdate else { return }
             _ = emitCurrentText(from: textView, origin: .user)
+            scheduleAutocomplete(for: textView)
             view?.invalidateMarkerGeometry()
             view?.needsDisplay = true
         }
@@ -349,6 +359,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             if textView.hasMarkedText() { textView.unmarkText() }
             _ = emitCurrentText(from: textView, origin: .user)
+            cancelAutocomplete()
             captureRestorationState()
         }
 
@@ -369,6 +380,49 @@ struct LinkedScriptTextView: NSViewRepresentable {
             parent.text = value
             if changed { parent.onTextCommitted() }
             return changed
+        }
+
+        func cancelAutocomplete() {
+            autocompleteTask?.cancel()
+            autocompleteTask = nil
+            view?.textView.ghostText = ""
+        }
+
+        private func scheduleAutocomplete(for textView: NSTextView) {
+            cancelAutocomplete()
+            guard !textView.hasMarkedText(), textView.selectedRange().length == 0 else { return }
+            let source = textView.string
+            let caret = textView.selectedRange().location
+            let prefix = (source as NSString).substring(to: min(caret, (source as NSString).length))
+            let context = String(prefix.suffix(600))
+            guard context.count >= 12 else { return }
+            autocompleteRevision += 1
+            let revision = autocompleteRevision
+            autocompleteTask = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .milliseconds(280)) } catch { return }
+                guard let self, !Task.isCancelled else { return }
+                let completion = await self.parent.autocomplete(context)
+                guard !Task.isCancelled,
+                      revision == self.autocompleteRevision,
+                      self.view?.textView.string == source,
+                      !(self.view?.textView.hasMarkedText() ?? true) else { return }
+                self.view?.textView.ghostText = completion ?? ""
+            }
+        }
+
+        private func handleGhostAction(_ action: PlaceholderTextView.GhostAction) {
+            guard let textView = view?.textView else { return }
+            switch action {
+            case .accept:
+                let completion = textView.ghostText
+                guard !completion.isEmpty else { return }
+                textView.ghostText = ""
+                autocompleteTask?.cancel()
+                textView.insertText(completion, replacementRange: textView.selectedRange())
+                _ = emitCurrentText(from: textView, origin: .user)
+            case .dismiss, .replace:
+                cancelAutocomplete()
+            }
         }
 
         func textView(_ textView: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
@@ -447,8 +501,11 @@ final class ActiveScriptEditorSession {
 }
 
 final class PlaceholderTextView: NSTextView {
+    enum GhostAction { case accept, dismiss, replace }
     var placeholder = "" { didSet { needsDisplay = true } }
     var placeholderColor = NSColor.secondaryLabelColor { didSet { needsDisplay = true } }
+    var ghostText = "" { didSet { needsDisplay = true } }
+    var ghostAction: ((GhostAction) -> Void)?
 
     var placeholderOrigin: NSPoint {
         textContainerOrigin
@@ -456,12 +513,39 @@ final class PlaceholderTextView: NSTextView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        guard string.isEmpty, !placeholder.isEmpty else { return }
-        (placeholder as NSString).draw(at: placeholderOrigin, withAttributes: [
+        if string.isEmpty, !placeholder.isEmpty {
+            (placeholder as NSString).draw(at: placeholderOrigin, withAttributes: [
+                .font: font ?? NSFont.systemFont(ofSize: 14),
+                .foregroundColor: placeholderColor,
+                .paragraphStyle: defaultParagraphStyle ?? NSParagraphStyle.default
+            ])
+        }
+        drawGhostText()
+    }
+
+    private func drawGhostText() {
+        guard !ghostText.isEmpty, selectedRange().length == 0,
+              let layoutManager, let textContainer else { return }
+        let length = (string as NSString).length
+        let index = min(selectedRange().location, length)
+        let glyph = length == 0 ? 0 : layoutManager.glyphIndexForCharacter(at: min(index, length - 1))
+        let point = layoutManager.location(forGlyphAt: glyph)
+        let line = layoutManager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+        let origin = NSPoint(x: textContainerOrigin.x + point.x, y: textContainerOrigin.y + line.origin.y)
+        (ghostText as NSString).draw(at: origin, withAttributes: [
             .font: font ?? NSFont.systemFont(ofSize: 14),
-            .foregroundColor: placeholderColor,
+            .foregroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.55),
             .paragraphStyle: defaultParagraphStyle ?? NSParagraphStyle.default
         ])
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if !ghostText.isEmpty {
+            if event.keyCode == 48 { ghostAction?(.accept); return }
+            if event.keyCode == 53 { ghostAction?(.dismiss); return }
+            ghostAction?(.replace)
+        }
+        super.keyDown(with: event)
     }
 }
 

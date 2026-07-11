@@ -211,7 +211,7 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(saved!.visibleOrigin.y, 80, accuracy: 1)
     }
 
-    func testExistingFileAutosavesInsideImmediateWindow() async throws {
+    func testExistingFileAutosavesOnceAfterCoalescedWindow() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -219,18 +219,19 @@ final class EditorPersistenceTests: XCTestCase {
         let (appState, scene, _) = makeAppState(fileURL: fileURL)
         try FrameScriptFileStore.write(project: appState.project, to: fileURL)
 
-        scene.scriptText = "Persist within 100 ms"
+        scene.scriptText = "Persist after the coalesced window"
         let clock = ContinuousClock()
         let started = clock.now
         appState.commitScriptTextChange(sceneID: scene.id)
-        while appState.saveState != .saved, clock.now - started < .milliseconds(100) {
+        while appState.saveState != .saved, clock.now - started < .milliseconds(180) {
             await Task.yield()
         }
 
         let saved = try FrameScriptFileStore.read(from: fileURL)
-        XCTAssertEqual(saved.scenes.first?.scriptText, "Persist within 100 ms")
+        XCTAssertEqual(saved.scenes.first?.scriptText, "Persist after the coalesced window")
         XCTAssertEqual(appState.saveState, .saved)
-        XCTAssertLessThan(clock.now - started, .milliseconds(100))
+        XCTAssertGreaterThanOrEqual(clock.now - started, .milliseconds(50))
+        XCTAssertLessThan(clock.now - started, .milliseconds(180))
     }
 
     func testUntitledProjectPreservesTextWithoutFileURL() {
@@ -247,6 +248,17 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertNil(appState.projectStore.currentFileURL)
         XCTAssertEqual(scene.scriptText, "Safe untitled text")
         XCTAssertEqual(appState.saveState, .edited)
+    }
+
+    func testCommittedUntitledEditUpdatesMetricsWithoutSaving() {
+        let (appState, scene, _) = makeAppState(fileURL: nil)
+        scene.scriptText = "one two three four five"
+
+        appState.commitScriptTextChange(sceneID: scene.id)
+
+        XCTAssertEqual(scene.estimatedDuration, DurationEstimator.estimate(text: scene.scriptText, wordsPerMinute: 150))
+        XCTAssertEqual(appState.saveState, .edited)
+        XCTAssertNil(appState.projectStore.currentFileURL)
     }
 
     func testTextAndPlaceholderShareZeroHorizontalOrigin() {
@@ -294,6 +306,7 @@ final class EditorPersistenceTests: XCTestCase {
             addBRollLabel: "B-roll",
             addEditingLabel: "Editing",
             onTextCommitted: {},
+            autocomplete: { _ in nil },
             onTeardown: onTeardown,
             markerAction: { _, _ in },
             addMarkerAction: { _, _ in }

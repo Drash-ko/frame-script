@@ -7,10 +7,12 @@
 - Added Google AI Studio as a configurable AI provider.
 - Added centralized, localized application error presentation and recovery actions.
 - Added manual removal and clearing controls for Recent Projects.
+- Added debounced inline AI completion with ghost text, Tab acceptance, Escape dismissal, IME awareness, and cancellation on context changes.
 
 ### Changed
 
 - Routed project, settings, export, Keychain, Recent Project, and current AI failures through one error center.
+- Coalesced saved-project autosaves into a cancellable 60 ms write window.
 
 ### Fixed
 
@@ -23,6 +25,7 @@
 - Prevented stale SwiftUI revisions from replacing newer editor text while still applying external rewrites.
 - Restored the compact Script, B-roll, and Editing mode controls.
 - Improved autosave, structured AI response, Recent Project, Keychain, and file-operation error handling.
+- Updated editor metrics immediately after committed text edits, including untitled projects.
 - Localized ModeSwitcher accessibility state.
 - Avoided rewriting unchanged Recent Project storage during validation.
 - Removed silent failure handling from critical persistence and provider operations.
