@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 @testable import FrameScript
 import XCTest
@@ -211,9 +212,96 @@ final class AIServiceLayerTests: XCTestCase {
         )
         appState.settings.aiPreferences.provider = .openAICompatible
 
-        let result = await appState.autocompleteScript(context: "Draft")
-        XCTAssertNil(result)
+        let result = await appState.autocompleteScript(context: AutocompleteContext(prefix: "Draft script", suffix: "", sceneTitle: "Hook", language: .english))
+        XCTAssertEqual(result, .none)
         XCTAssertNil(errorCenter.presentedError)
+    }
+
+    func testAutocomplete429ShowsOneNonModalStatusAndStartsCooldown() async {
+        let provider = FailingAutocompleteProvider(error: .httpStatus(429, nil))
+        let errorCenter = ErrorCenter()
+        let appState = autocompleteAppState(provider: provider, errorCenter: errorCenter)
+        let context = AutocompleteContext(prefix: "A narrator introduces the topic", suffix: "", sceneTitle: "Hook", language: .english)
+
+        let first = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(first, .temporarilyUnavailable(.rateLimited))
+        XCTAssertNil(errorCenter.presentedError)
+        let second = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(second, .temporarilyUnavailable(.rateLimited))
+        XCTAssertEqual(provider.calls, 1)
+    }
+
+    func testExplicitAnalyzeErrorStillUsesErrorCenter() async {
+        let errorCenter = ErrorCenter()
+        let appState = autocompleteAppState(provider: FailingAutocompleteProvider(error: .httpStatus(400, nil)), errorCenter: errorCenter)
+        appState.openDemoProject()
+
+        await appState.analyzeSelectedScene()
+        XCTAssertNotNil(errorCenter.presentedError)
+    }
+
+    func testAutocompletePromptSuppliesBoundedPrefixSuffixAndSceneTitle() async {
+        let provider = CapturingAutocompleteProvider(response: LLMResponse(text: "continues."))
+        let appState = autocompleteAppState(provider: provider)
+        let context = AutocompleteContext(prefix: "Before the caret", suffix: "After the caret", sceneTitle: "Opening", language: .english)
+
+        let result = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(result, .suggestion(" continues."))
+        let request = try? XCTUnwrap(provider.request)
+        XCTAssertTrue(request?.userPrompt.contains("Scene title: Opening") == true)
+        XCTAssertTrue(request?.userPrompt.contains("Text before the caret:\nBefore the caret") == true)
+        XCTAssertTrue(request?.userPrompt.contains("Text after the caret:\nAfter the caret") == true)
+    }
+
+    func testAutocompleteRejectsConversationalAndTokenLimitedReplies() {
+        let context = AutocompleteContext(prefix: "The narrator says", suffix: "next line", sceneTitle: "Hook", language: .english)
+        for response in [
+            LLMResponse(text: "Sure, here's the continuation."),
+            LLMResponse(text: "Assistant: I can help with that."),
+            LLMResponse(text: "unfinished", finishReason: "length")
+        ] {
+            XCTAssertNil(AutocompleteCompletion.sanitize(response, context: context))
+        }
+    }
+
+    func testCaretMovementRejectsStaleAutocompleteSnapshot() {
+        let sceneID = UUID()
+        let editorID = UUID()
+        let snapshot = AutocompleteRequestSnapshot(
+            sceneID: sceneID, editorIdentity: editorID, textRevision: 4,
+            sourceText: "Narrator continues here", caretLocation: 9, selectionLength: 0
+        )
+
+        XCTAssertFalse(isAutocompleteSnapshotCurrent(
+            snapshot, sceneID: sceneID, editorIdentity: editorID, textRevision: 4,
+            sourceText: snapshot.sourceText, selectedRange: NSRange(location: 3, length: 0), hasMarkedText: false
+        ))
+    }
+
+    func testValidatedCaretInsertionUsesCapturedRangeAndIsUndoable() {
+        let textView = NSTextView()
+        textView.allowsUndo = true
+        textView.string = "Before after"
+        let snapshot = AutocompleteRequestSnapshot(
+            sceneID: UUID(), editorIdentity: UUID(), textRevision: 1,
+            sourceText: textView.string, caretLocation: 6, selectionLength: 0
+        )
+        textView.setSelectedRange(snapshot.range)
+
+        textView.insertText(" inserted", replacementRange: snapshot.range)
+        XCTAssertEqual(textView.string, "Before inserted after")
+        textView.undoManager?.undo()
+        XCTAssertEqual(textView.string, "Before after")
+    }
+
+    func testGhostTextWrapsInsideTextContainer() {
+        let textView = PlaceholderTextView(frame: NSRect(x: 0, y: 0, width: 110, height: 120))
+        textView.textContainer?.containerSize = NSSize(width: 110, height: .greatestFiniteMagnitude)
+        textView.ghostText = "A multiline ghost completion that must wrap inside the editor text container."
+
+        let widths = textView.ghostLineFragmentWidths()
+        XCTAssertGreaterThan(widths.count, 1)
+        XCTAssertTrue(widths.allSatisfy { $0 <= 110 })
     }
 
     func testCredentialSessionReadsOnceThenReusesKey() throws {
@@ -268,7 +356,7 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertEqual(authorization, "Bearer secret")
     }
 
-    func testAnalysisRequestIncludesJSONSchemaResponseFormat() async throws {
+    func testSupportedStrictSchemaProviderIncludesJSONSchemaResponseFormat() async throws {
         var body: [String: Any] = [:]
         let provider = OpenAICompatibleLLMProvider(transport: { request in
             body = try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any] ?? [:]
@@ -276,12 +364,94 @@ final class AIServiceLayerTests: XCTestCase {
         })
         var request = makeRequest()
         request.task = .analyze
+        request.provider = .openAICompatible
+        request.baseURL = OpenAICompatibleLLMProvider.defaultBaseURL(for: .openAICompatible)
+        request.model = "gpt-4.1-mini"
 
         _ = try await provider.complete(request: request, apiKey: "secret")
 
         let format = try XCTUnwrap(body["response_format"] as? [String: Any])
         XCTAssertEqual(format["type"] as? String, "json_schema")
         XCTAssertNotNil(format["json_schema"])
+    }
+
+    func testGroqLlamaAnalysisUsesJSONObjectResponseFormat() async throws {
+        var body: [String: Any] = [:]
+        let provider = makeProvider { request in
+            body = try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any] ?? [:]
+            return self.response(status: 200, url: request.url!, body: self.chatResponse(content: "{}", finishReason: "stop"))
+        }
+        var request = makeRequest()
+        request.task = .analyze
+        request.provider = .groq
+        request.baseURL = OpenAICompatibleLLMProvider.defaultBaseURL(for: .groq)
+        request.model = "llama-3.3-70b-versatile"
+
+        _ = try await provider.complete(request: request, apiKey: "secret")
+
+        let format = try XCTUnwrap(body["response_format"] as? [String: Any])
+        XCTAssertEqual(format["type"] as? String, "json_object")
+        XCTAssertNil(format["json_schema"])
+        let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        XCTAssertTrue((messages.first?["content"] as? String)?.contains("Return exactly one JSON object") == true)
+    }
+
+    func testCustomAnalysisProviderUsesPromptOnlyJSONFallback() async throws {
+        var body: [String: Any] = [:]
+        let provider = makeProvider { request in
+            body = try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any] ?? [:]
+            return self.response(status: 200, url: request.url!, body: self.chatResponse(content: "{}", finishReason: "stop"))
+        }
+        var request = makeRequest()
+        request.task = .analyze
+        request.provider = .openAICompatible
+        request.baseURL = "https://custom.example/v1"
+        request.model = "custom-analysis-model"
+        request.systemPrompt = PromptBuilder().systemPrompt(for: .analyze, language: .english)
+
+        _ = try await provider.complete(request: request, apiKey: "secret")
+
+        XCTAssertNil(body["response_format"])
+        let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+        XCTAssertTrue((messages.first?["content"] as? String)?.contains("Return exactly one JSON object") == true)
+    }
+
+    func testGroqJSONObjectAnalysisDecodesIntoAIComment() async throws {
+        let provider = makeProvider { request in
+            self.response(status: 200, url: request.url!, body: self.chatResponse(
+                content: #"{"title":"Hook","severity":"suggestion","message":"Make the opening concrete.","suggestion":"Name the immediate benefit."}"#,
+                finishReason: "stop"
+            ))
+        }
+        let (scene, project, settings) = try analysisInputs(provider: .groq)
+
+        let comments = try await AnalysisService(provider: provider).analyze(
+            scene: scene, project: project, settings: settings, apiKey: "secret"
+        )
+
+        XCTAssertEqual(comments.first?.type, "Hook")
+        XCTAssertEqual(comments.first?.severity, .suggestion)
+    }
+
+    func testGroqHTTP400AnalysisIsNotRetried() async {
+        var requests = 0
+        let provider = makeProvider { request in
+            requests += 1
+            return self.response(status: 400, url: request.url!, body: #"{"error":{"status":"INVALID_ARGUMENT","code":400}}"#)
+        }
+        guard let inputs = try? analysisInputs(provider: .groq) else { return XCTFail("Expected analysis inputs") }
+
+        do {
+            _ = try await AnalysisService(provider: provider).analyze(
+                scene: inputs.0, project: inputs.1, settings: inputs.2, apiKey: "secret"
+            )
+            XCTFail("Expected HTTP failure")
+        } catch let error as LLMProviderError {
+            XCTAssertEqual(error, .httpStatus(400, "INVALID_ARGUMENT · 400"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(requests, 1)
     }
 
     func testAnalysisSucceedsOnFirstCompleteResponse() async throws {
@@ -386,6 +556,24 @@ final class AIServiceLayerTests: XCTestCase {
         OpenAICompatibleLLMProvider(transport: transport)
     }
 
+    private func autocompleteAppState(
+        provider: any LLMProviderProtocol,
+        errorCenter: ErrorCenter = ErrorCenter()
+    ) -> AppState {
+        let appState = AppState(
+            errorCenter: errorCenter,
+            dependencies: AppDependencies(
+                rewriteService: RewriteService(provider: provider),
+                analysisService: AnalysisService(provider: provider),
+                exportService: ExportService(),
+                llmProvider: provider,
+                providerCredentials: ProviderCredentialSession(reader: { _ in "secret" })
+            )
+        )
+        appState.settings.aiPreferences.provider = .openAICompatible
+        return appState
+    }
+
     private func makeRequest() -> LLMRequest {
         LLMRequest(
             task: .autocomplete,
@@ -399,11 +587,13 @@ final class AIServiceLayerTests: XCTestCase {
         )
     }
 
-    private func analysisInputs() throws -> (Scene, FrameProject, AIPreferences) {
+    private func analysisInputs(provider: AIProviderKind = .googleAIStudio) throws -> (Scene, FrameProject, AIPreferences) {
         let project = SampleData.demoProject(language: .english)
         let scene = try XCTUnwrap(project.scenes.first)
         var settings = AppSettings.defaults.aiPreferences
-        settings.provider = .googleAIStudio
+        settings.provider = provider
+        settings.model = AIProviderConfigurationStore.defaultModel(for: provider)
+        settings.baseURL = OpenAICompatibleLLMProvider.defaultBaseURL(for: provider)
         settings.maxTokens = 128
         return (scene, project, settings)
     }
@@ -445,5 +635,31 @@ private struct StaticResponseProvider: LLMProviderProtocol {
 private struct CancelledAutocompleteProvider: LLMProviderProtocol {
     func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
         throw LLMProviderError.network(String(URLError.Code.cancelled.rawValue))
+    }
+}
+
+@MainActor
+private final class FailingAutocompleteProvider: LLMProviderProtocol {
+    let error: LLMProviderError
+    private(set) var calls = 0
+
+    init(error: LLMProviderError) { self.error = error }
+
+    func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
+        calls += 1
+        throw error
+    }
+}
+
+@MainActor
+private final class CapturingAutocompleteProvider: LLMProviderProtocol {
+    let response: LLMResponse
+    private(set) var request: LLMRequest?
+
+    init(response: LLMResponse) { self.response = response }
+
+    func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
+        self.request = request
+        return response
     }
 }

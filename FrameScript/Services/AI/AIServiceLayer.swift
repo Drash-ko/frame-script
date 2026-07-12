@@ -29,6 +29,105 @@ struct LLMRequest: Codable, Hashable {
 
 struct LLMResponse: Codable, Hashable {
     var text: String
+    var finishReason: String? = nil
+
+    var stoppedAtTokenLimit: Bool {
+        guard let finishReason = finishReason?.lowercased() else { return false }
+        return finishReason == "length" || finishReason.contains("token") || finishReason.contains("max_tokens")
+    }
+}
+
+struct AutocompleteContext: Hashable {
+    let prefix: String
+    let suffix: String
+    let sceneTitle: String
+    let language: AppLanguage
+
+    var prompt: String {
+        [
+            "Scene title: \(sceneTitle)",
+            "Text before the caret:\n\(prefix)",
+            "Text after the caret:\n\(suffix)"
+        ].joined(separator: "\n\n")
+    }
+}
+
+enum AutocompleteUnavailableReason: Equatable {
+    case rateLimited
+    case offline
+    case timeout
+    case dns
+    case tls
+    case badRequest
+    case server
+    case provider
+
+    var localizationKey: String {
+        switch self {
+        case .rateLimited: "autocomplete.unavailable.rateLimited"
+        case .offline: "autocomplete.unavailable.offline"
+        case .timeout: "autocomplete.unavailable.timeout"
+        case .dns: "autocomplete.unavailable.dns"
+        case .tls: "autocomplete.unavailable.tls"
+        case .badRequest: "autocomplete.unavailable.badRequest"
+        case .server: "autocomplete.unavailable.server"
+        case .provider: "autocomplete.unavailable.provider"
+        }
+    }
+
+    static func from(_ error: Error) -> Self {
+        if let error = error as? LLMProviderError {
+            switch error {
+            case .httpStatus(429, _): return .rateLimited
+            case .httpStatus(400, _): return .badRequest
+            case .httpStatus(let status, _) where status >= 500: return .server
+            case .network(let code):
+                switch URLError.Code(rawValue: Int(code) ?? -1) {
+                case .notConnectedToInternet: return .offline
+                case .timedOut: return .timeout
+                case .cannotFindHost, .dnsLookupFailed: return .dns
+                case .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted,
+                     .serverCertificateHasUnknownRoot, .serverCertificateNotYetValid, .clientCertificateRejected,
+                     .clientCertificateRequired: return .tls
+                default: return .provider
+                }
+            default: return .provider
+            }
+        }
+        return .provider
+    }
+}
+
+enum AutocompleteResult: Equatable {
+    case none
+    case suggestion(String)
+    case temporarilyUnavailable(AutocompleteUnavailableReason)
+}
+
+enum AutocompleteCompletion {
+    static func sanitize(_ response: LLMResponse, context: AutocompleteContext) -> String? {
+        guard !response.stoppedAtTokenLimit else { return nil }
+        let candidate = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty, candidate.count <= 600,
+              !candidate.contains("```"), !candidate.contains("#"),
+              !candidate.hasPrefix("\"") && !candidate.hasPrefix("“") && !candidate.hasPrefix("'") else { return nil }
+
+        let lowercased = candidate.lowercased()
+        let conversationalPrefixes = ["assistant:", "narrator:", "user:", "answer:", "sure", "here is", "here's", "as an ai", "hello", "hi "]
+        guard !conversationalPrefixes.contains(where: { lowercased.hasPrefix($0) }) else { return nil }
+
+        let normalizedPrefix = context.prefix.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalizedPrefix.isEmpty || !normalizedPrefix.hasSuffix(lowercased) else { return nil }
+
+        let suffix = context.suffix
+        let overlap = (1...min(candidate.count, suffix.count)).reversed().first { length in
+            candidate.suffix(length).caseInsensitiveCompare(suffix.prefix(length)) == .orderedSame
+        } ?? 0
+        let completion = overlap == 0 ? candidate : String(candidate.dropLast(overlap))
+        guard !completion.isEmpty else { return nil }
+        if context.prefix.last?.isWhitespace == true || completion.first?.isWhitespace == true { return completion }
+        return " " + completion
+    }
 }
 
 enum AITask: String, Codable, Hashable {
@@ -110,7 +209,13 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
             ],
             temperature: request.temperature,
             maxTokens: request.maxTokens,
-            responseFormat: request.task == .analyze ? .analysis : nil
+            responseFormat: request.task == .analyze
+                ? AnalysisStructuredOutputCapability.resolve(
+                    provider: request.provider,
+                    model: request.model,
+                    baseURL: request.baseURL
+                ).responseFormat
+                : nil
         ))
 
         let (data, response) = try await send(urlRequest)
@@ -119,6 +224,9 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
         }
         let topLevel = Self.topLevelJSONObject(from: data)
         guard 200..<300 ~= http.statusCode else {
+            if http.statusCode == 429 {
+                AutocompleteRetryAfterCache.record(http.value(forHTTPHeaderField: "Retry-After"), for: request.provider)
+            }
             Self.logResponse(http: http, data: data, topLevel: topLevel, finishReason: nil, request: request)
             throw LLMProviderError.httpStatus(http.statusCode, Self.providerErrorDetail(from: topLevel))
         }
@@ -149,7 +257,7 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
             }
             throw LLMProviderError.malformedResponse("The provider returned an empty completion.")
         }
-        return LLMResponse(text: text)
+        return LLMResponse(text: text, finishReason: finishReason)
     }
 
     func testConnection(request: LLMRequest, apiKey: String) async throws {
@@ -161,6 +269,9 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
             return
         }
         var completionRequest = request
+        // A connection check establishes basic reachability only. It must not
+        // imply that the selected model supports structured analysis output.
+        completionRequest.task = .autocomplete
         completionRequest.systemPrompt = "Reply briefly to confirm availability."
         completionRequest.userPrompt = "Connection check"
         completionRequest.maxTokens = max(128, request.maxTokens)
@@ -272,6 +383,38 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
         default:
             "https://api.openai.com/v1"
         }
+    }
+}
+
+@MainActor
+enum AutocompleteRetryAfterCache {
+    private static var values: [AIProviderKind: TimeInterval] = [:]
+
+    static func record(_ header: String?, for provider: AIProviderKind, now: Date = .now) {
+        guard let seconds = retryAfterSeconds(header, now: now) else { return }
+        values[provider] = seconds
+    }
+
+    static func take(for provider: AIProviderKind) -> TimeInterval? {
+        defer { values.removeValue(forKey: provider) }
+        return values[provider]
+    }
+
+    private static func retryAfterSeconds(_ header: String?, now: Date) -> TimeInterval? {
+        guard let header = header?.trimmingCharacters(in: .whitespacesAndNewlines), !header.isEmpty else { return nil }
+        if let seconds = TimeInterval(header), seconds >= 0 { return seconds }
+        guard let date = HTTPDateFormatter.date(from: header) else { return nil }
+        return max(0, date.timeIntervalSince(now))
+    }
+}
+
+private enum HTTPDateFormatter {
+    static func date(from value: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss z"
+        return formatter.date(from: value)
     }
 }
 
@@ -396,11 +539,51 @@ private struct ChatCompletionRequest: Codable {
     }
 }
 
+private enum AnalysisStructuredOutputCapability: Equatable {
+    case strictJSONSchema
+    case jsonObject
+    case promptOnly
+
+    static func resolve(provider: AIProviderKind, model: String, baseURL: String) -> Self {
+        guard usesDefaultEndpoint(provider: provider, baseURL: baseURL) else { return .promptOnly }
+
+        let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch provider {
+        case .groq where normalizedModel == "llama-3.3-70b-versatile":
+            return .jsonObject
+        case .openAICompatible where ["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini"].contains(normalizedModel):
+            return .strictJSONSchema
+        case .openRouter where normalizedModel == "openai/gpt-4.1-mini":
+            return .strictJSONSchema
+        case .googleAIStudio where normalizedModel == "gemini-3.5-flash":
+            return .strictJSONSchema
+        default:
+            return .promptOnly
+        }
+    }
+
+    var responseFormat: ChatResponseFormat? {
+        switch self {
+        case .strictJSONSchema: return .analysisSchema
+        case .jsonObject: return .jsonObject
+        case .promptOnly: return nil
+        }
+    }
+
+    private static func usesDefaultEndpoint(provider: AIProviderKind, baseURL: String) -> Bool {
+        let normalized = baseURL.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "/"))).lowercased()
+        let expected = OpenAICompatibleLLMProvider.defaultBaseURL(for: provider)
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "/")))
+            .lowercased()
+        return normalized.isEmpty || normalized == expected
+    }
+}
+
 private struct ChatResponseFormat: Codable {
     let type: String
-    let jsonSchema: JSONSchemaDefinition
+    let jsonSchema: JSONSchemaDefinition?
 
-    static let analysis = ChatResponseFormat(
+    static let analysisSchema = ChatResponseFormat(
         type: "json_schema",
         jsonSchema: JSONSchemaDefinition(
             name: "scene_analysis",
@@ -418,6 +601,8 @@ private struct ChatResponseFormat: Codable {
             )
         )
     )
+
+    static let jsonObject = ChatResponseFormat(type: "json_object", jsonSchema: nil)
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -501,11 +686,11 @@ struct PromptBuilder {
         let languageInstruction = "Respond only in \(languageName(for: language))."
         return switch task {
         case .autocomplete:
-            "Continue the YouTube script briefly. Stay natural, specific, and concise. \(languageInstruction)"
+            "Continue the same narrator's YouTube script at the caret. Preserve its language, person, tone, punctuation, capitalization, and style. Never answer the narrator or start a dialogue. Never explain the completion. Never include quotes, Markdown, labels, or alternatives. Return only the exact suffix that can be inserted at the caret. Do not repeat text already before the caret. Account for text after the caret and avoid duplicating it. \(languageInstruction)"
         case .rewrite:
             "Rewrite selected script text while preserving intent and voice. \(languageInstruction)"
         case .analyze:
-            "Review the scene for clarity, retention, pacing, repetition, concrete examples, and weak phrasing. \(languageInstruction) Return only one JSON object with string fields title, severity, message, and suggestion. Severity must be note, suggestion, or important. Write complete plain-text sentences; do not use Markdown."
+            "Review the scene for clarity, retention, pacing, repetition, concrete examples, and weak phrasing. \(languageInstruction) Return exactly one JSON object with string fields title, severity, message, and suggestion. Severity must be note, suggestion, or important. Write complete plain-text sentences; do not use Markdown."
         case .bRollGeneration:
             "Generate practical B-roll ideas that strengthen the meaning of the script. \(languageInstruction)"
         case .editingGeneration:
@@ -572,7 +757,7 @@ struct AnalysisService: AnalysisServicing {
             ]
         }
 
-        let request = LLMRequest(
+        var request = LLMRequest(
             task: .analyze,
             provider: settings.provider,
             baseURL: settings.baseURL,

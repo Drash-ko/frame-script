@@ -8,6 +8,7 @@
 - Added centralized, localized application error presentation and recovery actions.
 - Added manual removal and clearing controls for Recent Projects.
 - Added debounced inline AI completion with ghost text, Tab acceptance, Escape dismissal, IME awareness, and cancellation on context changes.
+- Added localized, non-blocking inline-completion availability status with provider cooldowns.
 
 ### Changed
 
@@ -20,6 +21,8 @@
 
 ### Fixed
 
+- Used Groq's JSON object response mode for Llama scene analysis while retaining strict schemas only for explicitly supported provider/model configurations.
+- Kept autocomplete failures out of global alerts, scoped requests and Tab insertion to their originating caret, and wrapped ghost completions with TextKit layout.
 - Treated cancelled inline AI autocomplete requests as silent cancellations instead of network failures.
 - Restored live script metrics from native text edits and retried token-truncated AI analysis once with a larger output limit.
 - Prevented script text loss when switching modes, scenes, windows, or macOS desktops.

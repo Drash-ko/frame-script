@@ -9,6 +9,7 @@ struct ScriptEditorView: View {
     @State private var notesExpanded = false
     @State private var didApplyInitialNotesVisibility = false
     @State private var didManuallyToggleNotes = false
+    @State private var autocompleteState: AutocompleteEditorState = .idle
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -18,6 +19,12 @@ struct ScriptEditorView: View {
                 text: $scene.scriptText,
                 sceneID: scene.id,
                 editorIdentity: editorSessionID,
+                sceneTitle: scene.title,
+                autocompleteProvider: appState.settings.aiPreferences.provider,
+                autocompleteConfigurationVersion: appState.autocompleteConfigurationVersion,
+                autocompleteDelay: appState.autocompleteCompletionDelay,
+                autocompleteFallbackLanguage: appState.currentLanguage,
+                autocompleteState: $autocompleteState,
                 loadRestorationState: {
                     appState.editorState.scriptEditorState(sceneID: scene.id, editorIdentity: editorSessionID)
                 },
@@ -107,6 +114,13 @@ struct ScriptEditorView: View {
                     if appState.settings.editorPreferences.showSceneDuration && appState.settings.editorPreferences.showWordCount { Text("·") }
                     if appState.settings.editorPreferences.showWordCount { Text("\(wordCount) \(appState.localized("script.words"))") }
                 }
+                if case .temporarilyUnavailable(let reason) = autocompleteState {
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(theme.tertiaryText)
+                        .help(appState.localized(reason.localizationKey))
+                        .accessibilityLabel(appState.localized(reason.localizationKey))
+                        .onTapGesture { autocompleteState = .idle }
+                }
                 if shouldShowSectionTag {
                     Label("\(appState.localized("script.templateSection")): \(appState.displayName(scene.sectionType))", systemImage: "tag")
                         .font(.system(size: 12))
@@ -159,10 +173,52 @@ struct ProductionTextMarker: Hashable {
     var anchor: TextAnchor
 }
 
+enum AutocompleteEditorState: Equatable {
+    case idle
+    case loading
+    case suggestion(String)
+    case temporarilyUnavailable(AutocompleteUnavailableReason)
+}
+
+struct AutocompleteRequestSnapshot: Equatable {
+    let sceneID: UUID
+    let editorIdentity: UUID
+    let textRevision: Int
+    let sourceText: String
+    let caretLocation: Int
+    let selectionLength: Int
+
+    var range: NSRange { NSRange(location: caretLocation, length: selectionLength) }
+}
+
+func isAutocompleteSnapshotCurrent(
+    _ snapshot: AutocompleteRequestSnapshot,
+    sceneID: UUID,
+    editorIdentity: UUID,
+    textRevision: Int,
+    sourceText: String,
+    selectedRange: NSRange,
+    hasMarkedText: Bool
+) -> Bool {
+    snapshot.sceneID == sceneID
+        && snapshot.editorIdentity == editorIdentity
+        && snapshot.textRevision == textRevision
+        && snapshot.sourceText == sourceText
+        && snapshot.caretLocation == selectedRange.location
+        && snapshot.selectionLength == selectedRange.length
+        && !hasMarkedText
+}
+
 struct LinkedScriptTextView: NSViewRepresentable {
     @Binding var text: String
     let sceneID: UUID
     let editorIdentity: UUID
+    let sceneTitle: String
+    let autocompleteProvider: AIProviderKind
+    let autocompleteConfigurationVersion: Int
+    let autocompleteDelay: Duration
+    let autocompleteFallbackLanguage: AppLanguage
+    @Binding var autocompleteState: AutocompleteEditorState
     let loadRestorationState: () -> ScriptEditorRestorationState?
     let saveRestorationState: (ScriptEditorRestorationState) -> Void
     let markers: [ProductionTextMarker]
@@ -179,7 +235,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
     let addBRollLabel: String
     let addEditingLabel: String
     let onTextCommitted: (String) -> Void
-    let autocomplete: (String) async -> String?
+    let autocomplete: (AutocompleteContext) async -> AutocompleteResult
     let onTeardown: () -> Void
     let markerAction: (UUID, WorkspaceMode) -> Void
     let addMarkerAction: (WorkspaceMode, TextAnchor) -> Void
@@ -259,13 +315,19 @@ struct LinkedScriptTextView: NSViewRepresentable {
         private var pendingUserRevision: Int?
         private var userRevision = 0
         private var modelRevision = 0
+        private var textRevision = 0
         private var isApplyingProgrammaticUpdate = false
         private var pendingInitialRestorationState: ScriptEditorRestorationState?
         private var autocompleteTask: Task<Void, Never>?
         private var autocompleteRevision = 0
+        private var autocompleteSnapshot: AutocompleteRequestSnapshot?
+        private var observedAutocompleteProvider: AIProviderKind
+        private var observedAutocompleteConfigurationVersion: Int
         init(parent: LinkedScriptTextView) {
             self.parent = parent
             self.lastObservedModelValue = parent.text
+            self.observedAutocompleteProvider = parent.autocompleteProvider
+            self.observedAutocompleteConfigurationVersion = parent.autocompleteConfigurationVersion
         }
 
         func attach(to view: MarkerTextContainerView) {
@@ -312,6 +374,12 @@ struct LinkedScriptTextView: NSViewRepresentable {
 
         func applyModelTextIfNeeded() {
             guard let view else { return }
+            if observedAutocompleteProvider != parent.autocompleteProvider
+                || observedAutocompleteConfigurationVersion != parent.autocompleteConfigurationVersion {
+                observedAutocompleteProvider = parent.autocompleteProvider
+                observedAutocompleteConfigurationVersion = parent.autocompleteConfigurationVersion
+                cancelAutocomplete(clearStatus: true)
+            }
             let textView = view.textView
             let modelText = parent.text
             guard textView.string != modelText else {
@@ -332,6 +400,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
             cancelAutocomplete()
 
             modelRevision += 1
+            textRevision += 1
             pendingUserRevision = nil
             lastObservedModelValue = modelText
             changeOrigin = .programmaticTextView
@@ -367,6 +436,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
+            cancelAutocomplete()
             captureRestorationState()
         }
 
@@ -378,6 +448,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
             lastUserEmittedValue = value
             if origin == .user {
                 userRevision += 1
+                textRevision += 1
                 pendingUserRevision = userRevision
             }
             parent.text = value
@@ -385,43 +456,98 @@ struct LinkedScriptTextView: NSViewRepresentable {
             return changed
         }
 
-        func cancelAutocomplete() {
+        func cancelAutocomplete(clearStatus: Bool = false) {
             autocompleteTask?.cancel()
             autocompleteTask = nil
+            autocompleteSnapshot = nil
             view?.textView.ghostText = ""
+            if clearStatus || parent.autocompleteState == .loading || isSuggestionVisible {
+                parent.autocompleteState = .idle
+            }
+        }
+
+        private var isSuggestionVisible: Bool {
+            if case .suggestion = parent.autocompleteState { return true }
+            return false
         }
 
         private func scheduleAutocomplete(for textView: NSTextView) {
             cancelAutocomplete()
             guard !textView.hasMarkedText(), textView.selectedRange().length == 0 else { return }
             let source = textView.string
-            let caret = textView.selectedRange().location
+            let selectedRange = textView.selectedRange()
+            let caret = selectedRange.location
             let prefix = (source as NSString).substring(to: min(caret, (source as NSString).length))
-            let context = String(prefix.suffix(600))
-            guard context.count >= 12 else { return }
+            let suffixStart = min(caret, (source as NSString).length)
+            let suffix = (source as NSString).substring(from: suffixStart)
+            let contextPrefix = String(prefix.suffix(600))
+            guard contextPrefix.count >= 12 else { return }
+            let context = AutocompleteContext(
+                prefix: contextPrefix,
+                suffix: String(suffix.prefix(300)),
+                sceneTitle: parent.sceneTitle,
+                language: PromptBuilder().responseLanguage(for: prefix, fallback: parent.autocompleteFallbackLanguage)
+            )
             autocompleteRevision += 1
             let revision = autocompleteRevision
+            let snapshot = AutocompleteRequestSnapshot(
+                sceneID: parent.sceneID,
+                editorIdentity: parent.editorIdentity,
+                textRevision: textRevision,
+                sourceText: source,
+                caretLocation: caret,
+                selectionLength: selectedRange.length
+            )
+            autocompleteSnapshot = snapshot
+            parent.autocompleteState = .loading
             autocompleteTask = Task { @MainActor [weak self] in
-                do { try await Task.sleep(for: .milliseconds(280)) } catch { return }
+                do { try await Task.sleep(for: self?.parent.autocompleteDelay ?? .zero) } catch { return }
                 guard let self, !Task.isCancelled else { return }
-                let completion = await self.parent.autocomplete(context)
-                guard !Task.isCancelled,
-                      revision == self.autocompleteRevision,
-                      self.view?.textView.string == source,
-                      !(self.view?.textView.hasMarkedText() ?? true) else { return }
-                self.view?.textView.ghostText = completion ?? ""
+                let result = await self.parent.autocomplete(context)
+                guard !Task.isCancelled, revision == self.autocompleteRevision,
+                      self.autocompleteSnapshot == snapshot,
+                      self.isCurrent(snapshot, in: self.view?.textView) else { return }
+                switch result {
+                case .suggestion(let completion):
+                    self.view?.textView.ghostText = completion
+                    self.parent.autocompleteState = .suggestion(completion)
+                case .temporarilyUnavailable(let reason):
+                    self.parent.autocompleteState = .temporarilyUnavailable(reason)
+                case .none:
+                    self.parent.autocompleteState = .idle
+                }
             }
         }
 
-        private func handleGhostAction(_ action: PlaceholderTextView.GhostAction) {
+        private func isCurrent(_ snapshot: AutocompleteRequestSnapshot, in textView: NSTextView?) -> Bool {
+            guard let textView else { return false }
+            return isAutocompleteSnapshotCurrent(
+                snapshot,
+                sceneID: parent.sceneID,
+                editorIdentity: parent.editorIdentity,
+                textRevision: textRevision,
+                sourceText: textView.string,
+                selectedRange: textView.selectedRange(),
+                hasMarkedText: textView.hasMarkedText()
+            )
+        }
+
+        func handleGhostAction(_ action: PlaceholderTextView.GhostAction) {
             guard let textView = view?.textView else { return }
             switch action {
             case .accept:
                 let completion = textView.ghostText
-                guard !completion.isEmpty else { return }
+                guard !completion.isEmpty, let snapshot = autocompleteSnapshot,
+                      isCurrent(snapshot, in: textView) else {
+                    cancelAutocomplete()
+                    return
+                }
                 textView.ghostText = ""
                 autocompleteTask?.cancel()
-                textView.insertText(completion, replacementRange: textView.selectedRange())
+                autocompleteTask = nil
+                autocompleteSnapshot = nil
+                parent.autocompleteState = .idle
+                textView.insertText(completion, replacementRange: snapshot.range)
                 _ = emitCurrentText(from: textView, origin: .user)
             case .dismiss, .replace:
                 cancelAutocomplete()
@@ -531,15 +657,75 @@ final class PlaceholderTextView: NSTextView {
               let layoutManager, let textContainer else { return }
         let length = (string as NSString).length
         let index = min(selectedRange().location, length)
-        let glyph = length == 0 ? 0 : layoutManager.glyphIndexForCharacter(at: min(index, length - 1))
+        let insertion = insertionPoint(at: index, layoutManager: layoutManager, textContainer: textContainer)
+        let attributes = ghostAttributes()
+        let storage = NSTextStorage(string: ghostText, attributes: attributes)
+        let firstLayout = NSLayoutManager()
+        storage.addLayoutManager(firstLayout)
+        let firstWidth = max(1, textContainer.size.width - insertion.x)
+        let lineHeight = firstLayout.defaultLineHeight(for: font ?? NSFont.systemFont(ofSize: 14))
+            + (defaultParagraphStyle?.lineSpacing ?? 0)
+        let firstContainer = NSTextContainer(size: NSSize(width: firstWidth, height: lineHeight))
+        firstContainer.lineFragmentPadding = textContainer.lineFragmentPadding
+        firstLayout.addTextContainer(firstContainer)
+        let firstRange = firstLayout.glyphRange(forBoundingRect: NSRect(origin: .zero, size: firstContainer.size), in: firstContainer)
+        guard firstRange.length > 0 else { return }
+        firstLayout.drawGlyphs(forGlyphRange: firstRange, at: NSPoint(x: insertion.x, y: insertion.y))
+
+        let remainingGlyph = NSMaxRange(firstRange)
+        guard remainingGlyph < firstLayout.numberOfGlyphs else { return }
+        let remainingLocation = firstLayout.characterIndexForGlyph(at: remainingGlyph)
+        let remaining = (ghostText as NSString).substring(from: remainingLocation)
+        let continuationStorage = NSTextStorage(string: remaining, attributes: attributes)
+        let continuationLayout = NSLayoutManager()
+        continuationStorage.addLayoutManager(continuationLayout)
+        let continuationContainer = NSTextContainer(size: NSSize(width: textContainer.size.width, height: .greatestFiniteMagnitude))
+        continuationContainer.lineFragmentPadding = textContainer.lineFragmentPadding
+        continuationLayout.addTextContainer(continuationContainer)
+        let continuationRange = NSRange(location: 0, length: continuationLayout.numberOfGlyphs)
+        continuationLayout.drawGlyphs(
+            forGlyphRange: continuationRange,
+            at: NSPoint(x: textContainerOrigin.x, y: insertion.y + lineHeight)
+        )
+    }
+
+    func ghostLineFragmentWidths() -> [CGFloat] {
+        guard !ghostText.isEmpty, let textContainer else { return [] }
+        let storage = NSTextStorage(string: ghostText, attributes: ghostAttributes())
+        let layout = NSLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: NSSize(width: textContainer.size.width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = textContainer.lineFragmentPadding
+        layout.addTextContainer(container)
+        let glyphs = NSRange(location: 0, length: layout.numberOfGlyphs)
+        var widths: [CGFloat] = []
+        layout.enumerateLineFragments(forGlyphRange: glyphs) { _, usedRect, _, _, _ in widths.append(usedRect.width) }
+        return widths
+    }
+
+    private func ghostAttributes() -> [NSAttributedString.Key: Any] {
+        var attributes = typingAttributes
+        attributes[.font] = font ?? NSFont.systemFont(ofSize: 14)
+        attributes[.foregroundColor] = NSColor.secondaryLabelColor.withAlphaComponent(0.55)
+        attributes[.paragraphStyle] = defaultParagraphStyle ?? NSParagraphStyle.default
+        return attributes
+    }
+
+    private func insertionPoint(at index: Int, layoutManager: NSLayoutManager, textContainer: NSTextContainer) -> NSPoint {
+        let length = (string as NSString).length
+        if index == length, !layoutManager.extraLineFragmentRect.isEmpty {
+            let rect = layoutManager.extraLineFragmentRect
+            return NSPoint(x: textContainerOrigin.x + rect.origin.x, y: textContainerOrigin.y + rect.origin.y)
+        }
+        guard length > 0 else { return textContainerOrigin }
+        let glyph = layoutManager.glyphIndexForCharacter(at: min(index, length - 1))
         let point = layoutManager.location(forGlyphAt: glyph)
-        let line = layoutManager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
-        let origin = NSPoint(x: textContainerOrigin.x + point.x, y: textContainerOrigin.y + line.origin.y)
-        (ghostText as NSString).draw(at: origin, withAttributes: [
-            .font: font ?? NSFont.systemFont(ofSize: 14),
-            .foregroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.55),
-            .paragraphStyle: defaultParagraphStyle ?? NSParagraphStyle.default
-        ])
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        if index == length {
+            let used = layoutManager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil)
+            return NSPoint(x: textContainerOrigin.x + used.maxX, y: textContainerOrigin.y + line.origin.y)
+        }
+        return NSPoint(x: textContainerOrigin.x + point.x, y: textContainerOrigin.y + line.origin.y)
     }
 
     override func keyDown(with event: NSEvent) {

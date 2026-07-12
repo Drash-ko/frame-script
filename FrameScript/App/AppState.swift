@@ -96,6 +96,9 @@ final class AppState {
     private let builtInTemplates: [FrameTemplate]
     private var autosaveTask: Task<Void, Never>?
     private var segmentRebuildTasks: [UUID: Task<Void, Never>] = [:]
+    private var autocompleteCooldowns: [AIProviderKind: Date] = [:]
+    var autocompleteConfigurationVersion = 0
+    var autocompleteCompletionDelay: Duration = .milliseconds(280)
 #if DEBUG
     private var didApplyUITestLaunchArguments = false
 #endif
@@ -580,30 +583,40 @@ final class AppState {
         scheduleAutosaveIfNeeded()
     }
 
-    func autocompleteScript(context: String) async -> String? {
+    func autocompleteScript(context: AutocompleteContext) async -> AutocompleteResult {
         guard settings.aiPreferences.provider != .disabled,
-              !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+              !context.prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .none }
+        let provider = settings.aiPreferences.provider
+        if let cooldown = autocompleteCooldowns[provider], cooldown > .now {
+            return .temporarilyUnavailable(.rateLimited)
+        }
+        autocompleteCooldowns.removeValue(forKey: provider)
         do {
             let promptBuilder = PromptBuilder()
-            let provider = settings.aiPreferences.provider
             let apiKey = try dependencies.providerCredentials.apiKey(for: provider)
             let response = try await dependencies.llmProvider.complete(request: LLMRequest(
                 task: .autocomplete,
                 provider: provider,
                 baseURL: settings.aiPreferences.baseURL,
-                systemPrompt: promptBuilder.systemPrompt(for: .autocomplete, language: promptBuilder.responseLanguage(for: context, fallback: currentLanguage)),
-                userPrompt: context,
+                systemPrompt: promptBuilder.systemPrompt(for: .autocomplete, language: context.language),
+                userPrompt: context.prompt,
                 model: settings.aiPreferences.model,
                 temperature: settings.aiPreferences.temperature,
                 maxTokens: min(settings.aiPreferences.maxTokens, 80)
             ), apiKey: apiKey)
-            let completion = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return completion.isEmpty ? nil : " " + completion
+            guard let completion = AutocompleteCompletion.sanitize(response, context: context) else { return .none }
+            return .suggestion(completion)
         } catch is CancellationError {
-            return nil
+            return .none
+        } catch let error as LLMProviderError where error == .network(String(URLError.Code.cancelled.rawValue)) {
+            return .none
         } catch {
-            errorCenter.present(AppError.ai(error))
-            return nil
+            let reason = AutocompleteUnavailableReason.from(error)
+            if reason == .rateLimited {
+                let requestedDelay = AutocompleteRetryAfterCache.take(for: provider) ?? 30
+                autocompleteCooldowns[provider] = .now.addingTimeInterval(min(max(requestedDelay, 5), 300))
+            }
+            return .temporarilyUnavailable(reason)
         }
     }
 
@@ -869,6 +882,8 @@ final class AppState {
 
     func invalidateProviderAPIKey(for provider: AIProviderKind) {
         dependencies.providerCredentials.invalidate(for: provider)
+        autocompleteCooldowns.removeValue(forKey: provider)
+        autocompleteConfigurationVersion += 1
     }
 
     private func providerAPIKeyIfNeeded() throws -> String {
