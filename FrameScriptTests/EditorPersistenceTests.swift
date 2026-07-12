@@ -317,16 +317,44 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(recorder.requestCount, 0)
     }
 
-    func testAutocompleteBeforeTrailingWhitespaceOrNewlineDoesNotSchedule() async {
+    func testAutocompleteBeforeTrailingWhitespaceOrNewlineSchedules() async throws {
         let recorder = AutocompleteRequestRecorder()
         let text = "This is enough editor context \t\n"
         let (coordinator, view) = makeAutocompleteCoordinator(text: text, recorder: recorder)
         let caret = (text as NSString).length - 3
         view.textView.setSelectedRange(NSRange(location: caret, length: 0))
         coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "trailing whitespace request")
+
+        XCTAssertEqual(recorder.contexts[0].suffix, " \t\n")
+    }
+
+    func testAutocompleteBeforeZeroWidthSuffixDoesNotSchedule() async {
+        let recorder = AutocompleteRequestRecorder()
+        let text = "This is enough editor context\u{200B}"
+        let (coordinator, view) = makeAutocompleteCoordinator(text: text, recorder: recorder)
+        view.textView.setSelectedRange(NSRange(location: (text as NSString).length - 1, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
         await Task.yield()
 
         XCTAssertEqual(recorder.requestCount, 0)
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
+    }
+
+    func testTabInsertsCompletionAtLogicalEndCaretAndPreservesTrailingWhitespace() async throws {
+        let recorder = AutocompleteRequestRecorder()
+        let text = "This is enough editor context   \n"
+        let (coordinator, view) = makeAutocompleteCoordinator(text: text, recorder: recorder)
+        let caret = (text as NSString).length - 4
+        view.textView.setSelectedRange(NSRange(location: caret, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "logical-end request")
+        recorder.respond(with: .suggestion("The next beat lands."))
+        try await waitUntil({ !view.textView.ghostText.isEmpty }, message: "logical-end ghost")
+
+        view.textView.keyDown(with: try keyEvent(keyCode: 48, characters: "\t"))
+
+        XCTAssertEqual(view.textView.string, "This is enough editor contextThe next beat lands.   \n")
     }
 
     func testMovingCaretFromDocumentEndCancelsAndClearsSuggestion() async throws {
@@ -345,6 +373,102 @@ final class EditorPersistenceTests: XCTestCase {
         coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
 
         XCTAssertTrue(view.textView.ghostText.isEmpty)
+    }
+
+    func testNoOpRightArrowAtLogicalEndPreservesVisibleSuggestion() async throws {
+        let recorder = AutocompleteRequestRecorder()
+        let (coordinator, view) = makeAutocompleteCoordinator(text: "This is enough editor context", recorder: recorder)
+        view.textView.setSelectedRange(NSRange(location: (view.textView.string as NSString).length, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "initial request")
+        recorder.respond(with: .suggestion("A suggestion to preserve."))
+        try await waitUntil({ !view.textView.ghostText.isEmpty }, message: "initial ghost")
+
+        view.textView.keyDown(with: try keyEvent(keyCode: 124, characters: "\u{F703}"))
+
+        XCTAssertEqual(view.textView.ghostText, "A suggestion to preserve.")
+        XCTAssertEqual(recorder.requestCount, 1)
+    }
+
+    func testNoOpDownArrowAtLogicalEndDoesNotStartDuplicateRequest() async throws {
+        let recorder = AutocompleteRequestRecorder()
+        let (coordinator, view) = makeAutocompleteCoordinator(text: "This is enough editor context", recorder: recorder)
+        view.textView.setSelectedRange(NSRange(location: (view.textView.string as NSString).length, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "initial request")
+        recorder.respond(with: .suggestion("A suggestion to preserve."))
+        try await waitUntil({ !view.textView.ghostText.isEmpty }, message: "initial ghost")
+
+        view.textView.keyDown(with: try keyEvent(keyCode: 125, characters: "\u{F701}"))
+        await Task.yield()
+
+        XCTAssertEqual(recorder.requestCount, 1)
+        XCTAssertEqual(view.textView.ghostText, "A suggestion to preserve.")
+    }
+
+    func testCaretReturnSchedulesOneFreshRequestWithoutTextEdit() async throws {
+        let recorder = AutocompleteRequestRecorder()
+        let (coordinator, view) = makeAutocompleteCoordinator(text: "This is enough editor context", recorder: recorder)
+        let end = (view.textView.string as NSString).length
+        view.textView.setSelectedRange(NSRange(location: end, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "first request")
+        recorder.respond(with: .suggestion("First suggestion."))
+        try await waitUntil({ !view.textView.ghostText.isEmpty }, message: "first ghost")
+
+        view.textView.setSelectedRange(NSRange(location: end - 1, length: 0))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
+
+        view.textView.setSelectedRange(NSRange(location: end, length: 0))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 2 }, message: "caret return request")
+
+        XCTAssertEqual(recorder.requestCount, 2)
+    }
+
+    func testLateResponseBeforeCaretMovementIsRejectedAfterCaretReturn() async throws {
+        let recorder = AutocompleteRequestRecorder()
+        let (coordinator, view) = makeAutocompleteCoordinator(text: "This is enough editor context", recorder: recorder)
+        let end = (view.textView.string as NSString).length
+        view.textView.setSelectedRange(NSRange(location: end, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "first request")
+
+        view.textView.setSelectedRange(NSRange(location: end - 1, length: 0))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        view.textView.setSelectedRange(NSRange(location: end, length: 0))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 2 }, message: "returned request")
+
+        recorder.respond(with: .suggestion("Stale suggestion."))
+        await Task.yield()
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
+        recorder.respond(with: .suggestion("Fresh suggestion."))
+        try await waitUntil({ view.textView.ghostText == "Fresh suggestion." }, message: "fresh ghost")
+    }
+
+    func testEscapeRequiresCaretDepartureBeforeCaretReturnRegenerates() async throws {
+        let recorder = AutocompleteRequestRecorder()
+        let (coordinator, view) = makeAutocompleteCoordinator(text: "This is enough editor context", recorder: recorder)
+        let end = (view.textView.string as NSString).length
+        view.textView.setSelectedRange(NSRange(location: end, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "initial request")
+        recorder.respond(with: .suggestion("Dismiss me."))
+        try await waitUntil({ !view.textView.ghostText.isEmpty }, message: "initial ghost")
+
+        view.textView.keyDown(with: try keyEvent(keyCode: 53, characters: "\u{1B}"))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        await Task.yield()
+        XCTAssertEqual(recorder.requestCount, 1)
+
+        view.textView.setSelectedRange(NSRange(location: end - 1, length: 0))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        view.textView.setSelectedRange(NSRange(location: end, length: 0))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 2 }, message: "post-Escape caret-return request")
     }
 
     func testLateEndOfDocumentResponseIsRejectedAfterCaretMovement() async throws {

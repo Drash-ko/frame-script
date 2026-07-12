@@ -260,11 +260,54 @@ struct AutocompleteRequestSnapshot: Equatable {
     var range: NSRange { NSRange(location: caretLocation, length: selectionLength) }
 }
 
+enum AutocompleteEligibilityReason: String {
+    case eligiblePhysicalEnd
+    case eligibleTrailingWhitespace
+    case blockedSelection
+    case blockedMarkedText
+    case blockedVisibleSuffix
+}
+
+struct AutocompleteEligibility {
+    let reason: AutocompleteEligibilityReason
+    let suffixCharacterCount: Int
+
+    var isEligible: Bool {
+        reason == .eligiblePhysicalEnd || reason == .eligibleTrailingWhitespace
+    }
+}
+
+@MainActor
+func autocompleteEligibility(in textView: NSTextView) -> AutocompleteEligibility {
+    let selectedRange = textView.selectedRange()
+    let text = textView.string as NSString
+    let length = text.length
+    let caret = min(max(0, selectedRange.location), length)
+    let suffixRange = NSRange(location: caret, length: length - caret)
+
+    guard selectedRange.length == 0 else {
+        return AutocompleteEligibility(reason: .blockedSelection, suffixCharacterCount: suffixRange.length)
+    }
+    guard !textView.hasMarkedText() else {
+        return AutocompleteEligibility(reason: .blockedMarkedText, suffixCharacterCount: suffixRange.length)
+    }
+    guard suffixRange.length > 0 else {
+        return AutocompleteEligibility(reason: .eligiblePhysicalEnd, suffixCharacterCount: 0)
+    }
+    let visibleSuffix = text.rangeOfCharacter(
+        from: CharacterSet.whitespacesAndNewlines.inverted,
+        options: [],
+        range: suffixRange
+    )
+    guard visibleSuffix.location == NSNotFound else {
+        return AutocompleteEligibility(reason: .blockedVisibleSuffix, suffixCharacterCount: suffixRange.length)
+    }
+    return AutocompleteEligibility(reason: .eligibleTrailingWhitespace, suffixCharacterCount: suffixRange.length)
+}
+
 @MainActor
 func isAutocompleteEligible(in textView: NSTextView) -> Bool {
-    let selectedRange = textView.selectedRange()
-    return selectedRange.length == 0
-        && selectedRange.location == (textView.string as NSString).length
+    autocompleteEligibility(in: textView).isEligible
 }
 
 func isAutocompleteSnapshotCurrent(
@@ -392,6 +435,12 @@ struct LinkedScriptTextView: NSViewRepresentable {
             let expectedSelection: NSRange
         }
 
+        private struct EscapeDismissalContext: Equatable {
+            let sourceText: String
+            let textRevision: Int
+            let caretLocation: Int
+        }
+
         var parent: LinkedScriptTextView
         weak var view: MarkerTextContainerView?
         private(set) var changeOrigin: ChangeOrigin = .externalModel
@@ -407,6 +456,8 @@ struct LinkedScriptTextView: NSViewRepresentable {
         private(set) var autocompleteRequestGeneration = 0
         private var autocompleteSnapshot: AutocompleteRequestSnapshot?
         private var editTransaction: EditTransaction?
+        private var lastSelectionRange: NSRange?
+        private var escapeDismissalContext: EscapeDismissalContext?
         private var observedAutocompleteProvider: AIProviderKind
         private var observedAutocompleteConfigurationVersion: Int
         private var observedAutocompleteConfigurationIsEligible: Bool
@@ -423,6 +474,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
             view.coordinator = self
             view.textView.ghostAction = { [weak self] action in self?.handleGhostAction(action) }
             pendingInitialRestorationState = parent.loadRestorationState()
+            lastSelectionRange = view.textView.selectedRange()
         }
 
         func detach(from view: MarkerTextContainerView) {
@@ -518,11 +570,13 @@ struct LinkedScriptTextView: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             guard !isApplyingProgrammaticUpdate else { return }
             _ = emitCurrentText(from: textView, origin: .user, forceCommit: true)
+            escapeDismissalContext = nil
             autocompleteRequestGeneration += 1
             editTransaction = EditTransaction(
                 textRevision: textRevision,
                 expectedSelection: textView.selectedRange()
             )
+            lastSelectionRange = textView.selectedRange()
             scheduleAutocomplete(for: textView, requestGeneration: autocompleteRequestGeneration)
             view?.invalidateMarkerGeometry()
             view?.needsDisplay = true
@@ -539,16 +593,41 @@ struct LinkedScriptTextView: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             let selectedRange = textView.selectedRange()
-            if !isAutocompleteEligible(in: textView) {
-                editTransaction = nil
-                cancelAutocomplete()
-            } else if let editTransaction,
-                      editTransaction.textRevision == textRevision,
-                      editTransaction.expectedSelection == selectedRange {
-            } else {
-                editTransaction = nil
-                cancelAutocomplete()
+            let previousRange = lastSelectionRange
+            lastSelectionRange = selectedRange
+            guard previousRange != selectedRange else {
+                logAutocompleteOutcome("preservedNoOpSelection", in: textView, generation: autocompleteRequestGeneration)
+                captureRestorationState()
+                return
             }
+
+            let eligibility = autocompleteEligibility(in: textView)
+            guard eligibility.isEligible else {
+                editTransaction = nil
+                escapeDismissalContext = nil
+                cancelAutocomplete()
+                logAutocompleteOutcome("cancelledCaretMoved", in: textView, generation: autocompleteRequestGeneration)
+                captureRestorationState()
+                return
+            }
+
+            if let editTransaction,
+               editTransaction.textRevision == textRevision,
+               editTransaction.expectedSelection == selectedRange {
+                captureRestorationState()
+                return
+            }
+
+            editTransaction = nil
+            if isEscapeDismissed(at: selectedRange, in: textView) {
+                logAutocompleteOutcome("blockedEscapeDismissal", in: textView, generation: autocompleteRequestGeneration)
+                captureRestorationState()
+                return
+            }
+            autocompleteRequestGeneration += 1
+            cancelAutocomplete()
+            logAutocompleteOutcome("scheduledCaretReturned", in: textView, generation: autocompleteRequestGeneration)
+            scheduleAutocomplete(for: textView, requestGeneration: autocompleteRequestGeneration)
             captureRestorationState()
         }
 
@@ -579,15 +658,32 @@ struct LinkedScriptTextView: NSViewRepresentable {
         }
 
         private var isSuggestionVisible: Bool {
+            if !(view?.textView.ghostText.isEmpty ?? true) { return true }
             if case .suggestion = parent.autocompleteState { return true }
             return false
         }
 
         private func scheduleAutocomplete(for textView: NSTextView, requestGeneration: Int) {
+            guard parent.autocompleteConfigurationIsEligible else {
+                cancelAutocomplete()
+                logAutocompleteOutcome("blockedProviderDisabled", in: textView, generation: requestGeneration)
+                return
+            }
+            let eligibility = autocompleteEligibility(in: textView)
+            guard eligibility.isEligible else {
+                cancelAutocomplete()
+                logAutocompleteOutcome(eligibility.reason.rawValue, in: textView, generation: requestGeneration)
+                return
+            }
+            if hasValidVisibleSuggestion(in: textView) {
+                logAutocompleteOutcome("blockedVisibleSuggestion", in: textView, generation: requestGeneration)
+                return
+            }
+            if hasValidPendingRequest(in: textView) {
+                logAutocompleteOutcome("blockedPendingRequest", in: textView, generation: requestGeneration)
+                return
+            }
             cancelAutocomplete()
-            guard parent.autocompleteConfigurationIsEligible,
-                  !textView.hasMarkedText(),
-                  isAutocompleteEligible(in: textView) else { return }
             let source = textView.string
             let selectedRange = textView.selectedRange()
             let caret = selectedRange.location
@@ -613,6 +709,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
             )
             autocompleteSnapshot = snapshot
             parent.autocompleteState = .loading
+            logAutocompleteOutcome(eligibility.reason.rawValue, in: textView, generation: requestGeneration)
             autocompleteTask = Task { @MainActor [weak self] in
                 do { try await Task.sleep(for: self?.parent.autocompleteDelay ?? .zero) } catch { return }
                 guard let self, !Task.isCancelled else { return }
@@ -621,6 +718,16 @@ struct LinkedScriptTextView: NSViewRepresentable {
                         self.autocompleteTask = nil
                     }
                 }
+                guard self.parent.autocompleteConfigurationIsEligible else {
+                    self.logAutocompleteOutcome("blockedProviderDisabled", in: self.view?.textView, generation: snapshot.requestGeneration)
+                    self.cancelAutocomplete()
+                    return
+                }
+                guard self.isCurrent(snapshot, in: self.view?.textView) else {
+                    self.logRejectedStaleAutocomplete(snapshot)
+                    return
+                }
+                self.logAutocompleteOutcome("eligibleRequestStarted", in: self.view?.textView, generation: snapshot.requestGeneration)
                 let result = await self.parent.autocomplete(context)
                 let isCurrent = !Task.isCancelled
                     && snapshot.requestGeneration == self.autocompleteRequestGeneration
@@ -632,6 +739,10 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 }
                 switch result {
                 case .suggestion(let completion):
+                    guard self.isCurrent(snapshot, in: self.view?.textView) else {
+                        self.logRejectedStaleAutocomplete(snapshot)
+                        return
+                    }
                     self.view?.textView.ghostText = completion
                     self.parent.autocompleteState = .suggestion(completion)
                 case .temporarilyUnavailable:
@@ -645,7 +756,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
         }
 
         private func isCurrent(_ snapshot: AutocompleteRequestSnapshot, in textView: NSTextView?) -> Bool {
-            guard let textView, isAutocompleteEligible(in: textView) else { return false }
+            guard let textView, autocompleteEligibility(in: textView).isEligible else { return false }
             return isAutocompleteSnapshotCurrent(
                 snapshot,
                 sceneID: parent.sceneID,
@@ -658,8 +769,42 @@ struct LinkedScriptTextView: NSViewRepresentable {
         }
 
         private func logRejectedStaleAutocomplete(_ snapshot: AutocompleteRequestSnapshot) {
+            logAutocompleteOutcome("rejectedStale", in: view?.textView, generation: snapshot.requestGeneration, textRevision: snapshot.textRevision)
+        }
+
+        private func hasValidPendingRequest(in textView: NSTextView) -> Bool {
+            guard autocompleteTask != nil, let snapshot = autocompleteSnapshot else { return false }
+            return isCurrent(snapshot, in: textView)
+        }
+
+        private func hasValidVisibleSuggestion(in textView: NSTextView) -> Bool {
+            guard let placeholderTextView = textView as? PlaceholderTextView,
+                  !placeholderTextView.ghostText.isEmpty,
+                  let snapshot = autocompleteSnapshot else { return false }
+            return isCurrent(snapshot, in: placeholderTextView)
+        }
+
+        private func isEscapeDismissed(at selectedRange: NSRange, in textView: NSTextView) -> Bool {
+            escapeDismissalContext == EscapeDismissalContext(
+                sourceText: textView.string,
+                textRevision: textRevision,
+                caretLocation: selectedRange.location
+            )
+        }
+
+        private func logAutocompleteOutcome(
+            _ reason: String,
+            in textView: NSTextView?,
+            generation: Int,
+            textRevision: Int? = nil
+        ) {
 #if DEBUG
-            Self.autocompleteLogger.debug("Autocomplete outcome=rejectedStale provider=\(self.parent.autocompleteProvider.rawValue, privacy: .public) model=unknown finish=none characters=0 generation=\(snapshot.requestGeneration, privacy: .public) revision=\(snapshot.textRevision, privacy: .public)")
+            let selectedRange = textView?.selectedRange() ?? .init(location: 0, length: 0)
+            let textLength = ((textView?.string ?? "") as NSString).length
+            let suffixCount = max(0, textLength - min(max(0, selectedRange.location), textLength))
+            Self.autocompleteLogger.debug(
+                "Autocomplete outcome=\(reason, privacy: .public) scene=\(self.parent.sceneID.uuidString, privacy: .public) editor=\(self.parent.editorIdentity.uuidString, privacy: .public) revision=\(textRevision ?? self.textRevision, privacy: .public) generation=\(generation, privacy: .public) caret=\(selectedRange.location, privacy: .public) suffixCount=\(suffixCount, privacy: .public)"
+            )
 #endif
         }
 
@@ -681,6 +826,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 let completion = textView.ghostText
                 guard !completion.isEmpty, let snapshot = autocompleteSnapshot,
                       isCurrent(snapshot, in: textView) else {
+                    logAutocompleteOutcome("rejectedStale", in: textView, generation: autocompleteRequestGeneration)
                     cancelAutocomplete()
                     return
                 }
@@ -691,7 +837,14 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 parent.autocompleteState = .idle
                 textView.insertText(completion, replacementRange: snapshot.range)
                 _ = emitCurrentText(from: textView, origin: .user)
-            case .dismiss, .replace:
+            case .dismiss:
+                escapeDismissalContext = EscapeDismissalContext(
+                    sourceText: textView.string,
+                    textRevision: textRevision,
+                    caretLocation: textView.selectedRange().location
+                )
+                cancelAutocomplete()
+            case .replace:
                 cancelAutocomplete()
             }
         }
@@ -896,6 +1049,10 @@ final class PlaceholderTextView: NSTextView {
         if !ghostText.isEmpty {
             if event.keyCode == 48 { ghostAction?(.accept); return }
             if event.keyCode == 53 { ghostAction?(.dismiss); return }
+            if [123, 124, 125, 126].contains(event.keyCode) {
+                super.keyDown(with: event)
+                return
+            }
             ghostAction?(.replace)
         }
         super.keyDown(with: event)
