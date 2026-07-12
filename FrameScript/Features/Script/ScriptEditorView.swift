@@ -248,12 +248,20 @@ struct AutocompleteIssueDetailsState: Equatable {
 struct AutocompleteRequestSnapshot: Equatable {
     let sceneID: UUID
     let editorIdentity: UUID
+    let requestGeneration: Int
     let textRevision: Int
     let sourceText: String
     let caretLocation: Int
     let selectionLength: Int
 
     var range: NSRange { NSRange(location: caretLocation, length: selectionLength) }
+}
+
+@MainActor
+func isAutocompleteEligible(in textView: NSTextView) -> Bool {
+    let selectedRange = textView.selectedRange()
+    return selectedRange.length == 0
+        && selectedRange.location == (textView.string as NSString).length
 }
 
 func isAutocompleteSnapshotCurrent(
@@ -300,7 +308,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
     let addBRollLabel: String
     let addEditingLabel: String
     let onTextCommitted: (String) -> Void
-    let autocomplete: (AutocompleteContext) async -> AutocompleteResult
+    let autocomplete: @MainActor (AutocompleteContext) async -> AutocompleteResult
     let onTeardown: () -> Void
     let markerAction: (UUID, WorkspaceMode) -> Void
     let addMarkerAction: (WorkspaceMode, TextAnchor) -> Void
@@ -385,11 +393,11 @@ struct LinkedScriptTextView: NSViewRepresentable {
         private var pendingUserRevision: Int?
         private var userRevision = 0
         private var modelRevision = 0
-        private var textRevision = 0
+        private(set) var textRevision = 0
         private var isApplyingProgrammaticUpdate = false
         private var pendingInitialRestorationState: ScriptEditorRestorationState?
         private var autocompleteTask: Task<Void, Never>?
-        private var autocompleteRevision = 0
+        private(set) var autocompleteRequestGeneration = 0
         private var autocompleteSnapshot: AutocompleteRequestSnapshot?
         private var editTransaction: EditTransaction?
         private var observedAutocompleteProvider: AIProviderKind
@@ -494,11 +502,12 @@ struct LinkedScriptTextView: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             guard !isApplyingProgrammaticUpdate else { return }
             _ = emitCurrentText(from: textView, origin: .user, forceCommit: true)
+            autocompleteRequestGeneration += 1
             editTransaction = EditTransaction(
                 textRevision: textRevision,
                 expectedSelection: textView.selectedRange()
             )
-            scheduleAutocomplete(for: textView)
+            scheduleAutocomplete(for: textView, requestGeneration: autocompleteRequestGeneration)
             view?.invalidateMarkerGeometry()
             view?.needsDisplay = true
         }
@@ -512,10 +521,14 @@ struct LinkedScriptTextView: NSViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
-            let selectedRange = (notification.object as? NSTextView)?.selectedRange()
-            if let editTransaction,
-               editTransaction.textRevision == textRevision,
-               editTransaction.expectedSelection == selectedRange {
+            guard let textView = notification.object as? NSTextView else { return }
+            let selectedRange = textView.selectedRange()
+            if !isAutocompleteEligible(in: textView) {
+                editTransaction = nil
+                cancelAutocomplete()
+            } else if let editTransaction,
+                      editTransaction.textRevision == textRevision,
+                      editTransaction.expectedSelection == selectedRange {
             } else {
                 editTransaction = nil
                 cancelAutocomplete()
@@ -554,9 +567,9 @@ struct LinkedScriptTextView: NSViewRepresentable {
             return false
         }
 
-        private func scheduleAutocomplete(for textView: NSTextView) {
+        private func scheduleAutocomplete(for textView: NSTextView, requestGeneration: Int) {
             cancelAutocomplete()
-            guard !textView.hasMarkedText(), textView.selectedRange().length == 0 else { return }
+            guard !textView.hasMarkedText(), isAutocompleteEligible(in: textView) else { return }
             let source = textView.string
             let selectedRange = textView.selectedRange()
             let caret = selectedRange.location
@@ -571,11 +584,10 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 sceneTitle: parent.sceneTitle,
                 language: PromptBuilder().responseLanguage(for: prefix, fallback: parent.autocompleteFallbackLanguage)
             )
-            autocompleteRevision += 1
-            let revision = autocompleteRevision
             let snapshot = AutocompleteRequestSnapshot(
                 sceneID: parent.sceneID,
                 editorIdentity: parent.editorIdentity,
+                requestGeneration: requestGeneration,
                 textRevision: textRevision,
                 sourceText: source,
                 caretLocation: caret,
@@ -586,8 +598,14 @@ struct LinkedScriptTextView: NSViewRepresentable {
             autocompleteTask = Task { @MainActor [weak self] in
                 do { try await Task.sleep(for: self?.parent.autocompleteDelay ?? .zero) } catch { return }
                 guard let self, !Task.isCancelled else { return }
+                defer {
+                    if snapshot.requestGeneration == self.autocompleteRequestGeneration {
+                        self.autocompleteTask = nil
+                    }
+                }
                 let result = await self.parent.autocomplete(context)
-                guard !Task.isCancelled, revision == self.autocompleteRevision,
+                guard !Task.isCancelled,
+                      snapshot.requestGeneration == self.autocompleteRequestGeneration,
                       self.autocompleteSnapshot == snapshot,
                       self.isCurrent(snapshot, in: self.view?.textView) else { return }
                 switch result {
@@ -595,15 +613,17 @@ struct LinkedScriptTextView: NSViewRepresentable {
                     self.view?.textView.ghostText = completion
                     self.parent.autocompleteState = .suggestion(completion)
                 case .temporarilyUnavailable:
+                    self.autocompleteSnapshot = nil
                     self.parent.autocompleteState = .idle
                 case .none:
+                    self.autocompleteSnapshot = nil
                     self.parent.autocompleteState = .idle
                 }
             }
         }
 
         private func isCurrent(_ snapshot: AutocompleteRequestSnapshot, in textView: NSTextView?) -> Bool {
-            guard let textView else { return false }
+            guard let textView, isAutocompleteEligible(in: textView) else { return false }
             return isAutocompleteSnapshotCurrent(
                 snapshot,
                 sceneID: parent.sceneID,
@@ -736,7 +756,7 @@ final class PlaceholderTextView: NSTextView {
     }
 
     private func drawGhostText() {
-        guard !ghostText.isEmpty, selectedRange().length == 0,
+        guard !ghostText.isEmpty, isAutocompleteEligible(in: self),
               let layoutManager, let textContainer else { return }
         let length = (string as NSString).length
         let index = min(selectedRange().location, length)
@@ -773,7 +793,7 @@ final class PlaceholderTextView: NSTextView {
     }
 
     func ghostLineFragmentWidths() -> [CGFloat] {
-        guard !ghostText.isEmpty, let textContainer else { return [] }
+        guard !ghostText.isEmpty, isAutocompleteEligible(in: self), let textContainer else { return [] }
         let storage = NSTextStorage(string: ghostText, attributes: ghostAttributes())
         let layout = NSLayoutManager()
         storage.addLayoutManager(layout)

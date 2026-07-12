@@ -285,7 +285,8 @@ final class AIServiceLayerTests: XCTestCase {
         appState.autocompleteNow = { now }
         let context = AutocompleteContext(prefix: "A narrator introduces the topic", suffix: "", sceneTitle: "Hook", language: .english)
 
-        XCTAssertEqual(await appState.autocompleteScript(context: context), .temporarilyUnavailable(.rateLimited))
+        let firstResult = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(firstResult, .temporarilyUnavailable(.rateLimited))
         let firstIssue = try! XCTUnwrap(appState.autocompleteIssue)
         XCTAssertEqual(firstIssue.reason, .rateLimited)
         XCTAssertEqual(firstIssue.provider, .openAICompatible)
@@ -295,19 +296,24 @@ final class AIServiceLayerTests: XCTestCase {
         requestState = .idle // Typing, cancellation, and caret movement only change transient request state.
         XCTAssertEqual(requestState, .idle)
         XCTAssertEqual(appState.autocompleteIssue, firstIssue)
-        XCTAssertEqual(await appState.autocompleteScript(context: context), .temporarilyUnavailable(.rateLimited))
+        let cooldownResult = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(cooldownResult, .temporarilyUnavailable(.rateLimited))
         XCTAssertEqual(provider.calls, 1)
 
         now = now.addingTimeInterval(31)
-        XCTAssertEqual(await appState.autocompleteScript(context: context), .none)
+        let invalidCompletionResult = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(invalidCompletionResult, .none)
         XCTAssertEqual(appState.autocompleteIssue, firstIssue)
-        XCTAssertEqual(await appState.autocompleteScript(context: context), .none)
+        let secondInvalidCompletionResult = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(secondInvalidCompletionResult, .none)
         XCTAssertEqual(appState.autocompleteIssue, firstIssue)
 
-        XCTAssertEqual(await appState.autocompleteScript(context: context), .suggestion(" The scene continues."))
+        let validCompletionResult = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(validCompletionResult, .suggestion(" The scene continues."))
         XCTAssertNil(appState.autocompleteIssue)
 
-        XCTAssertEqual(await appState.autocompleteScript(context: context), .temporarilyUnavailable(.rateLimited))
+        let secondRateLimitResult = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(secondRateLimitResult, .temporarilyUnavailable(.rateLimited))
         XCTAssertEqual(appState.autocompleteIssue?.reason, .rateLimited)
         XCTAssertEqual(provider.calls, 5)
     }
@@ -438,7 +444,7 @@ final class AIServiceLayerTests: XCTestCase {
         let sceneID = UUID()
         let editorID = UUID()
         let snapshot = AutocompleteRequestSnapshot(
-            sceneID: sceneID, editorIdentity: editorID, textRevision: 4,
+            sceneID: sceneID, editorIdentity: editorID, requestGeneration: 1, textRevision: 4,
             sourceText: "Narrator continues here", caretLocation: 9, selectionLength: 0
         )
 
@@ -453,7 +459,7 @@ final class AIServiceLayerTests: XCTestCase {
         textView.allowsUndo = true
         textView.string = "Before after"
         let snapshot = AutocompleteRequestSnapshot(
-            sceneID: UUID(), editorIdentity: UUID(), textRevision: 1,
+            sceneID: UUID(), editorIdentity: UUID(), requestGeneration: 1, textRevision: 1,
             sourceText: textView.string, caretLocation: 6, selectionLength: 0
         )
         textView.setSelectedRange(snapshot.range)
@@ -466,7 +472,7 @@ final class AIServiceLayerTests: XCTestCase {
 
     func testGhostTextWrapsInsideTextContainer() {
         let textView = PlaceholderTextView(frame: NSRect(x: 0, y: 0, width: 110, height: 120))
-        textView.textContainer?.containerSize = NSSize(width: 110, height: .greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(width: 110, height: CGFloat.greatestFiniteMagnitude)
         textView.ghostText = "A multiline ghost completion that must wrap inside the editor text container."
 
         let widths = textView.ghostLineFragmentWidths()

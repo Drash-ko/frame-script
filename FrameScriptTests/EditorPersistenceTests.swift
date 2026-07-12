@@ -21,15 +21,29 @@ final class EditorPersistenceTests: XCTestCase {
         var isActualFirstResponder: Bool { true }
     }
 
+    @MainActor
     private final class AutocompleteRequestRecorder {
         private(set) var requestCount = 0
+        private(set) var completedRequestCount = 0
+        private(set) var providerRequestCount = 0
+        private(set) var cooldownBlockedRequestCount = 0
+        private(set) var contexts: [AutocompleteContext] = []
+        var isCooldownActive = false
         private var continuations: [CheckedContinuation<AutocompleteResult, Never>] = []
 
         func request(_ context: AutocompleteContext) async -> AutocompleteResult {
+            if isCooldownActive {
+                cooldownBlockedRequestCount += 1
+                return .temporarilyUnavailable(.rateLimited)
+            }
             requestCount += 1
-            return await withCheckedContinuation { continuation in
+            providerRequestCount += 1
+            contexts.append(context)
+            let result = await withCheckedContinuation { continuation in
                 continuations.append(continuation)
             }
+            completedRequestCount += 1
+            return result
         }
 
         func respond(with result: AutocompleteResult) {
@@ -117,7 +131,7 @@ final class EditorPersistenceTests: XCTestCase {
         let recorder = AutocompleteRequestRecorder()
         let parent = makeRepresentable(
             text: Binding(get: { box.value }, set: { box.value = $0 }),
-            autocomplete: { context in await recorder.request(context) }
+            autocomplete: { @MainActor context in await recorder.request(context) }
         )
         let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
         let view = MarkerTextContainerView()
@@ -127,7 +141,8 @@ final class EditorPersistenceTests: XCTestCase {
         view.textView.setSelectedRange(NSRange(location: (box.value as NSString).length, length: 0))
 
         view.textView.insertText("!", replacementRange: view.textView.selectedRange())
-        try await waitUntil { recorder.requestCount == 1 }
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "first request")
         recorder.respond(with: .suggestion("The next beat lands."))
         try await waitUntil { view.textView.ghostText == "The next beat lands." }
 
@@ -135,6 +150,7 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(view.textView.ghostText, "The next beat lands.")
 
         view.textView.insertText("?", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
         try await waitUntil { recorder.requestCount == 2 }
         view.textView.setSelectedRange(NSRange(location: 0, length: 0))
         recorder.respond(with: .suggestion("The next beat lands."))
@@ -144,56 +160,186 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertTrue(view.textView.ghostText.isEmpty)
     }
 
-    func testAutocompleteSurvivesRepeatedEditsAndPostEditSelectionNotificationsInOneEditor() async throws {
-        let box = TextBox("This is enough editor context")
+    func testAutocompleteAtAbsoluteDocumentEndSchedulesOneRequestAndShowsGhostText() async throws {
         let recorder = AutocompleteRequestRecorder()
-        let parent = makeRepresentable(
-            text: Binding(get: { box.value }, set: { box.value = $0 }),
-            autocomplete: { context in await recorder.request(context) }
+        let (coordinator, view) = makeAutocompleteCoordinator(
+            text: "This is enough editor context",
+            recorder: recorder
         )
-        let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
-        let view = MarkerTextContainerView()
-        coordinator.attach(to: view)
-        view.textView.delegate = coordinator
-        view.textView.string = box.value
-        view.textView.setSelectedRange(NSRange(location: (box.value as NSString).length, length: 0))
+        view.textView.setSelectedRange(NSRange(location: (view.textView.string as NSString).length, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
 
-        view.textView.keyDown(with: try keyEvent(keyCode: 0, characters: "a"))
         try await waitUntil { recorder.requestCount == 1 }
-        recorder.respond(with: .suggestion("A beat follows."))
-        try await waitUntil { view.textView.ghostText == "A beat follows." }
+        recorder.respond(with: .suggestion("The next beat lands."))
+        try await waitUntil { view.textView.ghostText == "The next beat lands." }
 
-        view.textView.keyDown(with: try keyEvent(keyCode: 51, characters: "\u{7F}"))
-        try await waitUntil { recorder.requestCount == 2 }
+        XCTAssertEqual(recorder.requestCount, 1)
+    }
+
+    func testAutocompleteInSentenceMiddleDoesNotSchedule() async {
+        let recorder = AutocompleteRequestRecorder()
+        let (coordinator, view) = makeAutocompleteCoordinator(
+            text: "This is enough editor context",
+            recorder: recorder
+        )
+        view.textView.setSelectedRange(NSRange(location: 8, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        await Task.yield()
+
+        XCTAssertEqual(recorder.requestCount, 0)
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
+    }
+
+    func testAutocompleteBeforeExistingParagraphDoesNotSchedule() async {
+        let recorder = AutocompleteRequestRecorder()
+        let text = "This is enough first paragraph.\nA second paragraph already exists."
+        let (coordinator, view) = makeAutocompleteCoordinator(text: text, recorder: recorder)
+        let caret = (text as NSString).range(of: "\n").location
+        view.textView.setSelectedRange(NSRange(location: caret, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        await Task.yield()
+
+        XCTAssertEqual(recorder.requestCount, 0)
+    }
+
+    func testAutocompleteBeforeTrailingWhitespaceOrNewlineDoesNotSchedule() async {
+        let recorder = AutocompleteRequestRecorder()
+        let text = "This is enough editor context \t\n"
+        let (coordinator, view) = makeAutocompleteCoordinator(text: text, recorder: recorder)
+        let caret = (text as NSString).length - 3
+        view.textView.setSelectedRange(NSRange(location: caret, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        await Task.yield()
+
+        XCTAssertEqual(recorder.requestCount, 0)
+    }
+
+    func testMovingCaretFromDocumentEndCancelsAndClearsSuggestion() async throws {
+        let recorder = AutocompleteRequestRecorder()
+        let (coordinator, view) = makeAutocompleteCoordinator(
+            text: "This is enough editor context",
+            recorder: recorder
+        )
+        view.textView.setSelectedRange(NSRange(location: (view.textView.string as NSString).length, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil { recorder.requestCount == 1 }
+        recorder.respond(with: .suggestion("A suggestion to clear."))
+        try await waitUntil { !view.textView.ghostText.isEmpty }
+
+        view.textView.setSelectedRange(NSRange(location: 0, length: 0))
         coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
+    }
+
+    func testLateEndOfDocumentResponseIsRejectedAfterCaretMovement() async throws {
+        let recorder = AutocompleteRequestRecorder()
+        let (coordinator, view) = makeAutocompleteCoordinator(
+            text: "This is enough editor context",
+            recorder: recorder
+        )
+        view.textView.setSelectedRange(NSRange(location: (view.textView.string as NSString).length, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil { recorder.requestCount == 1 }
+
+        view.textView.setSelectedRange(NSRange(location: 5, length: 0))
         coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
-        recorder.respond(with: .suggestion("Another beat follows."))
-        try await waitUntil { view.textView.ghostText == "Another beat follows." }
-
-        view.textView.keyDown(with: try keyEvent(keyCode: 0, characters: "a"))
-        try await waitUntil { recorder.requestCount == 3 }
-        recorder.respond(with: .suggestion("The scene continues."))
-        try await waitUntil { view.textView.ghostText == "The scene continues." }
-
-        view.textView.keyDown(with: try keyEvent(keyCode: 0, characters: "b"))
-        try await waitUntil { recorder.requestCount == 4 }
-
-        let length = (view.textView.string as NSString).length
-        view.textView.keyDown(with: try keyEvent(keyCode: 123, characters: "\u{F702}"))
-        try await waitUntil { view.textView.selectedRange().location == length - 1 }
         recorder.respond(with: .suggestion("This must not appear."))
+        try await waitUntil { recorder.completedRequestCount == 1 }
+
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
+    }
+
+    func testGhostTextDoesNotLayOutOverExistingText() {
+        let view = MarkerTextContainerView()
+        view.textView.string = "Existing script text remains visible"
+        view.textView.setSelectedRange(NSRange(location: 8, length: 0))
+        view.textView.ghostText = "This must not cover the script."
+
+        XCTAssertTrue(view.textView.ghostLineFragmentWidths().isEmpty)
+    }
+
+    func testAutocompleteRegeneratesForRepeatedEndOfDocumentContextsInOneEditor() async throws {
+        let recorder = AutocompleteRequestRecorder()
+        let (coordinator, view) = makeAutocompleteCoordinator(
+            text: "This is enough editor context",
+            recorder: recorder
+        )
+        view.textView.setSelectedRange(NSRange(location: (view.textView.string as NSString).length, length: 0))
+
+        view.textView.insertText(" ", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "first request")
+        let firstGeneration = coordinator.autocompleteRequestGeneration
+        let firstTextRevision = coordinator.textRevision
+        recorder.respond(with: .suggestion("First suggestion."))
+        try await waitUntil({ view.textView.ghostText == "First suggestion." }, message: "first ghost")
+
+        view.textView.insertText("", replacementRange: NSRange(location: (view.textView.string as NSString).length - 1, length: 1))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 2 }, message: "deletion request")
+        view.textView.insertText(" ", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 3 }, message: "regenerated identical-context request")
+        XCTAssertEqual(recorder.contexts[0], recorder.contexts[2])
+        XCTAssertGreaterThan(coordinator.autocompleteRequestGeneration, firstGeneration)
+        XCTAssertGreaterThan(coordinator.textRevision, firstTextRevision)
+
+        recorder.respond(with: .suggestion("Stale deletion response."))
         await Task.yield()
         XCTAssertTrue(view.textView.ghostText.isEmpty)
+        recorder.respond(with: .suggestion("Second suggestion."))
+        try await waitUntil({ view.textView.ghostText == "Second suggestion." }, message: "second ghost")
 
-        view.textView.keyDown(with: try keyEvent(keyCode: 0, characters: "c"))
-        try await waitUntil { recorder.requestCount == 5 }
-        recorder.respond(with: .suggestion("Forward delete works."))
-        try await waitUntil { view.textView.ghostText == "Forward delete works." }
+        view.textView.insertText("", replacementRange: NSRange(location: (view.textView.string as NSString).length - 1, length: 1))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 4 }, message: "second deletion request")
+        view.textView.insertText(" ", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 5 }, message: "third identical-context request")
+        recorder.respond(with: .suggestion("Stale second deletion response."))
+        await Task.yield()
+        recorder.respond(with: .suggestion("Third suggestion."))
+        try await waitUntil({ view.textView.ghostText == "Third suggestion." }, message: "third ghost")
 
-        let textBeforeForwardDelete = view.textView.string
-        view.textView.keyDown(with: try keyEvent(keyCode: 117, characters: "\u{F728}"))
-        try await waitUntil { view.textView.string != textBeforeForwardDelete }
-        try await waitUntil { recorder.requestCount == 6 }
+        view.textView.keyDown(with: try keyEvent(keyCode: 53, characters: "\u{1B}"))
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
+        view.textView.insertText("!", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 6 }, message: "post-Escape request")
+        recorder.respond(with: .suggestion("Escape suggestion."))
+        try await waitUntil({ view.textView.ghostText == "Escape suggestion." }, message: "post-Escape ghost")
+
+        coordinator.handleGhostAction(.replace)
+        view.textView.insertText("?", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 7 }, message: "replacement request")
+        recorder.respond(with: .suggestion("Replacement suggestion."))
+        try await waitUntil({ view.textView.ghostText == "Replacement suggestion." }, message: "replacement ghost")
+
+        coordinator.handleGhostAction(.replace)
+        view.textView.insertText(".", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 8 }, message: "pre-undo request")
+        view.textView.undoManager?.undo()
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 9 }, message: "undo request")
+        view.textView.undoManager?.redo()
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 10 }, message: "redo request")
+        XCTAssertEqual(view.textView.selectedRange().location, (view.textView.string as NSString).length)
+
+        recorder.isCooldownActive = true
+        let providerRequestCount = recorder.providerRequestCount
+        view.textView.insertText(" ", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.cooldownBlockedRequestCount == 1 }, message: "cooldown block")
+        recorder.respond(with: .suggestion("Stale undo response."))
+        recorder.respond(with: .suggestion("Stale redo response."))
+        recorder.respond(with: .suggestion("Stale cooldown response."))
+        XCTAssertEqual(recorder.providerRequestCount, providerRequestCount)
+
+        XCTAssertEqual(recorder.contexts[0], recorder.contexts[2])
     }
 
     func testUntitledEditorEditUpdatesMetricsWithoutSaveAs() {
@@ -494,12 +640,29 @@ final class EditorPersistenceTests: XCTestCase {
         return (coordinator, view)
     }
 
+    private func makeAutocompleteCoordinator(
+        text: String,
+        recorder: AutocompleteRequestRecorder
+    ) -> (LinkedScriptTextView.Coordinator, MarkerTextContainerView) {
+        let box = TextBox(text)
+        let parent = makeRepresentable(
+            text: Binding(get: { box.value }, set: { box.value = $0 }),
+            autocomplete: { @MainActor context in await recorder.request(context) }
+        )
+        let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
+        let view = MarkerTextContainerView()
+        coordinator.attach(to: view)
+        view.textView.delegate = coordinator
+        view.textView.string = text
+        return (coordinator, view)
+    }
+
     private func makeRepresentable(
         text: Binding<String>,
         loadState: @escaping () -> ScriptEditorRestorationState? = { nil },
         saveState: @escaping (ScriptEditorRestorationState) -> Void = { _ in },
         onTextCommitted: @escaping (String) -> Void = { _ in },
-        autocomplete: @escaping (AutocompleteContext) async -> AutocompleteResult = { _ in .none },
+        autocomplete: @escaping @MainActor (AutocompleteContext) async -> AutocompleteResult = { _ in .none },
         onTeardown: @escaping () -> Void = {}
     ) -> LinkedScriptTextView {
         LinkedScriptTextView(
@@ -507,7 +670,7 @@ final class EditorPersistenceTests: XCTestCase {
             sceneID: UUID(),
             editorIdentity: UUID(),
             sceneTitle: "Scene",
-            autocompleteProvider: .openAI,
+            autocompleteProvider: .openAICompatible,
             autocompleteConfigurationVersion: 0,
             autocompleteDelay: .zero,
             autocompleteFallbackLanguage: .english,
@@ -585,14 +748,15 @@ final class EditorPersistenceTests: XCTestCase {
 
     private func waitUntil(
         _ condition: @escaping @MainActor () -> Bool,
+        message: String = "editor delegate flow",
         timeout: Duration = .seconds(1)
     ) async throws {
         let clock = ContinuousClock()
         let start = clock.now
         while !condition() {
             guard clock.now - start < timeout else {
-                XCTFail("Timed out waiting for editor delegate flow")
-                return
+                XCTFail("Timed out waiting for \(message)")
+                throw NSError(domain: "EditorPersistenceTests", code: 1)
             }
             await Task.yield()
         }
