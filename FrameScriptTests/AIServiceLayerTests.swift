@@ -183,6 +183,39 @@ final class AIServiceLayerTests: XCTestCase {
         }
     }
 
+    func testProviderCancellationPreservesCancellationInsteadOfMappingToNetworkError() async {
+        let provider = makeProvider { _ in throw URLError(.cancelled) }
+
+        do {
+            _ = try await provider.complete(request: makeRequest(), apiKey: "secret")
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            XCTAssertNil(AppError.ai(LLMProviderError.network(String(URLError.Code.cancelled.rawValue))))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testCancelledAutocompleteReturnsNilWithoutAlert() async {
+        let provider = CancelledAutocompleteProvider()
+        let errorCenter = ErrorCenter()
+        let appState = AppState(
+            errorCenter: errorCenter,
+            dependencies: AppDependencies(
+                rewriteService: RewriteService(provider: provider),
+                analysisService: AnalysisService(provider: provider),
+                exportService: ExportService(),
+                llmProvider: provider,
+                providerCredentials: ProviderCredentialSession(reader: { _ in "secret" })
+            )
+        )
+        appState.settings.aiPreferences.provider = .openAICompatible
+
+        let result = await appState.autocompleteScript(context: "Draft")
+        XCTAssertNil(result)
+        XCTAssertNil(errorCenter.presentedError)
+    }
+
     func testCredentialSessionReadsOnceThenReusesKey() throws {
         var reads = 0
         let session = ProviderCredentialSession(reader: { _ in reads += 1; return "secret" })
@@ -405,5 +438,12 @@ private struct StaticResponseProvider: LLMProviderProtocol {
 
     func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
         LLMResponse(text: text)
+    }
+}
+
+@MainActor
+private struct CancelledAutocompleteProvider: LLMProviderProtocol {
+    func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
+        throw LLMProviderError.network(String(URLError.Code.cancelled.rawValue))
     }
 }

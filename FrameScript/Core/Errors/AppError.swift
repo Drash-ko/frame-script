@@ -298,6 +298,8 @@ extension AppError {
                 return AppError(kind: .aiModelUnavailable, context: AppErrorContext(statusCode: status, reason: message), recoveryAction: .openAISettings)
             case .httpStatus(let status, let message):
                 return AppError(kind: .aiProvider, context: AppErrorContext(statusCode: status, reason: message))
+            case .network(let code) where code == String(URLError.Code.cancelled.rawValue):
+                return nil
             case .network(let code):
                 return AppError(kind: .aiNetwork, context: AppErrorContext(diagnosticCode: code))
             case .malformedResponse(let reason):
@@ -305,6 +307,7 @@ extension AppError {
             }
         }
         if let urlError = error as? URLError {
+            if urlError.code == .cancelled { return nil }
             return AppError(kind: .aiNetwork, context: AppErrorContext(diagnosticCode: String(urlError.code.rawValue)))
         }
         if error is DecodingError {

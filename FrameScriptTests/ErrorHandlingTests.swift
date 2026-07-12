@@ -139,6 +139,10 @@ final class ErrorHandlingTests: XCTestCase {
         XCTAssertEqual(AppError.ai(GenerationError.invalidJSON)?.kind, .aiMalformedResponse)
     }
 
+    func testOfflineAITransportStillMapsToNetworkError() {
+        XCTAssertEqual(AppError.ai(URLError(.notConnectedToInternet))?.kind, .aiNetwork)
+    }
+
     func testMalformedResponseAlertsNeverExposeParserDiagnostics() throws {
         let error = try XCTUnwrap(AppError.ai(LLMProviderError.malformedResponse("The provider did not return a structured analysis response.")))
 

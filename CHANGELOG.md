@@ -20,6 +20,7 @@
 
 ### Fixed
 
+- Treated cancelled inline AI autocomplete requests as silent cancellations instead of network failures.
 - Restored live script metrics from native text edits and retried token-truncated AI analysis once with a larger output limit.
 - Prevented script text loss when switching modes, scenes, windows, or macOS desktops.
 - Aligned the script caret, placeholder, and text with the editor column.

@@ -193,6 +193,9 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
         } catch is CancellationError {
             throw CancellationError()
         } catch let error as URLError {
+            if error.code == .cancelled {
+                throw CancellationError()
+            }
             Self.logger.error("AI transport failed. Code: \(error.code.rawValue, privacy: .private)")
             throw LLMProviderError.network(String(error.code.rawValue))
         } catch {
