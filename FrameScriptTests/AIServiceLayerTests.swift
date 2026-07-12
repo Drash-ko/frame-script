@@ -332,13 +332,9 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertNil(appState.autocompleteIssue)
     }
 
-    func testAutocompleteIssueDetailLocalizationAndIndicatorSize() {
-        for language in [AppLanguage.english, .russian] {
-            XCTAssertFalse(L10n.tr("autocomplete.unavailable.title", language: language).isEmpty)
-            XCTAssertFalse(L10n.tr("autocomplete.unavailable.rateLimited.detail", language: language).isEmpty)
-            XCTAssertFalse(L10n.tr("autocomplete.unavailable.cooldown", language: language).isEmpty)
-        }
-        XCTAssertEqual(AutocompleteIssueIndicator.symbolSize, 10)
+    func testAutocompleteIssueControlIsLocalized() {
+        XCTAssertEqual(L10n.tr("autocomplete.unavailable.control", language: .english), "Error")
+        XCTAssertEqual(L10n.tr("autocomplete.unavailable.control", language: .russian), "Ошибка")
     }
 
     func testOpeningAutocompleteIssueDetailsDoesNotClearIssue() {
@@ -425,6 +421,39 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertEqual(provider.requests.map(\.maxTokens), [96, 160])
     }
 
+    func testEmptyTokenLimitedAutocompleteResponseRetriesOnceAndAcceptsRetry() async {
+        var requests = 0
+        let provider = makeProvider { request in
+            requests += 1
+            return self.response(status: 200, url: request.url!, body: self.chatResponse(
+                content: requests == 1 ? "" : "The next beat lands.",
+                finishReason: requests == 1 ? "length" : "stop"
+            ))
+        }
+        let appState = autocompleteAppState(provider: provider)
+
+        let result = await appState.autocompleteScript(context: AutocompleteContext(prefix: "The narrator pauses", suffix: "", sceneTitle: "Hook", language: .english))
+
+        XCTAssertEqual(result, .suggestion(" The next beat lands."))
+        XCTAssertEqual(requests, 2)
+    }
+
+    func testTwoEmptyTokenLimitedAutocompleteResponsesReturnNoSuggestionWithoutModalError() async {
+        var requests = 0
+        let provider = makeProvider { request in
+            requests += 1
+            return self.response(status: 200, url: request.url!, body: self.chatResponse(content: "", finishReason: "length"))
+        }
+        let errorCenter = ErrorCenter()
+        let appState = autocompleteAppState(provider: provider, errorCenter: errorCenter)
+
+        let result = await appState.autocompleteScript(context: AutocompleteContext(prefix: "The narrator pauses", suffix: "", sceneTitle: "Hook", language: .english))
+
+        XCTAssertEqual(result, .none)
+        XCTAssertEqual(requests, 2)
+        XCTAssertNil(errorCenter.presentedError)
+    }
+
     func testSecondTokenLimitedIncompleteAutocompleteReturnsNoSuggestion() async {
         let provider = SequencedAutocompleteProvider(outcomes: [
             .response(LLMResponse(text: "The next beat", finishReason: "length")),
@@ -482,13 +511,17 @@ final class AIServiceLayerTests: XCTestCase {
         )
     }
 
-    func testAutocompleteCompletionSanitizePartialCaseInsensitiveOverlap() {
+    func testAutocompleteCompletionSanitizeOverlapRejectsIncompleteFragment() {
         let context = AutocompleteContext(prefix: "Before the caret ", suffix: "world. ahead", sceneTitle: "Hook", language: .english)
 
-        XCTAssertEqual(
-            AutocompleteCompletion.sanitize(LLMResponse(text: "helloWORLD."), context: context),
-            "hello"
-        )
+        XCTAssertNil(AutocompleteCompletion.sanitize(LLMResponse(text: "helloWORLD."), context: context))
+    }
+
+    func testAutocompleteCompletionAcceptsEllipsisAndClosingQuote() {
+        let context = AutocompleteContext(prefix: "Before the caret ", suffix: "", sceneTitle: "Hook", language: .english)
+
+        XCTAssertEqual(AutocompleteCompletion.sanitize(LLMResponse(text: "The thought trails…"), context: context), "The thought trails…")
+        XCTAssertEqual(AutocompleteCompletion.sanitize(LLMResponse(text: "The narrator says hello.\" Another sentence."), context: context), "The narrator says hello.\"")
     }
 
     func testAutocompleteCompletionSanitizeFullOverlapReturnsNil() {
@@ -791,15 +824,27 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertEqual(partsResponse.text, "Hello world")
     }
 
-    func testNullContentAtTokenLimitIsNotInvalidJSON() async {
+    func testNullContentAtTokenLimitIsPreservedForAutocompleteRetry() async throws {
         let provider = makeProvider { request in
             self.response(status: 200, url: request.url!, body: #"{"choices":[{"message":{"content":null},"finish_reason":"length"}]}"#)
         }
+        let response = try await provider.complete(request: makeRequest(), apiKey: "secret")
+
+        XCTAssertEqual(response, LLMResponse(text: "", finishReason: "length"))
+    }
+
+    func testEmptyAnalysisResponseRemainsMalformed() async {
+        let provider = makeProvider { request in
+            self.response(status: 200, url: request.url!, body: #"{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}"#)
+        }
+        var request = makeRequest()
+        request.task = .analyze
+
         do {
-            _ = try await provider.complete(request: makeRequest(), apiKey: "secret")
-            XCTFail("Expected token limit diagnostic")
+            _ = try await provider.complete(request: request, apiKey: "secret")
+            XCTFail("Expected malformed response")
         } catch let error as LLMProviderError {
-            XCTAssertEqual(error, .malformedResponse("The provider reached its token limit before returning text."))
+            XCTAssertEqual(error, .malformedResponse("The provider returned an empty completion."))
         } catch {
             XCTFail("Unexpected error: \(error)")
         }

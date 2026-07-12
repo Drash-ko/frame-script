@@ -147,17 +147,26 @@ enum AutocompleteCompletion {
         let completion = overlap == 0
             ? candidate
             : String(candidate.dropLast(overlap))
-        guard !completion.isEmpty else { return .rejected }
+        guard !completion.isEmpty,
+              firstCompleteSentence(in: completion) == completion else { return .rejected }
         if context.prefix.last?.isWhitespace == true || completion.first?.isWhitespace == true { return .completion(completion) }
         return .completion(" " + completion)
     }
 
     private static func firstCompleteSentence(in text: String) -> String? {
         guard !text.isEmpty else { return nil }
-        for index in text.indices where ".!?".contains(text[index]) {
-            let next = text.index(after: index)
+        let endings: Set<Character> = [".", "!", "?", "…"]
+        let closingCharacters: Set<Character> = ["\"", "'", "”", "’", "»", ")", "]", "}"]
+
+        for index in text.indices where endings.contains(text[index]) {
+            var sentenceEnd = index
+            var next = text.index(after: index)
+            while next != text.endIndex, closingCharacters.contains(text[next]) {
+                sentenceEnd = next
+                next = text.index(after: next)
+            }
             guard next == text.endIndex || text[next].isWhitespace else { continue }
-            return String(text[...index])
+            return String(text[...sentenceEnd])
         }
         return nil
     }
@@ -285,6 +294,11 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
         }
         let text = choice.message.content?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !text.isEmpty else {
+            if request.task == .autocomplete, Self.isTokenLimitFinishReason(finishReason) {
+                // AppState owns the single bounded autocomplete retry. Preserve this
+                // response so it can distinguish a truncation from a provider error.
+                return LLMResponse(text: "", finishReason: finishReason)
+            }
             if Self.isTokenLimitFinishReason(finishReason) {
                 throw LLMProviderError.malformedResponse("The provider reached its token limit before returning text.")
             }

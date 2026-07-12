@@ -21,7 +21,9 @@
 
 ### Fixed
 
-- Accepted the first complete sentence from token-limited inline autocomplete responses and retried one incomplete response with a larger bounded output limit.
+- Accepted the first complete sentence from token-limited inline autocomplete responses and retried one empty or incomplete response with a larger bounded output limit.
+- Strengthened inline autocomplete sentence sanitization for ellipses, closing punctuation, and suffix-overlap fragments.
+- Replaced the inline autocomplete warning icon with a localized text-based issue control.
 - Regenerated inline autocomplete for every committed editor revision, including repeated text at the same document-end caret position.
 - Restricted inline autocomplete and ghost rendering to a zero-length caret at the absolute end of the document, rejecting stale end-of-document responses after caret movement.
 - Kept inline autocomplete availability warnings visible across edits, cancellations, scene changes, and provider cooldowns until a valid completion succeeds or AI configuration changes.

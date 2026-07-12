@@ -107,31 +107,36 @@ struct ScriptEditorView: View {
                 .font(.system(size: appState.isFocusModeEnabled ? 34 : 30, weight: .semibold))
                 .textCursor()
 
-            HStack(spacing: 10) {
-                HStack(spacing: 8) {
-                    if appState.settings.editorPreferences.showSceneDuration {
-                        Text(DurationEstimator.formatted(scene.estimatedDuration))
-                        Text(appState.localized("script.estimated"))
-                    }
-                    if appState.settings.editorPreferences.showSceneDuration && appState.settings.editorPreferences.showWordCount { Text("·") }
-                    if appState.settings.editorPreferences.showWordCount { Text("\(wordCount) \(appState.localized("script.words"))") }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if appState.settings.editorPreferences.showSceneDuration {
+                    Text(DurationEstimator.formatted(scene.estimatedDuration))
+                    Text(appState.localized("script.estimated"))
                 }
+                if appState.settings.editorPreferences.showSceneDuration && appState.settings.editorPreferences.showWordCount { Text("·") }
+                if appState.settings.editorPreferences.showWordCount { Text("\(wordCount) \(appState.localized("script.words"))") }
                 if let issue = activeAutocompleteIssue {
+                    if appState.settings.editorPreferences.showSceneDuration || appState.settings.editorPreferences.showWordCount { Text("·") }
                     Button {
                         autocompleteIssueDetails.open()
                     } label: {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .font(.system(size: AutocompleteIssueIndicator.symbolSize))
+                        Text(appState.localized("autocomplete.unavailable.control"))
+                            .underline()
                             .foregroundStyle(theme.tertiaryText)
                     }
                     .buttonStyle(.plain)
                     .help(autocompleteIssueHelp(issue))
                     .accessibilityLabel(autocompleteIssueHelp(issue))
                     .accessibilityHint(appState.localized("autocomplete.unavailable.detailsHint"))
+                    .onHover { isHovering in
+                        if isHovering {
+                            NSCursor.pointingHand.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
                     .popover(isPresented: $autocompleteIssueDetails.isPresented, arrowEdge: .bottom) {
                         autocompleteIssueDetails(issue)
                     }
-                    .padding(.leading, 4)
                 }
                 if shouldShowSectionTag {
                     Label("\(appState.localized("script.templateSection")): \(appState.displayName(scene.sectionType))", systemImage: "tag")
@@ -232,10 +237,6 @@ enum AutocompleteEditorState: Equatable {
     case idle
     case loading
     case suggestion(String)
-}
-
-enum AutocompleteIssueIndicator {
-    static let symbolSize: CGFloat = 10
 }
 
 struct AutocompleteIssueDetailsState: Equatable {
