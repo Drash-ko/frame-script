@@ -67,6 +67,7 @@ struct MockLLMProvider: LLMProviderProtocol {
 @MainActor
 struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "AI")
+    static let tokenLimitResponseDetail = "The provider reached its token limit before returning a complete analysis."
     typealias Transport = (URLRequest) async throws -> (Data, URLResponse)
     private let transport: Transport
 
@@ -137,6 +138,9 @@ struct OpenAICompatibleLLMProvider: LLMProviderProtocol {
         Self.logResponse(http: http, data: data, topLevel: topLevel, finishReason: finishReason, request: request)
         guard let choice else {
             throw LLMProviderError.malformedResponse("The provider returned no completion choices.")
+        }
+        if request.task == .analyze, Self.isTokenLimitFinishReason(finishReason) {
+            throw LLMProviderError.malformedResponse(Self.tokenLimitResponseDetail)
         }
         let text = choice.message.content?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !text.isEmpty else {
@@ -573,9 +577,21 @@ struct AnalysisService: AnalysisServicing {
             userPrompt: userPrompt(scene: scene, project: project, privacyMode: settings.privacyMode),
             model: settings.model,
             temperature: settings.temperature,
-            maxTokens: settings.maxTokens
+            maxTokens: max(1_024, settings.maxTokens)
         )
-        let response = try await provider.complete(request: request, apiKey: apiKey).text
+        let response: String
+        do {
+            response = try await provider.complete(request: request, apiKey: apiKey).text
+        } catch LLMProviderError.malformedResponse(let detail)
+                    where detail == OpenAICompatibleLLMProvider.tokenLimitResponseDetail {
+            request.maxTokens = max(2_048, request.maxTokens * 2)
+            do {
+                response = try await provider.complete(request: request, apiKey: apiKey).text
+            } catch LLMProviderError.malformedResponse(let retryDetail)
+                        where retryDetail == OpenAICompatibleLLMProvider.tokenLimitResponseDetail {
+                throw LLMProviderError.malformedResponse(nil)
+            }
+        }
         let analysis = try AnalysisResponse.decode(from: response)
         return [
             AIComment(

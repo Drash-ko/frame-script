@@ -189,6 +189,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
     func makeNSView(context: Context) -> MarkerTextContainerView {
         let view = MarkerTextContainerView()
         context.coordinator.attach(to: view)
+        view.textView.delegate = context.coordinator
         configureAppearance(view)
         context.coordinator.applyModelTextIfNeeded()
         ActiveScriptEditorSession.shared.register(context.coordinator)
@@ -210,6 +211,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
         coordinator.cancelAutocomplete()
         ActiveScriptEditorSession.shared.unregister(coordinator)
         coordinator.parent.onTeardown()
+        if view.textView.delegate === coordinator { view.textView.delegate = nil }
         coordinator.detach(from: view)
     }
 

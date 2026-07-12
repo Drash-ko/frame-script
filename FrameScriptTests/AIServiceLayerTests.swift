@@ -251,6 +251,74 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertNotNil(format["json_schema"])
     }
 
+    func testAnalysisSucceedsOnFirstCompleteResponse() async throws {
+        var requests: [URLRequest] = []
+        let provider = makeProvider { request in
+            requests.append(request)
+            return self.response(status: 200, url: request.url!, body: self.chatResponse(
+                content: #"{"title":"Hook","severity":"suggestion","message":"Make the opening concrete.","suggestion":"Name the immediate benefit."}"#,
+                finishReason: "stop"
+            ))
+        }
+        let (scene, project, settings) = try analysisInputs()
+
+        let comments = try await AnalysisService(provider: provider).analyze(
+            scene: scene, project: project, settings: settings, apiKey: "same-key"
+        )
+
+        XCTAssertEqual(comments.first?.type, "Hook")
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertGreaterThanOrEqual(try maxTokens(in: XCTUnwrap(requests.first)), 1_024)
+    }
+
+    func testAnalysisRetriesOneTruncatedResponseThenSucceeds() async throws {
+        var requests: [URLRequest] = []
+        let provider = makeProvider { request in
+            requests.append(request)
+            let truncated = requests.count == 1
+            return self.response(status: 200, url: request.url!, body: self.chatResponse(
+                content: truncated
+                    ? #"{"title":"Partial""#
+                    : #"{"title":"Hook","severity":"suggestion","message":"Make the opening concrete.","suggestion":"Name the immediate benefit."}"#,
+                finishReason: truncated ? "length" : "stop"
+            ))
+        }
+        let (scene, project, settings) = try analysisInputs()
+
+        let comments = try await AnalysisService(provider: provider).analyze(
+            scene: scene, project: project, settings: settings, apiKey: "same-key"
+        )
+
+        XCTAssertEqual(comments.first?.type, "Hook")
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertGreaterThanOrEqual(try maxTokens(in: requests[0]), 1_024)
+        XCTAssertGreaterThanOrEqual(try maxTokens(in: requests[1]), 2_048)
+        XCTAssertGreaterThan(try maxTokens(in: requests[1]), try maxTokens(in: requests[0]))
+        XCTAssertEqual(requests.map { $0.value(forHTTPHeaderField: "Authorization") }, ["Bearer same-key", "Bearer same-key"])
+    }
+
+    func testAnalysisReturnsMalformedResponseAfterTwoTruncations() async throws {
+        var requests: [URLRequest] = []
+        let provider = makeProvider { request in
+            requests.append(request)
+            return self.response(status: 200, url: request.url!, body: self.chatResponse(
+                content: #"{"title":"Partial""#,
+                finishReason: "length"
+            ))
+        }
+        let (scene, project, settings) = try analysisInputs()
+
+        do {
+            _ = try await AnalysisService(provider: provider).analyze(
+                scene: scene, project: project, settings: settings, apiKey: "same-key"
+            )
+            XCTFail("Expected malformed response")
+        } catch let error as LLMProviderError {
+            XCTAssertEqual(error, .malformedResponse(nil))
+        }
+        XCTAssertEqual(requests.count, 2)
+    }
+
     func testStringAndTextPartArrayContentsDecode() async throws {
         let stringProvider = makeProvider { request in
             self.response(status: 200, url: request.url!, body: #"{"choices":[{"message":{"content":"Hello"},"finish_reason":"stop"}]}"#)
@@ -296,6 +364,28 @@ final class AIServiceLayerTests: XCTestCase {
             temperature: 0,
             maxTokens: 128
         )
+    }
+
+    private func analysisInputs() throws -> (Scene, FrameProject, AIPreferences) {
+        let project = SampleData.demoProject(language: .english)
+        let scene = try XCTUnwrap(project.scenes.first)
+        var settings = AppSettings.defaults.aiPreferences
+        settings.provider = .googleAIStudio
+        settings.maxTokens = 128
+        return (scene, project, settings)
+    }
+
+    private func maxTokens(in request: URLRequest) throws -> Int {
+        let body = try JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any]
+        return try XCTUnwrap(body?["max_tokens"] as? Int)
+    }
+
+    private func chatResponse(content: String, finishReason: String) -> String {
+        let object: [String: Any] = [
+            "choices": [["message": ["content": content], "finish_reason": finishReason]]
+        ]
+        let data = try! JSONSerialization.data(withJSONObject: object)
+        return String(decoding: data, as: UTF8.self)
     }
 
     private func response(status: Int, url: URL, body: String) -> (Data, URLResponse) {

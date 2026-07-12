@@ -20,6 +20,7 @@
 
 ### Fixed
 
+- Restored live script metrics from native text edits and retried token-truncated AI analysis once with a larger output limit.
 - Prevented script text loss when switching modes, scenes, windows, or macOS desktops.
 - Aligned the script caret, placeholder, and text with the editor column.
 - Made text edits commit immediately and flush before context changes.

@@ -75,6 +75,26 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertTrue(invalidated)
     }
 
+    func testRepresentableDelegateEditUpdatesScriptAndDuration() throws {
+        let (appState, scene, _) = makeAppState(fileURL: nil)
+        let representable = makeRepresentable(
+            text: Binding(get: { scene.scriptText }, set: { _ in }),
+            onTextCommitted: { text in appState.commitScriptTextChange(sceneID: scene.id, text: text) }
+        )
+        let host = NSHostingView(rootView: representable)
+        host.frame = NSRect(x: 0, y: 0, width: 640, height: 480)
+        host.layoutSubtreeIfNeeded()
+        let container = try XCTUnwrap(firstSubview(of: MarkerTextContainerView.self, in: host))
+        let textView = container.textView
+        XCTAssertNotNil(textView.delegate as? LinkedScriptTextView.Coordinator)
+
+        textView.string = "one two three four five six"
+        textView.didChangeText()
+
+        XCTAssertEqual(scene.scriptText, textView.string)
+        XCTAssertEqual(scene.estimatedDuration, DurationEstimator.estimate(text: textView.string, wordsPerMinute: 150))
+    }
+
     func testUntitledEditorEditUpdatesMetricsWithoutSaveAs() {
         let (appState, scene, _) = makeAppState(fileURL: nil)
         let (coordinator, view) = makeCoordinator(appState: appState, scene: scene)
@@ -445,5 +465,13 @@ final class EditorPersistenceTests: XCTestCase {
     private func temporaryProjectURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("EditorPersistenceTests-\(UUID().uuidString).fscr")
+    }
+
+    private func firstSubview<T: NSView>(of type: T.Type, in view: NSView) -> T? {
+        if let match = view as? T { return match }
+        for subview in view.subviews {
+            if let match = firstSubview(of: type, in: subview) { return match }
+        }
+        return nil
     }
 }
