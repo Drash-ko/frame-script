@@ -24,6 +24,7 @@ struct ScriptEditorView: View {
                 sceneTitle: scene.title,
                 autocompleteProvider: appState.settings.aiPreferences.provider,
                 autocompleteConfigurationVersion: appState.autocompleteConfigurationVersion,
+                autocompleteConfigurationIsEligible: appState.autocompleteConfigurationIsEligible,
                 autocompleteDelay: appState.autocompleteCompletionDelay,
                 autocompleteFallbackLanguage: appState.currentLanguage,
                 autocompleteState: $autocompleteState,
@@ -50,7 +51,7 @@ struct ScriptEditorView: View {
                     appState.commitScriptTextChange(sceneID: scene.id, text: text)
                 },
                 autocomplete: { context in await appState.autocompleteScript(context: context) },
-                onTeardown: { appState.flushActiveEditorBoundary() },
+                onTeardown: { appState.flushActiveEditorBoundary(flushEditor: false) },
                 markerAction: appState.selectProductionItem,
                 addMarkerAction: { mode, anchor in
                     switch mode {
@@ -121,7 +122,7 @@ struct ScriptEditorView: View {
                     } label: {
                         Text(appState.localized("autocomplete.unavailable.control"))
                             .underline()
-                            .foregroundStyle(theme.tertiaryText)
+                            .foregroundStyle(theme.warning)
                     }
                     .buttonStyle(.plain)
                     .help(autocompleteIssueHelp(issue))
@@ -291,6 +292,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
     let sceneTitle: String
     let autocompleteProvider: AIProviderKind
     let autocompleteConfigurationVersion: Int
+    let autocompleteConfigurationIsEligible: Bool
     let autocompleteDelay: Duration
     let autocompleteFallbackLanguage: AppLanguage
     @Binding var autocompleteState: AutocompleteEditorState
@@ -407,11 +409,13 @@ struct LinkedScriptTextView: NSViewRepresentable {
         private var editTransaction: EditTransaction?
         private var observedAutocompleteProvider: AIProviderKind
         private var observedAutocompleteConfigurationVersion: Int
+        private var observedAutocompleteConfigurationIsEligible: Bool
         init(parent: LinkedScriptTextView) {
             self.parent = parent
             self.lastObservedModelValue = parent.text
             self.observedAutocompleteProvider = parent.autocompleteProvider
             self.observedAutocompleteConfigurationVersion = parent.autocompleteConfigurationVersion
+            self.observedAutocompleteConfigurationIsEligible = parent.autocompleteConfigurationIsEligible
         }
 
         func attach(to view: MarkerTextContainerView) {
@@ -434,15 +438,19 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 textView.unmarkText()
             }
             let changed = emitCurrentText(from: textView, origin: .user)
-            captureRestorationState()
+            captureRestorationState(force: true)
             return changed
         }
 
-        func captureRestorationState() {
-            guard let view, pendingInitialRestorationState == nil else { return }
+        func captureRestorationState(force: Bool = false) {
+            guard let view, force || pendingInitialRestorationState == nil else { return }
+            view.layoutSubtreeIfNeeded()
+            let visibleOrigin = clampedVisibleOrigin(view.scrollView.contentView.bounds.origin, in: view)
+            view.scrollView.contentView.scroll(to: visibleOrigin)
+            view.scrollView.reflectScrolledClipView(view.scrollView.contentView)
             parent.saveRestorationState(ScriptEditorRestorationState(
                 selectedRange: view.textView.selectedRange(),
-                visibleOrigin: view.scrollView.contentView.bounds.origin
+                visibleOrigin: visibleOrigin
             ))
         }
 
@@ -451,7 +459,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
             let length = (view.textView.string as NSString).length
             view.textView.setSelectedRange(TextAnchorGeometry.clamp(state.selectedRange, toLength: length))
             view.layoutSubtreeIfNeeded()
-            view.scrollView.contentView.scroll(to: state.visibleOrigin)
+            view.scrollView.contentView.scroll(to: clampedVisibleOrigin(state.visibleOrigin, in: view))
             view.scrollView.reflectScrolledClipView(view.scrollView.contentView)
             pendingInitialRestorationState = nil
         }
@@ -459,9 +467,11 @@ struct LinkedScriptTextView: NSViewRepresentable {
         func applyModelTextIfNeeded() {
             guard let view else { return }
             if observedAutocompleteProvider != parent.autocompleteProvider
-                || observedAutocompleteConfigurationVersion != parent.autocompleteConfigurationVersion {
+                || observedAutocompleteConfigurationVersion != parent.autocompleteConfigurationVersion
+                || observedAutocompleteConfigurationIsEligible != parent.autocompleteConfigurationIsEligible {
                 observedAutocompleteProvider = parent.autocompleteProvider
                 observedAutocompleteConfigurationVersion = parent.autocompleteConfigurationVersion
+                observedAutocompleteConfigurationIsEligible = parent.autocompleteConfigurationIsEligible
                 cancelAutocomplete(clearStatus: true)
             }
             let textView = view.textView
@@ -497,7 +507,8 @@ struct LinkedScriptTextView: NSViewRepresentable {
             textView.string = modelText
             undoManager?.enableUndoRegistration()
             textView.setSelectedRange(TextAnchorGeometry.clamp(selectedRange, toLength: (modelText as NSString).length))
-            view.scrollView.contentView.scroll(to: visibleOrigin)
+            view.layoutSubtreeIfNeeded()
+            view.scrollView.contentView.scroll(to: clampedVisibleOrigin(visibleOrigin, in: view))
             isApplyingProgrammaticUpdate = false
             changeOrigin = .externalModel
             captureRestorationState()
@@ -574,7 +585,9 @@ struct LinkedScriptTextView: NSViewRepresentable {
 
         private func scheduleAutocomplete(for textView: NSTextView, requestGeneration: Int) {
             cancelAutocomplete()
-            guard !textView.hasMarkedText(), isAutocompleteEligible(in: textView) else { return }
+            guard parent.autocompleteConfigurationIsEligible,
+                  !textView.hasMarkedText(),
+                  isAutocompleteEligible(in: textView) else { return }
             let source = textView.string
             let selectedRange = textView.selectedRange()
             let caret = selectedRange.location
@@ -650,6 +663,17 @@ struct LinkedScriptTextView: NSViewRepresentable {
 #endif
         }
 
+        private func clampedVisibleOrigin(_ origin: NSPoint, in view: MarkerTextContainerView) -> NSPoint {
+            let documentBounds = view.scrollView.documentView?.bounds ?? .zero
+            let clipSize = view.scrollView.contentView.bounds.size
+            let maximumX = max(documentBounds.minX, documentBounds.maxX - clipSize.width)
+            let maximumY = max(documentBounds.minY, documentBounds.maxY - clipSize.height)
+            return NSPoint(
+                x: min(max(origin.x, documentBounds.minX), maximumX),
+                y: min(max(origin.y, documentBounds.minY), maximumY)
+            )
+        }
+
         func handleGhostAction(_ action: PlaceholderTextView.GhostAction) {
             guard let textView = view?.textView else { return }
             switch action {
@@ -707,10 +731,17 @@ struct LinkedScriptTextView: NSViewRepresentable {
 @MainActor
 protocol ActiveScriptEditor: AnyObject {
     @discardableResult func commitMarkedTextAndFlush() -> Bool
+    func cancelAutocomplete(clearStatus: Bool)
+    var sceneID: UUID { get }
+    var editorIdentity: UUID { get }
+    var owningWindow: NSWindow? { get }
     var isActualFirstResponder: Bool { get }
 }
 
 extension LinkedScriptTextView.Coordinator: ActiveScriptEditor {
+    var sceneID: UUID { parent.sceneID }
+    var editorIdentity: UUID { parent.editorIdentity }
+    var owningWindow: NSWindow? { view?.textView.window }
     var isActualFirstResponder: Bool {
         guard let textView = view?.textView else { return false }
         return textView.window?.firstResponder === textView
@@ -738,12 +769,27 @@ final class ActiveScriptEditorSession {
     }
 
     @discardableResult
-    func flush() -> Bool {
+    func flush(keyWindow: NSWindow? = NSApp.keyWindow) -> Bool {
         editors.removeAll { $0.value == nil }
-        guard let editor = editors.compactMap(\.value).first(where: \.isActualFirstResponder)
-                ?? editors.compactMap(\.value).last else { return false }
+        let liveEditors = editors.compactMap(\.value)
+        let editor = liveEditors.first(where: \.isActualFirstResponder) ?? {
+            guard let keyWindow else { return nil }
+            return liveEditors.first { $0.owningWindow === keyWindow }
+        }()
+        guard let editor else { return false }
         _ = editor.commitMarkedTextAndFlush()
         return true
+    }
+
+    @discardableResult
+    func flushAllForAppResignation() -> Bool {
+        editors.removeAll { $0.value == nil }
+        let liveEditors = editors.compactMap(\.value)
+        for editor in liveEditors {
+            _ = editor.commitMarkedTextAndFlush()
+            editor.cancelAutocomplete(clearStatus: true)
+        }
+        return !liveEditors.isEmpty
     }
 }
 

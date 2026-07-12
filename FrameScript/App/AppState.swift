@@ -91,6 +91,7 @@ final class AppState {
     let errorCenter: ErrorCenter
     let themeManager: ResolvedThemeManager
     let dependencies: AppDependencies
+    private let aiProviderConfigurationStore: AIProviderConfigurationStore
     private let securityScope: SecurityScopedResourceAccess
     private let exportFolderBookmarkCreator: ExportFolderBookmarkCreator
     private let exportFolderBookmarkResolver: ExportFolderBookmarkResolver
@@ -120,6 +121,7 @@ final class AppState {
         errorCenter: ErrorCenter = ErrorCenter(),
         themeManager: ResolvedThemeManager = ResolvedThemeManager(),
         dependencies: AppDependencies = .live,
+        aiProviderConfigurationStore: AIProviderConfigurationStore = AIProviderConfigurationStore(),
         securityScope: SecurityScopedResourceAccess = .live,
         exportFolderBookmarkCreator: @escaping ExportFolderBookmarkCreator = { url in
             try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
@@ -138,6 +140,7 @@ final class AppState {
         self.errorCenter = errorCenter
         self.themeManager = themeManager
         self.dependencies = dependencies
+        self.aiProviderConfigurationStore = aiProviderConfigurationStore
         self.securityScope = securityScope
         self.exportFolderBookmarkCreator = exportFolderBookmarkCreator
         self.exportFolderBookmarkResolver = exportFolderBookmarkResolver
@@ -269,6 +272,11 @@ final class AppState {
 
     var currentLanguage: AppLanguage {
         settings.generalPreferences.language
+    }
+
+    var autocompleteConfigurationIsEligible: Bool {
+        let provider = settings.aiPreferences.provider
+        return provider != .disabled && aiProviderConfigurationStore.hasStoredKey(for: provider)
     }
 
     func localized(_ key: String) -> String {
@@ -589,12 +597,16 @@ final class AppState {
     }
 
     func autocompleteScript(context: AutocompleteContext) async -> AutocompleteResult {
-        guard settings.aiPreferences.provider != .disabled else {
+        let provider = settings.aiPreferences.provider
+        guard provider != .disabled else {
             autocompleteIssue = nil
             return .none
         }
+        guard aiProviderConfigurationStore.hasStoredKey(for: provider) else {
+            if autocompleteIssue?.provider == provider { autocompleteIssue = nil }
+            return .none
+        }
         guard !context.prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .none }
-        let provider = settings.aiPreferences.provider
         let now = autocompleteNow()
         if let cooldown = autocompleteCooldowns[provider], cooldown > now {
             recordAutocompleteIssue(for: provider, reason: .rateLimited, cooldownDeadline: cooldown)
@@ -716,8 +728,19 @@ final class AppState {
         )
     }
 
-    func flushActiveEditorBoundary(saveImmediately: Bool = true) {
-        let hadActiveScriptEditor = ActiveScriptEditorSession.shared.flush()
+    func flushActiveEditorBoundary(
+        saveImmediately: Bool = true,
+        allEditors: Bool = false,
+        flushEditor: Bool = true
+    ) {
+        let hadActiveScriptEditor: Bool
+        if allEditors {
+            hadActiveScriptEditor = ActiveScriptEditorSession.shared.flushAllForAppResignation()
+        } else if flushEditor {
+            hadActiveScriptEditor = ActiveScriptEditorSession.shared.flush()
+        } else {
+            hadActiveScriptEditor = false
+        }
         guard hasOpenProject else { return }
         if hadActiveScriptEditor {
             projectStore.markProjectDirty()
@@ -1223,7 +1246,7 @@ final class AppState {
                 queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.flushActiveEditorBoundary()
+                    self?.flushActiveEditorBoundary(allEditors: true)
                 }
             }
         }
@@ -1403,7 +1426,8 @@ final class AppState {
         for provider in AIProviderKind.allCases {
             do {
                 try KeychainStore.deleteAPIKey(account: provider.keychainAccount)
-                AIProviderConfigurationStore().setHasStoredKey(false, for: provider)
+                aiProviderConfigurationStore.setHasStoredKey(false, for: provider)
+                invalidateProviderAPIKey(for: provider)
             } catch {
                 errorCenter.present(AppError.keychain(error, operation: .delete))
             }

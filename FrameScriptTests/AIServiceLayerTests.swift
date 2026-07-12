@@ -272,6 +272,43 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertEqual(provider.calls, 1)
     }
 
+    func testAutocompleteStoredKeyMetadataGatesCredentialReadsAndUpdatesInPlace() async {
+        var credentialReads = 0
+        let defaults = UserDefaults(suiteName: "FrameScriptTests.autocomplete-metadata.\(UUID().uuidString)")!
+        let configurationStore = AIProviderConfigurationStore(userDefaults: defaults)
+        let provider = CapturingAutocompleteProvider(response: LLMResponse(text: "continues."))
+        let dependencies = AppDependencies(
+            rewriteService: RewriteService(provider: provider),
+            analysisService: AnalysisService(provider: provider),
+            exportService: ExportService(),
+            llmProvider: provider,
+            providerCredentials: ProviderCredentialSession(reader: { _ in
+                credentialReads += 1
+                return "secret"
+            })
+        )
+        let appState = AppState(dependencies: dependencies, aiProviderConfigurationStore: configurationStore)
+        appState.settings.aiPreferences.provider = .openAICompatible
+        let context = AutocompleteContext(prefix: "A narrator introduces the topic", suffix: "", sceneTitle: "Hook", language: .english)
+
+        let missingMetadata = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(missingMetadata, .none)
+        XCTAssertEqual(credentialReads, 0)
+        XCTAssertNil(appState.autocompleteIssue)
+
+        configurationStore.setHasStoredKey(true, for: .openAICompatible)
+        appState.autocompleteProviderConfigurationDidChange(for: .openAICompatible)
+        let storedMetadata = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(storedMetadata, .suggestion(" continues."))
+        XCTAssertEqual(credentialReads, 1)
+
+        configurationStore.setHasStoredKey(false, for: .openAICompatible)
+        appState.invalidateProviderAPIKey(for: .openAICompatible)
+        let deletedMetadata = await appState.autocompleteScript(context: context)
+        XCTAssertEqual(deletedMetadata, .none)
+        XCTAssertEqual(credentialReads, 1)
+    }
+
     func testAutocompleteIssuePersistsAcrossTransientStatesAndCooldownUntilValidCompletion() async {
         let provider = SequencedAutocompleteProvider(outcomes: [
             .failure(.httpStatus(429, nil)),
@@ -858,8 +895,12 @@ final class AIServiceLayerTests: XCTestCase {
 
     private func autocompleteAppState(
         provider: any LLMProviderProtocol,
-        errorCenter: ErrorCenter = ErrorCenter()
+        errorCenter: ErrorCenter = ErrorCenter(),
+        hasStoredKey: Bool = true
     ) -> AppState {
+        let defaults = UserDefaults(suiteName: "FrameScriptTests.autocomplete.\(UUID().uuidString)")!
+        let configurationStore = AIProviderConfigurationStore(userDefaults: defaults)
+        configurationStore.setHasStoredKey(hasStoredKey, for: .openAICompatible)
         let appState = AppState(
             errorCenter: errorCenter,
             dependencies: AppDependencies(
@@ -868,7 +909,8 @@ final class AIServiceLayerTests: XCTestCase {
                 exportService: ExportService(),
                 llmProvider: provider,
                 providerCredentials: ProviderCredentialSession(reader: { _ in "secret" })
-            )
+            ),
+            aiProviderConfigurationStore: configurationStore
         )
         appState.settings.aiPreferences.provider = .openAICompatible
         return appState

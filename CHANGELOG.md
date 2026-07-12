@@ -21,6 +21,9 @@
 
 ### Fixed
 
+- Gated inline autocomplete on stored-key metadata before debounce or Keychain access, and refreshed eligibility after provider/key changes.
+- Flushed and cancelled every live script editor on app resignation while keeping context transitions scoped to the active/key window editor.
+- Clamped restored editor selection and scroll origins after shorter document updates, and applied the warning color to the localized autocomplete Error control.
 - Accepted the first complete sentence from token-limited inline autocomplete responses and retried one empty or incomplete response with a larger bounded output limit.
 - Strengthened inline autocomplete sentence sanitization for ellipses, closing punctuation, and suffix-overlap fragments.
 - Replaced the inline autocomplete warning icon with a localized text-based issue control.

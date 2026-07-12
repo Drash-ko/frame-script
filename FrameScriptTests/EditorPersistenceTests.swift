@@ -13,12 +13,18 @@ final class EditorPersistenceTests: XCTestCase {
 
     private final class TestActiveEditor: ActiveScriptEditor {
         let flushAction: () -> Void
+        let sceneID = UUID()
+        let editorIdentity = UUID()
+        var owningWindow: NSWindow?
+        var isActualFirstResponder = true
+        private(set) var didCancelAutocomplete = false
+
         init(_ flushAction: @escaping () -> Void) { self.flushAction = flushAction }
         func commitMarkedTextAndFlush() -> Bool {
             flushAction()
             return true
         }
-        var isActualFirstResponder: Bool { true }
+        func cancelAutocomplete(clearStatus: Bool) { didCancelAutocomplete = clearStatus }
     }
 
     @MainActor
@@ -285,7 +291,11 @@ final class EditorPersistenceTests: XCTestCase {
             llmProvider: provider,
             providerCredentials: ProviderCredentialSession(reader: { _ in "secret" })
         )
-        let (appState, _, _) = makeAppState(fileURL: nil, dependencies: dependencies)
+        let (appState, _, _) = makeAppState(
+            fileURL: nil,
+            dependencies: dependencies,
+            hasAutocompleteStoredKey: true
+        )
         appState.settings.aiPreferences.provider = .openAICompatible
         let text = "This is enough editor context"
         let box = TextBox(text)
@@ -403,6 +413,71 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(recorder.contexts[0], recorder.contexts[2])
     }
 
+    func testMissingAutocompleteEligibilityStartsNoDebounceOrRequest() async {
+        let text = "This is enough editor context"
+        let recorder = AutocompleteRequestRecorder()
+        let parent = makeRepresentable(
+            text: .constant(text),
+            autocompleteConfigurationIsEligible: false,
+            autocomplete: { @MainActor context in await recorder.request(context) }
+        )
+        let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
+        let view = MarkerTextContainerView()
+        coordinator.attach(to: view)
+        view.textView.string = text
+        view.textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+
+        view.textView.insertText("!", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        await Task.yield()
+
+        XCTAssertEqual(recorder.requestCount, 0)
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
+    }
+
+    func testAutocompleteEligibilityChangesWithoutRecreatingTheEditor() async throws {
+        let text = "This is enough editor context"
+        let recorder = AutocompleteRequestRecorder()
+        let initial = makeRepresentable(
+            text: .constant(text),
+            autocompleteConfigurationVersion: 0,
+            autocompleteConfigurationIsEligible: true,
+            autocomplete: { @MainActor context in await recorder.request(context) }
+        )
+        let coordinator = LinkedScriptTextView.Coordinator(parent: initial)
+        let view = MarkerTextContainerView()
+        coordinator.attach(to: view)
+        view.textView.string = text
+        view.textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+        view.textView.insertText("!", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "initial eligible request")
+        recorder.respond(with: .none)
+
+        coordinator.parent = makeRepresentable(
+            text: .constant(view.textView.string),
+            autocompleteConfigurationVersion: 1,
+            autocompleteConfigurationIsEligible: false,
+            autocomplete: { @MainActor context in await recorder.request(context) }
+        )
+        coordinator.applyModelTextIfNeeded()
+        view.textView.insertText("!", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        await Task.yield()
+        XCTAssertEqual(recorder.requestCount, 1)
+
+        coordinator.parent = makeRepresentable(
+            text: .constant(view.textView.string),
+            autocompleteConfigurationVersion: 2,
+            autocompleteConfigurationIsEligible: true,
+            autocomplete: { @MainActor context in await recorder.request(context) }
+        )
+        coordinator.applyModelTextIfNeeded()
+        view.textView.insertText("!", replacementRange: view.textView.selectedRange())
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 2 }, message: "restored eligible request")
+    }
+
     func testUntitledEditorEditUpdatesMetricsWithoutSaveAs() {
         let (appState, scene, _) = makeAppState(fileURL: nil)
         let (coordinator, view) = makeCoordinator(appState: appState, scene: scene)
@@ -493,8 +568,14 @@ final class EditorPersistenceTests: XCTestCase {
         let firstView = MarkerTextContainerView(frame: NSRect(x: 0, y: 0, width: 400, height: 140))
         first.attach(to: firstView)
         first.applyModelTextIfNeeded()
+        firstView.layoutSubtreeIfNeeded()
+        let maximumOriginY = max(
+            0,
+            firstView.scrollView.documentView!.bounds.maxY - firstView.scrollView.contentView.bounds.height
+        )
+        let savedOriginY = min(120, maximumOriginY)
         firstView.textView.setSelectedRange(NSRange(location: 42, length: 12))
-        firstView.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 120))
+        firstView.scrollView.contentView.scroll(to: NSPoint(x: 120, y: savedOriginY))
         first.captureRestorationState()
 
         let recreated = LinkedScriptTextView.Coordinator(parent: parent)
@@ -504,12 +585,23 @@ final class EditorPersistenceTests: XCTestCase {
         recreated.restoreEditorStateIfAvailable()
 
         XCTAssertEqual(recreatedView.textView.selectedRange(), NSRange(location: 42, length: 12))
-        XCTAssertEqual(recreatedView.scrollView.contentView.bounds.origin.y, 120, accuracy: 1)
+        XCTAssertEqual(recreatedView.scrollView.contentView.bounds.origin.y, savedOriginY, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(recreatedView.scrollView.contentView.bounds.origin.x, 0)
 
         box.value = "short"
         recreated.applyModelTextIfNeeded()
         recreated.restoreEditorStateIfAvailable()
         XCTAssertLessThanOrEqual(NSMaxRange(recreatedView.textView.selectedRange()), 5)
+        XCTAssertGreaterThanOrEqual(recreatedView.scrollView.contentView.bounds.origin.x, 0)
+        XCTAssertGreaterThanOrEqual(recreatedView.scrollView.contentView.bounds.origin.y, 0)
+        XCTAssertLessThanOrEqual(
+            recreatedView.scrollView.contentView.bounds.maxX,
+            recreatedView.scrollView.documentView!.bounds.maxX + 1
+        )
+        XCTAssertLessThanOrEqual(
+            recreatedView.scrollView.contentView.bounds.maxY,
+            recreatedView.scrollView.documentView!.bounds.maxY + 1
+        )
     }
 
     func testRestorationStateIsIndependentPerSceneAndEditor() {
@@ -607,6 +699,63 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertFalse(scene.textSegments.isEmpty)
     }
 
+    func testResignActiveFlushesAndCancelsTwoRegisteredEditors() {
+        let (appState, scene, _) = makeAppState(fileURL: nil)
+        appState.configure()
+        var firstFlushes = 0
+        var secondFlushes = 0
+        let first = TestActiveEditor { firstFlushes += 1 }
+        let second = TestActiveEditor { secondFlushes += 1 }
+        ActiveScriptEditorSession.shared.register(first)
+        ActiveScriptEditorSession.shared.register(second)
+        defer {
+            ActiveScriptEditorSession.shared.unregister(first)
+            ActiveScriptEditorSession.shared.unregister(second)
+        }
+
+        XCTAssertTrue(ActiveScriptEditorSession.shared.flushAllForAppResignation())
+
+        XCTAssertEqual(firstFlushes, 1)
+        XCTAssertEqual(secondFlushes, 1)
+        XCTAssertTrue(first.didCancelAutocomplete)
+        XCTAssertTrue(second.didCancelAutocomplete)
+        XCTAssertEqual(appState.selectedScene?.id, scene.id)
+    }
+
+    func testSessionFlushSelectsTheKeyWindowEditor() {
+        let firstWindow = NSWindow()
+        let secondWindow = NSWindow()
+        var firstFlushes = 0
+        var secondFlushes = 0
+        let first = TestActiveEditor { firstFlushes += 1 }
+        let second = TestActiveEditor { secondFlushes += 1 }
+        first.isActualFirstResponder = false
+        second.isActualFirstResponder = false
+        first.owningWindow = firstWindow
+        second.owningWindow = secondWindow
+        ActiveScriptEditorSession.shared.register(first)
+        ActiveScriptEditorSession.shared.register(second)
+        defer {
+            ActiveScriptEditorSession.shared.unregister(first)
+            ActiveScriptEditorSession.shared.unregister(second)
+        }
+
+        XCTAssertTrue(ActiveScriptEditorSession.shared.flush(keyWindow: firstWindow))
+        XCTAssertEqual(firstFlushes, 1)
+        XCTAssertEqual(secondFlushes, 0)
+    }
+
+    func testSessionFlushWithNoKeyWindowDoesNotUseLastRegisteredEditor() {
+        var flushes = 0
+        let editor = TestActiveEditor { flushes += 1 }
+        editor.isActualFirstResponder = false
+        ActiveScriptEditorSession.shared.register(editor)
+        defer { ActiveScriptEditorSession.shared.unregister(editor) }
+
+        XCTAssertFalse(ActiveScriptEditorSession.shared.flush(keyWindow: nil))
+        XCTAssertEqual(flushes, 0)
+    }
+
     func testResignActiveCapturesCaretAndScrollState() {
         let (appState, _, _) = makeAppState(fileURL: nil)
         appState.configure()
@@ -621,7 +770,12 @@ final class EditorPersistenceTests: XCTestCase {
         coordinator.attach(to: view)
         coordinator.applyModelTextIfNeeded()
         view.textView.setSelectedRange(NSRange(location: 24, length: 5))
-        view.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 80))
+        view.layoutSubtreeIfNeeded()
+        let expectedOrigin = NSPoint(
+            x: 0,
+            y: max(0, view.scrollView.documentView!.bounds.maxY - view.scrollView.contentView.bounds.height)
+        )
+        view.scrollView.contentView.scroll(to: expectedOrigin)
         ActiveScriptEditorSession.shared.register(coordinator)
         defer { ActiveScriptEditorSession.shared.unregister(coordinator) }
 
@@ -629,7 +783,7 @@ final class EditorPersistenceTests: XCTestCase {
 
         XCTAssertEqual(saved?.selectedRange, NSRange(location: 24, length: 5))
         XCTAssertNotNil(saved)
-        XCTAssertEqual(saved!.visibleOrigin.y, 80, accuracy: 1)
+        XCTAssertEqual(saved!.visibleOrigin, expectedOrigin)
     }
 
     func testExistingFileAutosavesOnceAfterCoalescedWindow() async throws {
@@ -720,6 +874,8 @@ final class EditorPersistenceTests: XCTestCase {
 
     private func makeRepresentable(
         text: Binding<String>,
+        autocompleteConfigurationVersion: Int = 0,
+        autocompleteConfigurationIsEligible: Bool = true,
         loadState: @escaping () -> ScriptEditorRestorationState? = { nil },
         saveState: @escaping (ScriptEditorRestorationState) -> Void = { _ in },
         onTextCommitted: @escaping (String) -> Void = { _ in },
@@ -732,7 +888,8 @@ final class EditorPersistenceTests: XCTestCase {
             editorIdentity: UUID(),
             sceneTitle: "Scene",
             autocompleteProvider: .openAICompatible,
-            autocompleteConfigurationVersion: 0,
+            autocompleteConfigurationVersion: autocompleteConfigurationVersion,
+            autocompleteConfigurationIsEligible: autocompleteConfigurationIsEligible,
             autocompleteDelay: .zero,
             autocompleteFallbackLanguage: .english,
             autocompleteState: .constant(.idle),
@@ -763,6 +920,7 @@ final class EditorPersistenceTests: XCTestCase {
         project: FrameProject? = nil,
         fileURL: URL?,
         dependencies: AppDependencies = .live,
+        hasAutocompleteStoredKey: Bool = false,
         projectWriter: @escaping (FrameProject, URL) throws -> Void = FrameScriptFileStore.write
     ) -> (AppState, FrameScript.Scene, UserDefaults) {
         let scene = project?.scenes.first ?? Scene(order: 0, sectionType: .custom, title: "Scene", scriptText: "")
@@ -770,6 +928,8 @@ final class EditorPersistenceTests: XCTestCase {
         let store = ProjectStore(project: project, projectWriter: projectWriter)
         store.openProject(project, fileURL: fileURL, wordsPerMinute: 150, markUnsaved: false)
         let suite = UserDefaults(suiteName: "EditorPersistenceTests-\(UUID().uuidString)")!
+        let configurationStore = AIProviderConfigurationStore(userDefaults: suite)
+        configurationStore.setHasStoredKey(hasAutocompleteStoredKey, for: .openAICompatible)
         var settings = AppSettings.defaults
         settings.generalPreferences.autosaveEnabled = true
         let appState = AppState(
@@ -777,7 +937,8 @@ final class EditorPersistenceTests: XCTestCase {
             recentProjectStore: RecentProjectStore(userDefaults: suite),
             editorState: EditorState(),
             settingsStore: SettingsStore(settings: settings, userDefaults: suite, key: "settings"),
-            dependencies: dependencies
+            dependencies: dependencies,
+            aiProviderConfigurationStore: configurationStore
         )
         appState.editorState.selectedSceneID = scene.id
         appState.editorState.selectedMode = .script
