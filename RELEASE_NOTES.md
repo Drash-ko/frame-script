@@ -2,7 +2,7 @@
 
 FrameScript v0.2.0 advances the first public demo with:
 
-- Segment-linked production planning across Script, B-roll, and Editing modes.
+- Segment-linked production planning across Script, Visuals, and Editing modes.
 - `.fscr` project save/open support with legacy `.framescript` compatibility.
 - Observable document models for project state.
 - Refined project creation, template customization, settings navigation, and production-note editing.

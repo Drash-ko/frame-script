@@ -739,7 +739,7 @@ struct PromptBuilder {
         case .analyze:
             "Review the scene for clarity, retention, pacing, repetition, concrete examples, and weak phrasing. \(languageInstruction) Return exactly one JSON object with string fields title, severity, message, and suggestion. Severity must be note, suggestion, or important. Write complete plain-text sentences; do not use Markdown."
         case .bRollGeneration:
-            "Generate practical B-roll ideas that strengthen the meaning of the script. \(languageInstruction)"
+            "Generate practical visual or shot ideas that strengthen the meaning of the script. \(languageInstruction)"
         case .editingGeneration:
             "Generate restrained YouTube editing notes. Avoid timeline complexity. \(languageInstruction)"
         }

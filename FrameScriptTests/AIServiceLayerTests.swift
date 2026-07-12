@@ -12,6 +12,8 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertEqual(prompts.responseLanguage(for: "", fallback: .russian), .russian)
         XCTAssertTrue(prompts.systemPrompt(for: .analyze, language: .russian).contains("Russian"))
         XCTAssertTrue(prompts.systemPrompt(for: .bRollGeneration, language: .english).contains("English"))
+        XCTAssertTrue(prompts.systemPrompt(for: .bRollGeneration, language: .english).contains("visual or shot ideas"))
+        XCTAssertFalse(prompts.systemPrompt(for: .bRollGeneration, language: .english).contains("B-roll"))
     }
 
     func testSystemFallbackResolvesMacOSLanguage() {

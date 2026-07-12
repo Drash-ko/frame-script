@@ -6,6 +6,89 @@ import XCTest
 
 @MainActor
 final class EditorPersistenceTests: XCTestCase {
+    func testVisualsTerminologyUsesNaturalLocalizedValues() throws {
+        let englishVisualsKeys = [
+            "production.addBRollForSelection", "dialog.deleteScene.message", "settings.defaultSplit",
+            "broll.linkedSubtitle", "broll.emptyTitle", "broll.addItem", "broll.addEmpty",
+            "broll.segmentEmpty", "broll.writeScriptFirst", "settings.includeBRoll",
+            "export.label.broll", "help.defaultSplit", "help.includeBRoll"
+        ]
+        for key in englishVisualsKeys {
+            XCTAssertTrue(L10n.tr(key, language: .english).contains("Visual"), "Expected natural Visuals terminology for \(key)")
+        }
+        XCTAssertEqual(L10n.tr("broll.item", language: .english), "Visual")
+        XCTAssertEqual(L10n.tr("broll.duplicateItem", language: .english), "Duplicate Visual")
+        XCTAssertEqual(L10n.tr("broll.deleteItem", language: .english), "Delete Visual")
+
+        let russianVisualsKeys = [
+            "production.addBRollForSelection", "dialog.deleteScene.message", "settings.defaultSplit",
+            "broll.linkedSubtitle", "broll.emptyTitle", "broll.emptyMessage", "broll.addItem",
+            "broll.addEmpty", "broll.segmentEmpty", "broll.writeScriptFirst", "broll.item",
+            "broll.duplicateItem", "broll.deleteItem", "settings.includeBRoll", "export.label.broll",
+            "help.defaultSplit", "help.includeBRoll"
+        ]
+        for key in russianVisualsKeys {
+            XCTAssertTrue(L10n.tr(key, language: .russian).localizedLowercase.contains("видеоряд"), "Expected natural видеоряд terminology for \(key)")
+        }
+
+        try assertNoVisibleBRoll(in: repositoryText("FrameScript/Core/Utilities/Localization.swift"), file: "Localization.swift")
+    }
+
+    func testAllExportFormatsUseVisualsHeadings() {
+        let service = ExportService()
+        let preferences = AppSettings.defaults.exportPreferences
+
+        for (language, expectedHeading) in [(AppLanguage.english, "Visuals"), (.russian, "Видеоряд")] {
+            let project = SampleData.demoProject(language: language)
+            for format in ExportFormat.allCases {
+                let output = service.render(project: project, format: format, preferences: preferences, language: language)
+                XCTAssertTrue(output.contains(expectedHeading), "Expected \(expectedHeading) in \(format.rawValue) export")
+                assertNoVisibleBRoll(in: output, file: "\(format.rawValue) export")
+            }
+        }
+    }
+
+    func testCurrentDocsDemoAndBannerContainNoVisibleBRoll() throws {
+        for path in ["README.md", "RELEASE_NOTES.md", "docs/banner.svg", "FrameScript/Models/SampleData.swift"] {
+            try assertNoVisibleBRoll(in: repositoryText(path), file: path)
+        }
+
+        let changelog = try repositoryText("CHANGELOG.md")
+        let unreleased = try XCTUnwrap(changelog.components(separatedBy: "## [0.2.0]").first)
+        try assertNoVisibleBRoll(in: unreleased, file: "CHANGELOG.md [Unreleased]")
+    }
+
+    func testFSCRCompatibilityKeepsBRollCodableNames() throws {
+        XCTAssertEqual(WorkspaceMode.bRoll.rawValue, "B-Roll")
+        XCTAssertEqual(BRollSourceType.stockFootage.rawValue, "Stock footage")
+
+        let project = SampleData.demoProject(language: .english)
+        let data = try FrameScriptFileStore.encoder.encode(FrameScriptFile(project: project))
+        let json = try XCTUnwrap(String(data: data, encoding: .utf8))
+        XCTAssertTrue(json.contains("\"bRollItems\""))
+        XCTAssertTrue(json.contains("\"descriptionText\""))
+
+        let roundTripped = try FrameScriptFileStore.decoder.decode(FrameScriptFile.self, from: data).makeProject()
+        XCTAssertEqual(roundTripped.scenes.first?.bRollItems.count, 1)
+
+        var legacyFile = FrameScriptFile(project: project)
+        legacyFile.fileVersion = 1
+        let legacyData = try FrameScriptFileStore.encoder.encode(legacyFile)
+        let legacyProject = try FrameScriptFileStore.decoder.decode(FrameScriptFile.self, from: legacyData).makeProject()
+        XCTAssertEqual(legacyProject.scenes.first?.bRollItems.first?.descriptionText, project.scenes.first?.bRollItems.first?.descriptionText)
+    }
+
+    private func repositoryText(_ relativePath: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
+    private func assertNoVisibleBRoll(in text: String, file: String, line: UInt = #line) {
+        for term in ["B-roll", "B-Roll", "b-roll"] {
+            XCTAssertFalse(text.contains(term), "Unexpected visible \(term) in \(file)", line: line)
+        }
+    }
+
     private final class TextBox {
         var value: String
         init(_ value: String) { self.value = value }
@@ -906,7 +989,7 @@ final class EditorPersistenceTests: XCTestCase {
             backgroundColor: .textBackgroundColor,
             bRollColor: .systemBlue,
             editingColor: .systemGreen,
-            addBRollLabel: "B-roll",
+            addBRollLabel: "Add Visual",
             addEditingLabel: "Editing",
             onTextCommitted: onTextCommitted,
             autocomplete: autocomplete,

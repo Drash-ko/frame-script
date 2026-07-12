@@ -176,7 +176,7 @@ enum SampleData {
                             zoom: "Subtle punch-in on thesis",
                             sfx: "",
                             musicCue: "Soft bed starts after first sentence",
-                            graphics: "Three labels: Script, B-roll, Editing",
+                            graphics: "Three labels: Script, Visuals, Editing",
                             notes: "Let the opening breathe."
                         )
                     ]
@@ -284,7 +284,7 @@ enum SampleData {
                             zoom: "Легкий наезд на тезис",
                             sfx: "",
                             musicCue: "Тихий фон после первой фразы",
-                            graphics: "Три подписи: сценарий, B-roll, монтаж",
+                            graphics: "Три подписи: сценарий, видеоряд, монтаж",
                             notes: "Дайте вступлению дышать."
                         )
                     ]

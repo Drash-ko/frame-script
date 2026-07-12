@@ -1,8 +1,8 @@
 # FrameScript
 
-![FrameScript demo banner](docs/banner.svg)
+![FrameScript Visuals demo banner](docs/banner.svg)
 
-FrameScript is a native macOS SwiftUI app for writing YouTube scripts as structured production scenes. A scene keeps the voiceover script, visuals plan, editing notes, AI review comments, and estimated duration together so writing and production planning stay in one focused workspace.
+FrameScript is a native macOS SwiftUI app for writing YouTube scripts as structured production scenes. A scene keeps the voiceover script, Visuals plan, editing notes, AI review comments, and estimated duration together so writing and production planning stay in one focused workspace.
 
 This repository is prepared as the FrameScript v0.2.0 demo snapshot.
 

@@ -12,7 +12,7 @@
 
 ### Changed
 
-- Renamed the user-facing B-roll workspace to Visuals (Видеоряд in Russian), aligned all workspace layouts, and consolidated their content inset metric.
+- Completed the full user-facing Visuals terminology migration (Видеоряд in Russian) across the workspace, AI prompts, exports, demo content, and current documentation.
 - Integrated the Keychain explanation into the AI Settings form and widened localized workspace controls.
 - Cached each provider credential in process memory after its first real AI operation and passed it explicitly through service and provider calls.
 - Requested schema-constrained analysis responses and centralized tolerant structured-response decoding.
@@ -44,13 +44,13 @@
 - Accepted the documented Google OpenAI-compatible model object, eliminated duplicate provider Keychain reads, and kept connection failures distinct.
 - Preserved each scene's caret, selection, and scroll position independently per editor window.
 - Prevented stale SwiftUI revisions from replacing newer editor text while still applying external rewrites.
-- Restored the compact Script, B-roll, and Editing mode controls.
+- Restored the compact Script, Visuals, and Editing mode controls.
 - Improved autosave, structured AI response, Recent Project, Keychain, and file-operation error handling.
 - Updated word count plus editor, sidebar, and total project durations on every committed keystroke, including untitled projects and before autosave.
 - Localized ModeSwitcher accessibility state.
 - Avoided rewriting unchanged Recent Project storage during validation.
 - Removed silent failure handling from critical persistence and provider operations.
-- Made the complete existing surface of the Script, B-roll, and Editing controls clickable while preserving their previous visual layout.
+- Made the complete existing surface of the Script, Visuals, and Editing controls clickable while preserving their previous visual layout.
 - Removed missing Recent Projects when the application becomes active.
 - Improved Recent Project bookmark validation and manual removal.
 - Preserved legacy Recent data when migration persistence fails.
