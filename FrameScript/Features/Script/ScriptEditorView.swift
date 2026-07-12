@@ -957,6 +957,26 @@ final class PlaceholderTextView: NSTextView {
         textContainerOrigin
     }
 
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        super.drawInsertionPoint(in: normalizedInsertionCaretRect(rect), color: color, turnedOn: flag)
+    }
+
+    /// Keeps the native insertion point aligned to the active font when paragraph spacing enlarges a line fragment.
+    func normalizedInsertionCaretRect(_ systemRect: NSRect) -> NSRect {
+        guard systemRect.height > 0, let font = activeCaretFont() else { return systemRect }
+
+        let height = max(1, layoutManager?.defaultLineHeight(for: font) ?? (font.ascender - font.descender))
+        guard height < systemRect.height else { return systemRect }
+
+        var caretRect = systemRect
+        caretRect.size.height = height
+        if let baseline = glyphBaseline(at: selectedRange().location) {
+            caretRect.origin.y = baseline - font.ascender
+        }
+        caretRect.origin.y = min(max(caretRect.origin.y, systemRect.minY), systemRect.maxY - height)
+        return caretRect
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         if string.isEmpty, !placeholder.isEmpty {
@@ -1028,7 +1048,7 @@ final class PlaceholderTextView: NSTextView {
         return attributes
     }
 
-    private func insertionPoint(at index: Int, layoutManager: NSLayoutManager, textContainer: NSTextContainer) -> NSPoint {
+    func insertionPoint(at index: Int, layoutManager: NSLayoutManager, textContainer: NSTextContainer) -> NSPoint {
         let length = (string as NSString).length
         if index == length, !layoutManager.extraLineFragmentRect.isEmpty {
             let rect = layoutManager.extraLineFragmentRect
@@ -1043,6 +1063,26 @@ final class PlaceholderTextView: NSTextView {
             return NSPoint(x: textContainerOrigin.x + used.maxX, y: textContainerOrigin.y + line.origin.y)
         }
         return NSPoint(x: textContainerOrigin.x + point.x, y: textContainerOrigin.y + line.origin.y)
+    }
+
+    private func activeCaretFont() -> NSFont? {
+        if let font = typingAttributes[.font] as? NSFont { return font }
+
+        let length = (string as NSString).length
+        guard length > 0, let textStorage else { return font }
+        let index = min(max(0, selectedRange().location), length - 1)
+        return textStorage.attribute(.font, at: index, effectiveRange: nil) as? NSFont ?? font
+    }
+
+    private func glyphBaseline(at characterIndex: Int) -> CGFloat? {
+        guard let layoutManager, let textContainer else { return nil }
+        let length = (string as NSString).length
+        guard length > 0, characterIndex < length else { return nil }
+
+        layoutManager.ensureLayout(for: textContainer)
+        let glyphIndex = layoutManager.glyphIndexForCharacter(at: max(0, characterIndex))
+        let line = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        return line.minY + layoutManager.location(forGlyphAt: glyphIndex).y
     }
 
     override func keyDown(with event: NSEvent) {

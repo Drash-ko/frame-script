@@ -1053,6 +1053,170 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(view.textView.placeholderOrigin.y, view.textView.textContainerOrigin.y)
     }
 
+    func testInsertionCaretUsesFontHeightInsteadOfParagraphSpacing() {
+        let view = makeCaretTestView(text: "First line\nSecond line", fontSize: 16, lineSpacing: 4)
+        let systemRect = simulatedSystemCaretRect(in: view.textView, at: 0)
+        let caretRect = normalizedCaretRect(in: view.textView, at: 0, systemRect: systemRect)
+        let fontHeight = renderedLineHeight(in: view.textView)
+
+        XCTAssertEqual(caretRect.height, fontHeight, accuracy: 0.5)
+        XCTAssertGreaterThan(systemRect.height, fontHeight + 3)
+        XCTAssertLessThan(caretRect.height, systemRect.height - 3)
+    }
+
+    func testInsertionCaretScalesWithFontWithoutFollowingLineSpacing() {
+        for size in [CGFloat(14), 18, 24] {
+            let view = makeCaretTestView(text: "First line\nSecond line", fontSize: size, lineSpacing: 16)
+            let firstRect = simulatedSystemCaretRect(in: view.textView, at: 0)
+            let secondIndex = (view.textView.string as NSString).range(of: "Second").location
+            let secondRect = simulatedSystemCaretRect(in: view.textView, at: secondIndex)
+            let caretRect = normalizedCaretRect(in: view.textView, at: 0, systemRect: firstRect)
+            let fontHeight = renderedLineHeight(in: view.textView)
+
+            XCTAssertEqual(caretRect.height, fontHeight, accuracy: 0.5, "font size \(size)")
+            XCTAssertGreaterThan(secondRect.minY - firstRect.minY, fontHeight, "line spacing remains active at \(size)")
+            XCTAssertLessThan(caretRect.height, firstRect.height, "caret excludes spacing at \(size)")
+        }
+    }
+
+    func testInsertionCaretTracksGlyphBaselinesOnFirstLaterAndWrappedLines() {
+        let view = makeCaretTestView(
+            text: "First line\nSecond line is deliberately long enough to wrap within this narrow editor column.",
+            fontSize: 18,
+            lineSpacing: 12,
+            width: 180
+        )
+        let indices = lineStartIndices(in: view.textView)
+        XCTAssertGreaterThanOrEqual(indices.count, 3)
+
+        for index in [indices[0], indices[1], indices[2]] {
+            let systemRect = simulatedSystemCaretRect(in: view.textView, at: index)
+            let caretRect = normalizedCaretRect(in: view.textView, at: index, systemRect: systemRect)
+            XCTAssertEqual(caretRect.minY, expectedCaretOriginY(in: view.textView, at: index, systemRect: systemRect), accuracy: 0.5)
+            XCTAssertTrue(caretRect.intersects(systemRect))
+        }
+    }
+
+    func testInsertionCaretStaysValidForEmptyAndMixedUnicodeText() {
+        let empty = makeCaretTestView(text: "", fontSize: 18, lineSpacing: 16)
+        let emptyRect = normalizedCaretRect(in: empty.textView, at: 0, systemRect: simulatedSystemCaretRect(in: empty.textView, at: 0))
+        XCTAssertEqual(emptyRect.height, renderedLineHeight(in: empty.textView), accuracy: 0.5)
+
+        let text = "Latin Привет 😀\n"
+        let view = makeCaretTestView(text: text, fontSize: 18, lineSpacing: 16)
+        let positions = [0, (text as NSString).length - 1, (text as NSString).length]
+        for index in positions {
+            let systemRect = simulatedSystemCaretRect(in: view.textView, at: index)
+            let caretRect = normalizedCaretRect(in: view.textView, at: index, systemRect: systemRect)
+            XCTAssertTrue(caretRect.origin.x.isFinite && caretRect.origin.y.isFinite && caretRect.width.isFinite && caretRect.height.isFinite)
+            XCTAssertGreaterThan(caretRect.height, 0)
+            XCTAssertLessThanOrEqual(caretRect.height, systemRect.height)
+        }
+    }
+
+    func testTypographyUpdatesCaretWithoutRecreatingTextViewOrChangingOrigins() {
+        let view = makeCaretTestView(text: "Typing", fontSize: 14, lineSpacing: 4)
+        let textView = view.textView
+        let originalOrigin = textView.textContainerOrigin
+        let originalPlaceholderOrigin = textView.placeholderOrigin
+        textView.ghostText = " suggestion"
+        let originalGhostX = textView.insertionPoint(at: 0, layoutManager: textView.layoutManager!, textContainer: textView.textContainer!).x
+
+        configureCaretTestTypography(textView, fontSize: 24, lineSpacing: 16)
+        let systemRect = simulatedSystemCaretRect(in: textView, at: (textView.string as NSString).length)
+        let caretRect = normalizedCaretRect(in: textView, at: (textView.string as NSString).length, systemRect: systemRect)
+        let updatedGhostX = textView.insertionPoint(at: 0, layoutManager: textView.layoutManager!, textContainer: textView.textContainer!).x
+
+        XCTAssertTrue(textView === view.textView)
+        XCTAssertEqual(caretRect.height, renderedLineHeight(in: textView), accuracy: 0.5)
+        XCTAssertEqual(textView.textContainerOrigin, originalOrigin)
+        XCTAssertEqual(textView.placeholderOrigin, originalPlaceholderOrigin)
+        XCTAssertEqual(updatedGhostX, originalGhostX, accuracy: 0.5)
+        textView.setSelectedRange(NSRange(location: 3, length: 0))
+        textView.insertText("!", replacementRange: textView.selectedRange())
+        XCTAssertTrue(textView.string.contains("!"))
+    }
+
+    private func makeCaretTestView(
+        text: String,
+        fontSize: CGFloat,
+        lineSpacing: CGFloat,
+        width: CGFloat = 320
+    ) -> MarkerTextContainerView {
+        let view = MarkerTextContainerView(frame: NSRect(x: 0, y: 0, width: width, height: 160))
+        view.layoutSubtreeIfNeeded()
+        configureCaretTestTypography(view.textView, fontSize: fontSize, lineSpacing: lineSpacing)
+        view.textView.string = text
+        let attributes = view.textView.typingAttributes
+        view.textView.textStorage?.setAttributes(attributes, range: NSRange(location: 0, length: (text as NSString).length))
+        view.textView.layoutManager?.ensureLayout(for: view.textView.textContainer!)
+        return view
+    }
+
+    private func configureCaretTestTypography(_ textView: PlaceholderTextView, fontSize: CGFloat, lineSpacing: CGFloat) {
+        let font = NSFont.systemFont(ofSize: fontSize)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = lineSpacing
+        textView.font = font
+        textView.defaultParagraphStyle = paragraph
+        textView.typingAttributes = [.font: font, .paragraphStyle: paragraph]
+        if let storage = textView.textStorage, storage.length > 0 {
+            storage.addAttributes(textView.typingAttributes, range: NSRange(location: 0, length: storage.length))
+        }
+        textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+    }
+
+    private func normalizedCaretRect(in textView: PlaceholderTextView, at index: Int, systemRect: NSRect) -> NSRect {
+        textView.setSelectedRange(NSRange(location: index, length: 0))
+        return textView.normalizedInsertionCaretRect(systemRect)
+    }
+
+    private func simulatedSystemCaretRect(in textView: PlaceholderTextView, at index: Int) -> NSRect {
+        let layout = textView.layoutManager!
+        let container = textView.textContainer!
+        layout.ensureLayout(for: container)
+        let length = (textView.string as NSString).length
+        if index == length, !layout.extraLineFragmentRect.isEmpty {
+            return layout.extraLineFragmentRect
+        }
+        guard length > 0 else {
+            return NSRect(x: 0, y: 0, width: 1, height: layout.defaultLineHeight(for: textView.font!) + (textView.defaultParagraphStyle?.lineSpacing ?? 0))
+        }
+        let glyph = layout.glyphIndexForCharacter(at: min(max(0, index), length - 1))
+        return layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+    }
+
+    private func lineStartIndices(in textView: PlaceholderTextView) -> [Int] {
+        let layout = textView.layoutManager!
+        let container = textView.textContainer!
+        layout.ensureLayout(for: container)
+        let length = (textView.string as NSString).length
+        var starts: [Int] = []
+        var lineOrigins = Set<CGFloat>()
+        for index in 0..<length {
+            let glyph = layout.glyphIndexForCharacter(at: index)
+            let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            if lineOrigins.insert(line.minY).inserted { starts.append(index) }
+        }
+        return starts
+    }
+
+    private func expectedCaretOriginY(in textView: PlaceholderTextView, at index: Int, systemRect: NSRect) -> CGFloat {
+        let font = textView.font!
+        let height = renderedLineHeight(in: textView)
+        let length = (textView.string as NSString).length
+        guard index < length else { return systemRect.minY }
+        let layout = textView.layoutManager!
+        let glyph = layout.glyphIndexForCharacter(at: index)
+        let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let baseline = line.minY + layout.location(forGlyphAt: glyph).y
+        return min(max(baseline - font.ascender, systemRect.minY), systemRect.maxY - height)
+    }
+
+    private func renderedLineHeight(in textView: PlaceholderTextView) -> CGFloat {
+        textView.layoutManager!.defaultLineHeight(for: textView.font!)
+    }
+
     private func makeCoordinator(box: TextBox) -> (LinkedScriptTextView.Coordinator, MarkerTextContainerView) {
         let parent = makeRepresentable(text: Binding(get: { box.value }, set: { box.value = $0 }))
         let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
