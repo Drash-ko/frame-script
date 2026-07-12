@@ -809,7 +809,7 @@ struct AnalysisService: AnalysisServicing {
     }
 }
 
-struct AnalysisResponse: Decodable {
+struct AnalysisResponse {
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "AIParser")
     let title: String
     let severity: AICommentSeverity
@@ -828,19 +828,30 @@ struct AnalysisResponse: Decodable {
             logger.error("Structured analysis parse failed: unsupported or incomplete wrapper")
             throw LLMProviderError.malformedResponse("analysis.incompleteWrapper")
         }
-        let decoded: AnalysisResponse
-        do {
-            decoded = try JSONDecoder().decode(AnalysisResponse.self, from: JSONSerialization.data(withJSONObject: object))
-        } catch {
-            logger.error("Structured analysis decode failed: \(String(describing: error), privacy: .private)")
+        guard let rawTitle = object["title"] as? String,
+              let rawSeverity = object["severity"] as? String,
+              let rawMessage = object["message"] as? String else {
+            logger.error("Structured analysis decode failed: incomplete fields")
             throw LLMProviderError.malformedResponse("analysis.incompleteFields")
         }
-        guard let title = sanitizedTitle(decoded.title), let message = sanitized(decoded.message),
-              let suggestion = sanitized(decoded.suggestion) else {
+        let rawSuggestion: String
+        switch object["suggestion"] {
+        case nil, is NSNull:
+            rawSuggestion = ""
+        case let value as String:
+            rawSuggestion = value
+        default:
+            logger.error("Structured analysis decode failed: invalid suggestion")
+            throw LLMProviderError.malformedResponse("analysis.incompleteFields")
+        }
+        guard let title = sanitizedTitle(rawTitle),
+              let severity = normalizedSeverity(rawSeverity),
+              let message = sanitizedRequired(rawMessage),
+              let suggestion = sanitizedSuggestion(rawSuggestion) else {
             logger.error("Structured analysis validation failed")
             throw LLMProviderError.malformedResponse("analysis.invalidFields")
         }
-        return AnalysisResponse(title: title, severity: decoded.severity, message: message, suggestion: suggestion)
+        return AnalysisResponse(title: title, severity: severity, message: message, suggestion: suggestion)
     }
 
     private static func strippingFence(from response: String) -> String {
@@ -853,7 +864,7 @@ struct AnalysisResponse: Decodable {
 
     private static func unwrap(_ value: Any) -> [String: Any]? {
         if let object = value as? [String: Any] {
-            let required = ["title", "severity", "message", "suggestion"]
+            let required = ["title", "severity", "message"]
             if required.allSatisfy({ object[$0] != nil }) { return object }
             if object.count == 1, let nested = object.values.first { return unwrap(nested) }
             return nil
@@ -862,12 +873,36 @@ struct AnalysisResponse: Decodable {
         return nil
     }
 
-    private static func sanitized(_ value: String) -> String? {
+    private static func sanitizedRequired(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= 600,
               !trimmed.contains("```"), !trimmed.contains("**"), !trimmed.contains("##") else { return nil }
-        let complete = trimmed.last.map { ".!?…»”.".contains($0) } ?? false
-        return complete ? trimmed : nil
+        return trimmed
+    }
+
+    private static func sanitizedSuggestion(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count <= 600,
+              !trimmed.contains("```"), !trimmed.contains("**"), !trimmed.contains("##") else { return nil }
+        return trimmed
+    }
+
+    private static func normalizedSeverity(_ value: String) -> AICommentSeverity? {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalized.count <= 80,
+              !normalized.contains("```"), !normalized.contains("**"), !normalized.contains("##") else { return nil }
+        switch normalized {
+        case "note", "info", "information":
+            return .note
+        case "suggestion", "advice", "recommendation", "warning":
+            return .suggestion
+        case "important", "critical", "high":
+            return .important
+        case "":
+            return nil
+        default:
+            return .suggestion
+        }
     }
 
     private static func sanitizedTitle(_ value: String) -> String? {

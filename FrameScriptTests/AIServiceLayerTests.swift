@@ -65,10 +65,51 @@ final class AIServiceLayerTests: XCTestCase {
         }
     }
 
-    func testStructuredAnalysisRejectsIncompleteProse() {
-        for value in ["This scene needs a stronger hook.", #"{"title":"Hook","severity":"note","message":"Incomplete"}"#] {
-            XCTAssertThrowsError(try AnalysisResponse.decode(from: value))
+    func testAnalysisResponseRejectsPlainProse() {
+        XCTAssertThrowsError(try AnalysisResponse.decode(from: "This scene needs a stronger hook."))
+    }
+
+    func testAnalysisResponseDecodesGroqJSONWithoutFinalPunctuation() throws {
+        let response = try AnalysisResponse.decode(from: #"{"title":"Hook","severity":"note","message":"Make the opening concrete","suggestion":"Name the immediate benefit"}"#)
+
+        XCTAssertEqual(response.message, "Make the opening concrete")
+        XCTAssertEqual(response.suggestion, "Name the immediate benefit")
+    }
+
+    func testAnalysisResponseAllowsMissingNullAndEmptySuggestion() throws {
+        let values = [
+            #"{"title":"Hook","severity":"note","message":"Make the opening concrete"}"#,
+            #"{"title":"Hook","severity":"note","message":"Make the opening concrete","suggestion":null}"#,
+            #"{"title":"Hook","severity":"note","message":"Make the opening concrete","suggestion":"   "}"#
+        ]
+
+        for value in values {
+            XCTAssertEqual(try AnalysisResponse.decode(from: value).suggestion, "")
         }
+    }
+
+    func testAnalysisResponseNormalizesProviderSeverityValues() throws {
+        let values: [(String, AICommentSeverity)] = [
+            ("warning", .suggestion),
+            ("recommendation", .suggestion),
+            ("IMPORTANT", .important),
+            ("provider-specific", .suggestion)
+        ]
+
+        for (severity, expected) in values {
+            let response = try AnalysisResponse.decode(from: #"{"title":"Hook","severity":"\#(severity)","message":"Make the opening concrete"}"#)
+            XCTAssertEqual(response.severity, expected)
+        }
+    }
+
+    func testAnalysisResponseAcceptsHarmlessExtraFields() throws {
+        let response = try AnalysisResponse.decode(from: #"{"title":"Hook","severity":"note","message":"Make the opening concrete","extra":{"source":"groq"}}"#)
+
+        XCTAssertEqual(response.title, "Hook")
+    }
+
+    func testAnalysisResponseRejectsMissingMessage() {
+        XCTAssertThrowsError(try AnalysisResponse.decode(from: #"{"title":"Hook","severity":"note"}"#))
     }
 
     func testOneAnalysisReadsKeyOnceAndSecondAnalysisAddsNoRead() async throws {
@@ -473,7 +514,7 @@ final class AIServiceLayerTests: XCTestCase {
     func testGroqJSONObjectAnalysisDecodesIntoAIComment() async throws {
         let provider = makeProvider { request in
             self.response(status: 200, url: request.url!, body: self.chatResponse(
-                content: #"{"title":"Hook","severity":"suggestion","message":"Make the opening concrete.","suggestion":"Name the immediate benefit."}"#,
+                content: #"{"title":"Структура вступу","severity":"warning","message":"Вступ зрозумілий, але основна обіцянка відео з'являється запізно","suggestion":"Перенесіть формулювання користі для глядача ближче до початку"}"#,
                 finishReason: "stop"
             ))
         }
@@ -483,7 +524,8 @@ final class AIServiceLayerTests: XCTestCase {
             scene: scene, project: project, settings: settings, apiKey: "secret"
         )
 
-        XCTAssertEqual(comments.first?.type, "Hook")
+        XCTAssertEqual(comments.count, 1)
+        XCTAssertEqual(comments.first?.type, "Структура вступу")
         XCTAssertEqual(comments.first?.severity, .suggestion)
     }
 
