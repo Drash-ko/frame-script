@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 import SwiftUI
 
 struct ScriptEditorView: View {
@@ -374,6 +375,9 @@ struct LinkedScriptTextView: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
+#if DEBUG
+        private static let autocompleteLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "Autocomplete")
+#endif
         enum ChangeOrigin {
             case user
             case externalModel
@@ -604,10 +608,14 @@ struct LinkedScriptTextView: NSViewRepresentable {
                     }
                 }
                 let result = await self.parent.autocomplete(context)
-                guard !Task.isCancelled,
-                      snapshot.requestGeneration == self.autocompleteRequestGeneration,
-                      self.autocompleteSnapshot == snapshot,
-                      self.isCurrent(snapshot, in: self.view?.textView) else { return }
+                let isCurrent = !Task.isCancelled
+                    && snapshot.requestGeneration == self.autocompleteRequestGeneration
+                    && self.autocompleteSnapshot == snapshot
+                    && self.isCurrent(snapshot, in: self.view?.textView)
+                guard isCurrent else {
+                    self.logRejectedStaleAutocomplete(snapshot)
+                    return
+                }
                 switch result {
                 case .suggestion(let completion):
                     self.view?.textView.ghostText = completion
@@ -633,6 +641,12 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 selectedRange: textView.selectedRange(),
                 hasMarkedText: textView.hasMarkedText()
             )
+        }
+
+        private func logRejectedStaleAutocomplete(_ snapshot: AutocompleteRequestSnapshot) {
+#if DEBUG
+            Self.autocompleteLogger.debug("Autocomplete outcome=rejectedStale provider=\(self.parent.autocompleteProvider.rawValue, privacy: .public) model=unknown finish=none characters=0 generation=\(snapshot.requestGeneration, privacy: .public) revision=\(snapshot.textRevision, privacy: .public)")
+#endif
         }
 
         func handleGhostAction(_ action: PlaceholderTextView.GhostAction) {

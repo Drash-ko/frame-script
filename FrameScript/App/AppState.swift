@@ -76,6 +76,9 @@ struct NewProjectRequest: Identifiable, Equatable {
 final class AppState {
     private static let projectFilesLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "ProjectFiles")
     private static let exportLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "Export")
+#if DEBUG
+    private static let autocompleteLogger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "FrameScript", category: "Autocomplete")
+#endif
     typealias ExportFolderBookmarkCreator = @MainActor @Sendable (URL) throws -> Data
     typealias ExportFolderBookmarkResolver = @MainActor @Sendable (Data, inout Bool) throws -> URL
 
@@ -601,7 +604,7 @@ final class AppState {
         do {
             let promptBuilder = PromptBuilder()
             let apiKey = try dependencies.providerCredentials.apiKey(for: provider)
-            let response = try await dependencies.llmProvider.complete(request: LLMRequest(
+            let request = LLMRequest(
                 task: .autocomplete,
                 provider: provider,
                 baseURL: settings.aiPreferences.baseURL,
@@ -609,9 +612,47 @@ final class AppState {
                 userPrompt: context.prompt,
                 model: settings.aiPreferences.model,
                 temperature: settings.aiPreferences.temperature,
-                maxTokens: min(settings.aiPreferences.maxTokens, 80)
-            ), apiKey: apiKey)
-            guard let completion = AutocompleteCompletion.sanitize(response, context: context) else { return .none }
+                maxTokens: 96
+            )
+            let firstResponse = try await dependencies.llmProvider.complete(request: request, apiKey: apiKey)
+            let completion: String
+            switch AutocompleteCompletion.sanitizeResult(firstResponse, context: context) {
+            case .completion(let value):
+                completion = value
+                logAutocompleteOutcome(
+                    firstResponse.stoppedAtTokenLimit
+                        ? "acceptedCompleteSentenceFromTokenLimitedResponse"
+                        : "acceptedFirstAttempt",
+                    provider: provider,
+                    model: request.model,
+                    finishReason: firstResponse.finishReason,
+                    characterCount: firstResponse.text.count,
+                    attempt: "initial"
+                )
+            case .noCompleteSentence where firstResponse.stoppedAtTokenLimit:
+                logAutocompleteOutcome("retryAfterTokenLimit", provider: provider, model: request.model, finishReason: firstResponse.finishReason, characterCount: firstResponse.text.count, attempt: "initial")
+                try Task.checkCancellation()
+                var retryRequest = request
+                retryRequest.maxTokens = 160
+                let retryResponse = try await dependencies.llmProvider.complete(request: retryRequest, apiKey: apiKey)
+                switch AutocompleteCompletion.sanitizeResult(retryResponse, context: context) {
+                case .completion(let value):
+                    completion = value
+                    logAutocompleteOutcome("acceptedRetry", provider: provider, model: retryRequest.model, finishReason: retryResponse.finishReason, characterCount: retryResponse.text.count, attempt: "retry")
+                case .noCompleteSentence:
+                    logAutocompleteOutcome("rejectedNoCompleteSentence", provider: provider, model: retryRequest.model, finishReason: retryResponse.finishReason, characterCount: retryResponse.text.count, attempt: "retry")
+                    return .none
+                case .rejected:
+                    logAutocompleteOutcome("rejectedSanitizer", provider: provider, model: retryRequest.model, finishReason: retryResponse.finishReason, characterCount: retryResponse.text.count, attempt: "retry")
+                    return .none
+                }
+            case .noCompleteSentence:
+                logAutocompleteOutcome("rejectedNoCompleteSentence", provider: provider, model: request.model, finishReason: firstResponse.finishReason, characterCount: firstResponse.text.count, attempt: "initial")
+                return .none
+            case .rejected:
+                logAutocompleteOutcome("rejectedSanitizer", provider: provider, model: request.model, finishReason: firstResponse.finishReason, characterCount: firstResponse.text.count, attempt: "initial")
+                return .none
+            }
             if settings.aiPreferences.provider == provider {
                 autocompleteIssue = nil
             }
@@ -633,6 +674,20 @@ final class AppState {
             }
             return .temporarilyUnavailable(reason)
         }
+    }
+
+    private func logAutocompleteOutcome(
+        _ outcome: String,
+        provider: AIProviderKind,
+        model: String,
+        finishReason: String?,
+        characterCount: Int,
+        attempt: String
+    ) {
+#if DEBUG
+        let finish = finishReason ?? "none"
+        Self.autocompleteLogger.debug("Autocomplete outcome=\(outcome, privacy: .public) provider=\(provider.rawValue, privacy: .public) model=\(model, privacy: .public) finish=\(finish, privacy: .public) characters=\(characterCount, privacy: .public) attempt=\(attempt, privacy: .public)")
+#endif
     }
 
     func autocompleteProviderDidChange(from oldProvider: AIProviderKind, to newProvider: AIProviderKind) {

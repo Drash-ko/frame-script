@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- Accepted the first complete sentence from token-limited inline autocomplete responses and retried one incomplete response with a larger bounded output limit.
 - Regenerated inline autocomplete for every committed editor revision, including repeated text at the same document-end caret position.
 - Restricted inline autocomplete and ghost rendering to a zero-length caret at the absolute end of the document, rejecting stale end-of-document responses after caret movement.
 - Kept inline autocomplete availability warnings visible across edits, cancellations, scene changes, and provider cooldowns until a valid completion succeeds or AI configuration changes.

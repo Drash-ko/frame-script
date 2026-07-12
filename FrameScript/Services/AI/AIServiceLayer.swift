@@ -111,19 +111,32 @@ struct AutocompleteProviderIssue: Equatable {
 }
 
 enum AutocompleteCompletion {
+    enum SanitizationResult: Equatable {
+        case completion(String)
+        case noCompleteSentence
+        case rejected
+    }
+
     static func sanitize(_ response: LLMResponse, context: AutocompleteContext) -> String? {
-        guard !response.stoppedAtTokenLimit else { return nil }
-        let candidate = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if case let .completion(completion) = sanitizeResult(response, context: context) {
+            return completion
+        }
+        return nil
+    }
+
+    static func sanitizeResult(_ response: LLMResponse, context: AutocompleteContext) -> SanitizationResult {
+        let rawCandidate = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let candidate = firstCompleteSentence(in: rawCandidate) else { return .noCompleteSentence }
         guard !candidate.isEmpty, candidate.count <= 600,
               !candidate.contains("```"), !candidate.contains("#"),
-              !candidate.hasPrefix("\"") && !candidate.hasPrefix("“") && !candidate.hasPrefix("'") else { return nil }
+              !candidate.hasPrefix("\"") && !candidate.hasPrefix("“") && !candidate.hasPrefix("'") else { return .rejected }
 
         let lowercased = candidate.lowercased()
         let conversationalPrefixes = ["assistant:", "narrator:", "user:", "answer:", "sure", "here is", "here's", "as an ai", "hello", "hi "]
-        guard !conversationalPrefixes.contains(where: { lowercased.hasPrefix($0) }) else { return nil }
+        guard !conversationalPrefixes.contains(where: { lowercased.hasPrefix($0) }) else { return .rejected }
 
         let normalizedPrefix = context.prefix.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard normalizedPrefix.isEmpty || !normalizedPrefix.hasSuffix(lowercased) else { return nil }
+        guard normalizedPrefix.isEmpty || !normalizedPrefix.hasSuffix(lowercased) else { return .rejected }
 
         let suffix = context.suffix
         let maximumOverlap = min(candidate.count, suffix.count)
@@ -134,9 +147,19 @@ enum AutocompleteCompletion {
         let completion = overlap == 0
             ? candidate
             : String(candidate.dropLast(overlap))
-        guard !completion.isEmpty else { return nil }
-        if context.prefix.last?.isWhitespace == true || completion.first?.isWhitespace == true { return completion }
-        return " " + completion
+        guard !completion.isEmpty else { return .rejected }
+        if context.prefix.last?.isWhitespace == true || completion.first?.isWhitespace == true { return .completion(completion) }
+        return .completion(" " + completion)
+    }
+
+    private static func firstCompleteSentence(in text: String) -> String? {
+        guard !text.isEmpty else { return nil }
+        for index in text.indices where ".!?".contains(text[index]) {
+            let next = text.index(after: index)
+            guard next == text.endIndex || text[next].isWhitespace else { continue }
+            return String(text[...index])
+        }
+        return nil
     }
 }
 
@@ -696,7 +719,7 @@ struct PromptBuilder {
         let languageInstruction = "Respond only in \(languageName(for: language))."
         return switch task {
         case .autocomplete:
-            "Continue the same narrator's YouTube script at the caret. Preserve its language, person, tone, punctuation, capitalization, and style. Never answer the narrator or start a dialogue. Never explain the completion. Never include quotes, Markdown, labels, or alternatives. Return only the exact suffix that can be inserted at the caret. Do not repeat text already before the caret. Account for text after the caret and avoid duplicating it. \(languageInstruction)"
+            "Continue the same narrator's YouTube script at the caret. Return exactly one short continuation sentence and only the insertable script text. Preserve the same narrator, language, tone, person, punctuation, capitalization, and style. Do not return a second sentence, explanation, alternatives, labels, quotes, lists, or Markdown. Never answer the narrator or start a dialogue. Do not repeat text already before the caret. Account for text after the caret and avoid duplicating it. \(languageInstruction)"
         case .rewrite:
             "Rewrite selected script text while preserving intent and voice. \(languageInstruction)"
         case .analyze:

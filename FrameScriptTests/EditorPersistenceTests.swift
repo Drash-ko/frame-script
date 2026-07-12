@@ -52,6 +52,32 @@ final class EditorPersistenceTests: XCTestCase {
         }
     }
 
+    @MainActor
+    private final class RetryingAutocompleteProvider: LLMProviderProtocol {
+        private(set) var calls = 0
+        private(set) var completedCalls = 0
+        private var retryContinuation: CheckedContinuation<LLMResponse, Never>?
+
+        func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
+            calls += 1
+            if calls == 1 {
+                completedCalls += 1
+                return LLMResponse(text: "The next beat", finishReason: "length")
+            }
+            let response = await withCheckedContinuation { continuation in
+                retryContinuation = continuation
+            }
+            completedCalls += 1
+            return response
+        }
+
+        func respondToRetry(with response: LLMResponse) {
+            let continuation = retryContinuation
+            retryContinuation = nil
+            continuation?.resume(returning: response)
+        }
+    }
+
     func testUserEditSynchronouslyUpdatesModel() {
         let box = TextBox("Old")
         let (coordinator, view) = makeCoordinator(box: box)
@@ -246,6 +272,41 @@ final class EditorPersistenceTests: XCTestCase {
         coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
         recorder.respond(with: .suggestion("This must not appear."))
         try await waitUntil { recorder.completedRequestCount == 1 }
+
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
+    }
+
+    func testStaleSnapshotDuringAutocompleteRetryShowsNoGhostText() async throws {
+        let provider = RetryingAutocompleteProvider()
+        let dependencies = AppDependencies(
+            rewriteService: RewriteService(provider: provider),
+            analysisService: AnalysisService(provider: provider),
+            exportService: ExportService(),
+            llmProvider: provider,
+            providerCredentials: ProviderCredentialSession(reader: { _ in "secret" })
+        )
+        let (appState, _, _) = makeAppState(fileURL: nil, dependencies: dependencies)
+        appState.settings.aiPreferences.provider = .openAICompatible
+        let text = "This is enough editor context"
+        let box = TextBox(text)
+        let parent = makeRepresentable(
+            text: Binding(get: { box.value }, set: { box.value = $0 }),
+            autocomplete: { @MainActor context in await appState.autocompleteScript(context: context) }
+        )
+        let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
+        let view = MarkerTextContainerView()
+        coordinator.attach(to: view)
+        view.textView.delegate = coordinator
+        view.textView.string = text
+        view.textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ provider.calls == 2 }, message: "retry request")
+
+        view.textView.setSelectedRange(NSRange(location: 0, length: 0))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        provider.respondToRetry(with: LLMResponse(text: "The next beat lands.", finishReason: "stop"))
+        try await waitUntil({ provider.completedCalls == 2 }, message: "retry response")
 
         XCTAssertTrue(view.textView.ghostText.isEmpty)
     }
@@ -701,6 +762,7 @@ final class EditorPersistenceTests: XCTestCase {
     private func makeAppState(
         project: FrameProject? = nil,
         fileURL: URL?,
+        dependencies: AppDependencies = .live,
         projectWriter: @escaping (FrameProject, URL) throws -> Void = FrameScriptFileStore.write
     ) -> (AppState, FrameScript.Scene, UserDefaults) {
         let scene = project?.scenes.first ?? Scene(order: 0, sectionType: .custom, title: "Scene", scriptText: "")
@@ -714,7 +776,8 @@ final class EditorPersistenceTests: XCTestCase {
             projectStore: store,
             recentProjectStore: RecentProjectStore(userDefaults: suite),
             editorState: EditorState(),
-            settingsStore: SettingsStore(settings: settings, userDefaults: suite, key: "settings")
+            settingsStore: SettingsStore(settings: settings, userDefaults: suite, key: "settings"),
+            dependencies: dependencies
         )
         appState.editorState.selectedSceneID = scene.id
         appState.editorState.selectedMode = .script

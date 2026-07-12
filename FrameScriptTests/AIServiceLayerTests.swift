@@ -373,16 +373,94 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertTrue(request?.userPrompt.contains("Scene title: Opening") == true)
         XCTAssertTrue(request?.userPrompt.contains("Text before the caret:\nBefore the caret") == true)
         XCTAssertTrue(request?.userPrompt.contains("Text after the caret:\nAfter the caret") == true)
+        XCTAssertTrue(request?.systemPrompt.contains("exactly one short continuation sentence") == true)
+        XCTAssertTrue(request?.systemPrompt.contains("Do not return a second sentence") == true)
     }
 
-    func testAutocompleteRejectsConversationalAndTokenLimitedReplies() {
+    func testAutocompleteRejectsConversationalReplies() {
         let context = AutocompleteContext(prefix: "The narrator says", suffix: "next line", sceneTitle: "Hook", language: .english)
         for response in [
             LLMResponse(text: "Sure, here's the continuation."),
-            LLMResponse(text: "Assistant: I can help with that."),
-            LLMResponse(text: "unfinished", finishReason: "length")
+            LLMResponse(text: "Assistant: I can help with that.")
         ] {
             XCTAssertNil(AutocompleteCompletion.sanitize(response, context: context))
+        }
+    }
+
+    func testAutocompleteStopWithOneSentenceIsAccepted() async {
+        let provider = SequencedAutocompleteProvider(outcomes: [.response(LLMResponse(text: "The next beat lands.", finishReason: "stop"))])
+        let appState = autocompleteAppState(provider: provider)
+
+        let result = await appState.autocompleteScript(context: AutocompleteContext(prefix: "The narrator pauses", suffix: "", sceneTitle: "Hook", language: .english))
+
+        XCTAssertEqual(result, .suggestion(" The next beat lands."))
+        XCTAssertEqual(provider.calls, 1)
+        XCTAssertEqual(provider.requests.map(\.maxTokens), [96])
+    }
+
+    func testTokenLimitedAutocompleteUsesCompleteFirstSentenceWithoutRetry() async {
+        let provider = SequencedAutocompleteProvider(outcomes: [
+            .response(LLMResponse(text: "The next beat lands. The second sentence trails", finishReason: "length"))
+        ])
+        let appState = autocompleteAppState(provider: provider)
+
+        let result = await appState.autocompleteScript(context: AutocompleteContext(prefix: "The narrator pauses", suffix: "", sceneTitle: "Hook", language: .english))
+
+        XCTAssertEqual(result, .suggestion(" The next beat lands."))
+        XCTAssertEqual(provider.calls, 1)
+        XCTAssertEqual(provider.requests.map(\.maxTokens), [96])
+    }
+
+    func testTokenLimitedAutocompleteWithoutCompleteSentenceRetriesOnceAndAcceptsRetry() async {
+        let provider = SequencedAutocompleteProvider(outcomes: [
+            .response(LLMResponse(text: "The next beat", finishReason: "length")),
+            .response(LLMResponse(text: "The next beat lands.", finishReason: "stop"))
+        ])
+        let appState = autocompleteAppState(provider: provider)
+
+        let result = await appState.autocompleteScript(context: AutocompleteContext(prefix: "The narrator pauses", suffix: "", sceneTitle: "Hook", language: .english))
+
+        XCTAssertEqual(result, .suggestion(" The next beat lands."))
+        XCTAssertEqual(provider.calls, 2)
+        XCTAssertEqual(provider.requests.map(\.maxTokens), [96, 160])
+    }
+
+    func testSecondTokenLimitedIncompleteAutocompleteReturnsNoSuggestion() async {
+        let provider = SequencedAutocompleteProvider(outcomes: [
+            .response(LLMResponse(text: "The next beat", finishReason: "length")),
+            .response(LLMResponse(text: "still unfinished", finishReason: "length"))
+        ])
+        let appState = autocompleteAppState(provider: provider)
+
+        let result = await appState.autocompleteScript(context: AutocompleteContext(prefix: "The narrator pauses", suffix: "", sceneTitle: "Hook", language: .english))
+
+        XCTAssertEqual(result, .none)
+        XCTAssertEqual(provider.calls, 2)
+        XCTAssertEqual(provider.requests.map(\.maxTokens), [96, 160])
+    }
+
+    func testAutocompleteReducesTwoProviderSentencesToTheFirst() async {
+        let provider = SequencedAutocompleteProvider(outcomes: [
+            .response(LLMResponse(text: "The next beat lands. Another thought follows.", finishReason: "stop"))
+        ])
+        let appState = autocompleteAppState(provider: provider)
+
+        let result = await appState.autocompleteScript(context: AutocompleteContext(prefix: "The narrator pauses", suffix: "", sceneTitle: "Hook", language: .english))
+
+        XCTAssertEqual(result, .suggestion(" The next beat lands."))
+    }
+
+    func testAcceptedAutocompleteContainsNoMoreThanOneCompleteSentence() {
+        let context = AutocompleteContext(prefix: "The narrator pauses", suffix: "", sceneTitle: "Hook", language: .english)
+        let responses = [
+            LLMResponse(text: "The next beat lands.", finishReason: "stop"),
+            LLMResponse(text: "The next beat lands. Another thought follows.", finishReason: "stop"),
+            LLMResponse(text: "The next beat lands. A second sentence trails", finishReason: "length")
+        ]
+
+        for response in responses {
+            let completion = try? XCTUnwrap(AutocompleteCompletion.sanitize(response, context: context))
+            XCTAssertEqual(completion?.filter { ".!?".contains($0) }.count, 1)
         }
     }
 
@@ -390,8 +468,8 @@ final class AIServiceLayerTests: XCTestCase {
         let context = AutocompleteContext(prefix: "Before the caret ", suffix: "", sceneTitle: "Hook", language: .english)
 
         XCTAssertEqual(
-            AutocompleteCompletion.sanitize(LLMResponse(text: "continues here"), context: context),
-            "continues here"
+            AutocompleteCompletion.sanitize(LLMResponse(text: "Continues here."), context: context),
+            "Continues here."
         )
     }
 
@@ -399,24 +477,24 @@ final class AIServiceLayerTests: XCTestCase {
         let context = AutocompleteContext(prefix: "Before the caret ", suffix: "different text", sceneTitle: "Hook", language: .english)
 
         XCTAssertEqual(
-            AutocompleteCompletion.sanitize(LLMResponse(text: "continues here"), context: context),
-            "continues here"
+            AutocompleteCompletion.sanitize(LLMResponse(text: "Continues here."), context: context),
+            "Continues here."
         )
     }
 
     func testAutocompleteCompletionSanitizePartialCaseInsensitiveOverlap() {
-        let context = AutocompleteContext(prefix: "Before the caret ", suffix: "world ahead", sceneTitle: "Hook", language: .english)
+        let context = AutocompleteContext(prefix: "Before the caret ", suffix: "world. ahead", sceneTitle: "Hook", language: .english)
 
         XCTAssertEqual(
-            AutocompleteCompletion.sanitize(LLMResponse(text: "helloWORLD"), context: context),
+            AutocompleteCompletion.sanitize(LLMResponse(text: "helloWORLD."), context: context),
             "hello"
         )
     }
 
     func testAutocompleteCompletionSanitizeFullOverlapReturnsNil() {
-        let context = AutocompleteContext(prefix: "Before the caret ", suffix: "WORLD ahead", sceneTitle: "Hook", language: .english)
+        let context = AutocompleteContext(prefix: "Before the caret ", suffix: "WORLD. ahead", sceneTitle: "Hook", language: .english)
 
-        XCTAssertNil(AutocompleteCompletion.sanitize(LLMResponse(text: "world"), context: context))
+        XCTAssertNil(AutocompleteCompletion.sanitize(LLMResponse(text: "world."), context: context))
     }
 
     func testAutocompleteCompletionSanitizeEmptyCandidateReturnsNil() {
@@ -850,6 +928,7 @@ private final class SequencedAutocompleteProvider: LLMProviderProtocol {
 
     private var outcomes: [Outcome]
     private(set) var calls = 0
+    private(set) var requests: [LLMRequest] = []
 
     init(outcomes: [Outcome]) {
         self.outcomes = outcomes
@@ -857,6 +936,7 @@ private final class SequencedAutocompleteProvider: LLMProviderProtocol {
 
     func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
         calls += 1
+        requests.append(request)
         switch outcomes.removeFirst() {
         case .response(let response): return response
         case .failure(let error): throw error
