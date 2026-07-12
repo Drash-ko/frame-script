@@ -1187,23 +1187,24 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 1)
     }
 
-    func testMarkerDuplicateVisualItemsOnOneLineDrawOneStrip() {
+    func testMarkerDuplicateIdenticalAnchorsDrawOneStripPerMarkerType() {
         let text = "one line"
+        let range = NSRange(location: 0, length: 3)
         let geometry = markerGeometry(
             text: text,
-            markers: [marker(.bRoll, range: NSRange(location: 0, length: 3)), marker(.bRoll, range: NSRange(location: 4, length: 4))]
+            markers: [marker(.bRoll, range: range), marker(.bRoll, range: range)]
         )
 
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 1)
         XCTAssertEqual(geometry.hitRegions.count, 2)
     }
 
-    func testMarkerBlankLineBreaksVisualStrip() {
+    func testMarkerWhitespaceOnlyGapKeepsOneVisualStrip() {
         let text = "one\n\nthree"
         let ranges = lineRanges(in: text)
         let geometry = markerGeometry(text: text, markers: [marker(.bRoll, range: ranges[0]), marker(.bRoll, range: ranges[2])])
 
-        XCTAssertEqual(runs(.bRoll, in: geometry).count, 2)
+        XCTAssertEqual(runs(.bRoll, in: geometry).count, 1)
     }
 
     func testMarkerUnmarkedOrdinaryLineBreaksVisualStrip() {
@@ -1212,6 +1213,17 @@ final class EditorPersistenceTests: XCTestCase {
         let geometry = markerGeometry(text: text, markers: [marker(.bRoll, range: ranges[0]), marker(.bRoll, range: ranges[2])])
 
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 2)
+    }
+
+    func testMarkerUkrainianSeparatedAnchorsRemainSeparateVisualRunsInNarrowTextView() {
+        let text = "Всім привіт! Мене звати Микита. Сьогодні б хотів порозмовляти про Лінукс. Чому він краще за вінду, чому тобі слід перейти на нього прямо зараз, і який дистрибутив обрати початківцю."
+        let string = text as NSString
+        let firstSentence = string.range(of: "Всім привіт!")
+        let thirdSentence = string.range(of: "Сьогодні б хотів порозмовляти про Лінукс.")
+        let view = makeMarkerTestView(text: text, width: 130)
+        view.markers = [marker(.bRoll, range: firstSentence), marker(.bRoll, range: thirdSentence)]
+
+        XCTAssertEqual(runs(.bRoll, in: view.documentMarkerGeometry()).count, 2)
     }
 
     func testMarkerWrappedSentenceProducesContinuousRun() {

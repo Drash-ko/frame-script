@@ -21,7 +21,7 @@
 
 ### Fixed
 
-- Rendered Script production markers line-first, merging consecutive Visuals or Editing lines across items while preserving fixed lanes and per-item hit targets.
+- Grouped Script Visuals and Editing marker anchors by contiguous or whitespace-only text ranges before TextKit layout, preventing separate marked fragments from merging while preserving fixed right-side lanes and per-item hit targets.
 - Corrected Script insertion-caret geometry by translating TextKit glyph bounds into text-view coordinates, including the editor inset, while preserving native behavior.
 - Distinguished DEBUG-only inline autocomplete diagnostics for disabled providers, missing stored-key metadata, and active cooldowns.
 - Gated inline autocomplete on stored-key metadata before debounce or Keychain access, and refreshed eligibility after provider/key changes.
