@@ -274,9 +274,15 @@ final class AppState {
         settings.generalPreferences.language
     }
 
-    var autocompleteConfigurationIsEligible: Bool {
+    var autocompleteConfigurationEligibility: AutocompleteConfigurationEligibility {
         let provider = settings.aiPreferences.provider
-        return provider != .disabled && aiProviderConfigurationStore.hasStoredKey(for: provider)
+        guard provider != .disabled else { return .blockedProviderDisabled }
+        guard aiProviderConfigurationStore.hasStoredKey(for: provider) else { return .blockedMissingKeyMetadata }
+        return .eligible
+    }
+
+    var autocompleteConfigurationIsEligible: Bool {
+        autocompleteConfigurationEligibility.isEligible
     }
 
     func localized(_ key: String) -> String {
@@ -598,18 +604,23 @@ final class AppState {
 
     func autocompleteScript(context: AutocompleteContext) async -> AutocompleteResult {
         let provider = settings.aiPreferences.provider
-        guard provider != .disabled else {
+        switch autocompleteConfigurationEligibility {
+        case .eligible:
+            break
+        case .blockedProviderDisabled:
             autocompleteIssue = nil
+            logAutocompleteBlockedOutcome(.blockedProviderDisabled, provider: provider)
             return .none
-        }
-        guard aiProviderConfigurationStore.hasStoredKey(for: provider) else {
+        case .blockedMissingKeyMetadata:
             if autocompleteIssue?.provider == provider { autocompleteIssue = nil }
+            logAutocompleteBlockedOutcome(.blockedMissingKeyMetadata, provider: provider)
             return .none
         }
         guard !context.prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .none }
         let now = autocompleteNow()
         if let cooldown = autocompleteCooldowns[provider], cooldown > now {
             recordAutocompleteIssue(for: provider, reason: .rateLimited, cooldownDeadline: cooldown)
+            logAutocompleteBlockedOutcome(.blockedCooldown, provider: provider, remainingCooldown: cooldown.timeIntervalSince(now))
             return .temporarilyUnavailable(.rateLimited)
         }
         autocompleteCooldowns.removeValue(forKey: provider)
@@ -697,8 +708,21 @@ final class AppState {
         attempt: String
     ) {
 #if DEBUG
-        let finish = finishReason ?? "none"
-        Self.autocompleteLogger.debug("Autocomplete outcome=\(outcome, privacy: .public) provider=\(provider.rawValue, privacy: .public) model=\(model, privacy: .public) finish=\(finish, privacy: .public) characters=\(characterCount, privacy: .public) attempt=\(attempt, privacy: .public)")
+        Self.autocompleteLogger.debug("Autocomplete outcome=\(outcome, privacy: .public) provider=\(provider.rawValue, privacy: .public)")
+#endif
+    }
+
+    private func logAutocompleteBlockedOutcome(
+        _ reason: AutocompleteConfigurationEligibility,
+        provider: AIProviderKind,
+        remainingCooldown: TimeInterval? = nil
+    ) {
+#if DEBUG
+        if let remainingCooldown {
+            Self.autocompleteLogger.debug("Autocomplete outcome=\(reason.rawValue, privacy: .public) provider=\(provider.rawValue, privacy: .public) cooldownSeconds=\(Int(remainingCooldown.rounded()), privacy: .public)")
+        } else {
+            Self.autocompleteLogger.debug("Autocomplete outcome=\(reason.rawValue, privacy: .public) provider=\(provider.rawValue, privacy: .public)")
+        }
 #endif
     }
 

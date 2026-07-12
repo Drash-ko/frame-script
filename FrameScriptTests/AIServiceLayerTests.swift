@@ -311,6 +311,19 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertEqual(credentialReads, 1)
     }
 
+    func testAutocompleteConfigurationEligibilityDistinguishesDisabledProviderAndMissingKeyMetadata() {
+        let appState = autocompleteAppState(provider: StaticResponseProvider(text: "unused"), hasStoredKey: false)
+
+        appState.settings.aiPreferences.provider = .disabled
+        XCTAssertEqual(appState.autocompleteConfigurationEligibility, .blockedProviderDisabled)
+
+        appState.settings.aiPreferences.provider = .openAICompatible
+        XCTAssertEqual(appState.autocompleteConfigurationEligibility, .blockedMissingKeyMetadata)
+
+        appState.aiProviderConfigurationStore.setHasStoredKey(true, for: .openAICompatible)
+        XCTAssertEqual(appState.autocompleteConfigurationEligibility, .eligible)
+    }
+
     func testAutocompleteIssuePersistsAcrossTransientStatesAndCooldownUntilValidCompletion() async {
         let provider = SequencedAutocompleteProvider(outcomes: [
             .failure(.httpStatus(429, nil)),

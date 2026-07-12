@@ -24,7 +24,7 @@ struct ScriptEditorView: View {
                 sceneTitle: scene.title,
                 autocompleteProvider: appState.settings.aiPreferences.provider,
                 autocompleteConfigurationVersion: appState.autocompleteConfigurationVersion,
-                autocompleteConfigurationIsEligible: appState.autocompleteConfigurationIsEligible,
+                autocompleteConfigurationEligibility: appState.autocompleteConfigurationEligibility,
                 autocompleteDelay: appState.autocompleteCompletionDelay,
                 autocompleteFallbackLanguage: appState.currentLanguage,
                 autocompleteState: $autocompleteState,
@@ -277,6 +277,15 @@ struct AutocompleteEligibility {
     }
 }
 
+enum AutocompleteConfigurationEligibility: String, Equatable {
+    case eligible
+    case blockedProviderDisabled
+    case blockedMissingKeyMetadata
+    case blockedCooldown
+
+    var isEligible: Bool { self == .eligible }
+}
+
 @MainActor
 func autocompleteEligibility(in textView: NSTextView) -> AutocompleteEligibility {
     let selectedRange = textView.selectedRange()
@@ -335,7 +344,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
     let sceneTitle: String
     let autocompleteProvider: AIProviderKind
     let autocompleteConfigurationVersion: Int
-    let autocompleteConfigurationIsEligible: Bool
+    let autocompleteConfigurationEligibility: AutocompleteConfigurationEligibility
     let autocompleteDelay: Duration
     let autocompleteFallbackLanguage: AppLanguage
     @Binding var autocompleteState: AutocompleteEditorState
@@ -460,13 +469,13 @@ struct LinkedScriptTextView: NSViewRepresentable {
         private var escapeDismissalContext: EscapeDismissalContext?
         private var observedAutocompleteProvider: AIProviderKind
         private var observedAutocompleteConfigurationVersion: Int
-        private var observedAutocompleteConfigurationIsEligible: Bool
+        private var observedAutocompleteConfigurationEligibility: AutocompleteConfigurationEligibility
         init(parent: LinkedScriptTextView) {
             self.parent = parent
             self.lastObservedModelValue = parent.text
             self.observedAutocompleteProvider = parent.autocompleteProvider
             self.observedAutocompleteConfigurationVersion = parent.autocompleteConfigurationVersion
-            self.observedAutocompleteConfigurationIsEligible = parent.autocompleteConfigurationIsEligible
+            self.observedAutocompleteConfigurationEligibility = parent.autocompleteConfigurationEligibility
         }
 
         func attach(to view: MarkerTextContainerView) {
@@ -520,10 +529,10 @@ struct LinkedScriptTextView: NSViewRepresentable {
             guard let view else { return }
             if observedAutocompleteProvider != parent.autocompleteProvider
                 || observedAutocompleteConfigurationVersion != parent.autocompleteConfigurationVersion
-                || observedAutocompleteConfigurationIsEligible != parent.autocompleteConfigurationIsEligible {
+                || observedAutocompleteConfigurationEligibility != parent.autocompleteConfigurationEligibility {
                 observedAutocompleteProvider = parent.autocompleteProvider
                 observedAutocompleteConfigurationVersion = parent.autocompleteConfigurationVersion
-                observedAutocompleteConfigurationIsEligible = parent.autocompleteConfigurationIsEligible
+                observedAutocompleteConfigurationEligibility = parent.autocompleteConfigurationEligibility
                 cancelAutocomplete(clearStatus: true)
             }
             let textView = view.textView
@@ -664,9 +673,9 @@ struct LinkedScriptTextView: NSViewRepresentable {
         }
 
         private func scheduleAutocomplete(for textView: NSTextView, requestGeneration: Int) {
-            guard parent.autocompleteConfigurationIsEligible else {
+            guard parent.autocompleteConfigurationEligibility.isEligible else {
                 cancelAutocomplete()
-                logAutocompleteOutcome("blockedProviderDisabled", in: textView, generation: requestGeneration)
+                logAutocompleteOutcome(parent.autocompleteConfigurationEligibility.rawValue, in: textView, generation: requestGeneration)
                 return
             }
             let eligibility = autocompleteEligibility(in: textView)
@@ -718,8 +727,8 @@ struct LinkedScriptTextView: NSViewRepresentable {
                         self.autocompleteTask = nil
                     }
                 }
-                guard self.parent.autocompleteConfigurationIsEligible else {
-                    self.logAutocompleteOutcome("blockedProviderDisabled", in: self.view?.textView, generation: snapshot.requestGeneration)
+                guard self.parent.autocompleteConfigurationEligibility.isEligible else {
+                    self.logAutocompleteOutcome(self.parent.autocompleteConfigurationEligibility.rawValue, in: self.view?.textView, generation: snapshot.requestGeneration)
                     self.cancelAutocomplete()
                     return
                 }
@@ -961,19 +970,19 @@ final class PlaceholderTextView: NSTextView {
         super.drawInsertionPoint(in: normalizedInsertionCaretRect(rect), color: color, turnedOn: flag)
     }
 
-    /// Keeps the native insertion point aligned to the active font when paragraph spacing enlarges a line fragment.
+    /// Keeps the native insertion point aligned to its TextKit insertion line when paragraph spacing enlarges a line fragment.
     func normalizedInsertionCaretRect(_ systemRect: NSRect) -> NSRect {
         guard systemRect.height > 0, let font = activeCaretFont() else { return systemRect }
 
         let height = max(1, layoutManager?.defaultLineHeight(for: font) ?? (font.ascender - font.descender))
-        guard height < systemRect.height else { return systemRect }
-
         var caretRect = systemRect
         caretRect.size.height = height
-        if let baseline = glyphBaseline(at: selectedRange().location) {
-            caretRect.origin.y = baseline - font.ascender
+        if let insertionLine = insertionCaretLine(at: selectedRange().location, font: font) {
+            caretRect.origin.y = insertionLine.baseline - font.ascender
+            caretRect.origin.y = min(max(caretRect.origin.y, insertionLine.rect.minY), insertionLine.rect.maxY - height)
+        } else {
+            caretRect.origin.y = min(max(caretRect.origin.y, systemRect.minY), systemRect.maxY - height)
         }
-        caretRect.origin.y = min(max(caretRect.origin.y, systemRect.minY), systemRect.maxY - height)
         return caretRect
     }
 
@@ -1066,23 +1075,37 @@ final class PlaceholderTextView: NSTextView {
     }
 
     private func activeCaretFont() -> NSFont? {
-        if let font = typingAttributes[.font] as? NSFont { return font }
-
         let length = (string as NSString).length
-        guard length > 0, let textStorage else { return font }
-        let index = min(max(0, selectedRange().location), length - 1)
-        return textStorage.attribute(.font, at: index, effectiveRange: nil) as? NSFont ?? font
+        let insertion = min(max(0, selectedRange().location), length)
+        if insertion == length, (length == 0 || (string as NSString).character(at: length - 1) == 10 || (string as NSString).character(at: length - 1) == 13) {
+            return typingAttributes[.font] as? NSFont ?? font
+        }
+        if let textStorage, length > 0 {
+            let indices = insertion < length ? [insertion, max(0, insertion - 1)] : [length - 1]
+            for index in indices {
+                if let font = textStorage.attribute(.font, at: index, effectiveRange: nil) as? NSFont { return font }
+            }
+        }
+        return typingAttributes[.font] as? NSFont ?? font
     }
 
-    private func glyphBaseline(at characterIndex: Int) -> CGFloat? {
+    private func insertionCaretLine(at characterIndex: Int, font: NSFont) -> (rect: NSRect, baseline: CGFloat)? {
         guard let layoutManager, let textContainer else { return nil }
-        let length = (string as NSString).length
-        guard length > 0, characterIndex < length else { return nil }
-
         layoutManager.ensureLayout(for: textContainer)
-        let glyphIndex = layoutManager.glyphIndexForCharacter(at: max(0, characterIndex))
+        let text = string as NSString
+        let length = text.length
+        let insertion = min(max(0, characterIndex), length)
+
+        if insertion == length, (length == 0 || text.character(at: length - 1) == 10 || text.character(at: length - 1) == 13) {
+            let line = layoutManager.extraLineFragmentRect
+            guard !line.isEmpty else { return nil }
+            return (line, line.minY + font.ascender)
+        }
+
+        guard length > 0 else { return nil }
+        let glyphIndex = layoutManager.glyphIndexForCharacter(at: insertion == length ? length - 1 : insertion)
         let line = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
-        return line.minY + layoutManager.location(forGlyphAt: glyphIndex).y
+        return (line, line.minY + layoutManager.location(forGlyphAt: glyphIndex).y)
     }
 
     override func keyDown(with event: NSEvent) {

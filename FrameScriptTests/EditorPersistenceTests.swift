@@ -625,7 +625,7 @@ final class EditorPersistenceTests: XCTestCase {
         let recorder = AutocompleteRequestRecorder()
         let parent = makeRepresentable(
             text: .constant(text),
-            autocompleteConfigurationIsEligible: false,
+            autocompleteConfigurationEligibility: .blockedMissingKeyMetadata,
             autocomplete: { @MainActor context in await recorder.request(context) }
         )
         let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
@@ -648,7 +648,7 @@ final class EditorPersistenceTests: XCTestCase {
         let initial = makeRepresentable(
             text: .constant(text),
             autocompleteConfigurationVersion: 0,
-            autocompleteConfigurationIsEligible: true,
+            autocompleteConfigurationEligibility: .eligible,
             autocomplete: { @MainActor context in await recorder.request(context) }
         )
         let coordinator = LinkedScriptTextView.Coordinator(parent: initial)
@@ -664,7 +664,7 @@ final class EditorPersistenceTests: XCTestCase {
         coordinator.parent = makeRepresentable(
             text: .constant(view.textView.string),
             autocompleteConfigurationVersion: 1,
-            autocompleteConfigurationIsEligible: false,
+            autocompleteConfigurationEligibility: .blockedMissingKeyMetadata,
             autocomplete: { @MainActor context in await recorder.request(context) }
         )
         coordinator.applyModelTextIfNeeded()
@@ -676,7 +676,7 @@ final class EditorPersistenceTests: XCTestCase {
         coordinator.parent = makeRepresentable(
             text: .constant(view.textView.string),
             autocompleteConfigurationVersion: 2,
-            autocompleteConfigurationIsEligible: true,
+            autocompleteConfigurationEligibility: .eligible,
             autocomplete: { @MainActor context in await recorder.request(context) }
         )
         coordinator.applyModelTextIfNeeded()
@@ -1114,6 +1114,19 @@ final class EditorPersistenceTests: XCTestCase {
         }
     }
 
+    func testInsertionCaretAtPhysicalDocumentEndUsesItsActualInsertionLine() {
+        for text in ["ordinary final line", "a wrapped final line that is long enough to wrap in this narrow editor column", "", "line\n", "line\n\n", "Latin Привет 😀"] {
+            let view = makeCaretTestView(text: text, fontSize: 18, lineSpacing: 16, width: 180)
+            let end = (text as NSString).length
+            let systemRect = simulatedSystemCaretRect(in: view.textView, at: end)
+            let caretRect = normalizedCaretRect(in: view.textView, at: end, systemRect: systemRect)
+
+            XCTAssertEqual(caretRect.height, renderedLineHeight(in: view.textView), accuracy: 0.5, text)
+            XCTAssertEqual(caretRect.minY, expectedCaretOriginY(in: view.textView, at: end, systemRect: systemRect), accuracy: 0.5, text)
+            XCTAssertTrue(caretRect.origin.x.isFinite && caretRect.origin.y.isFinite, text)
+        }
+    }
+
     func testTypographyUpdatesCaretWithoutRecreatingTextViewOrChangingOrigins() {
         let view = makeCaretTestView(text: "Typing", fontSize: 14, lineSpacing: 4)
         let textView = view.textView
@@ -1205,12 +1218,21 @@ final class EditorPersistenceTests: XCTestCase {
         let font = textView.font!
         let height = renderedLineHeight(in: textView)
         let length = (textView.string as NSString).length
-        guard index < length else { return systemRect.minY }
         let layout = textView.layoutManager!
+        if index == length {
+            if length == 0 || (textView.string as NSString).character(at: length - 1) == 10 || (textView.string as NSString).character(at: length - 1) == 13 {
+                let line = layout.extraLineFragmentRect
+                return min(max(line.minY, line.minY), line.maxY - height)
+            }
+            let glyph = layout.glyphIndexForCharacter(at: length - 1)
+            let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let baseline = line.minY + layout.location(forGlyphAt: glyph).y
+            return min(max(baseline - font.ascender, line.minY), line.maxY - height)
+        }
         let glyph = layout.glyphIndexForCharacter(at: index)
         let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
         let baseline = line.minY + layout.location(forGlyphAt: glyph).y
-        return min(max(baseline - font.ascender, systemRect.minY), systemRect.maxY - height)
+        return min(max(baseline - font.ascender, line.minY), line.maxY - height)
     }
 
     private func renderedLineHeight(in textView: PlaceholderTextView) -> CGFloat {
@@ -1246,7 +1268,7 @@ final class EditorPersistenceTests: XCTestCase {
     private func makeRepresentable(
         text: Binding<String>,
         autocompleteConfigurationVersion: Int = 0,
-        autocompleteConfigurationIsEligible: Bool = true,
+        autocompleteConfigurationEligibility: AutocompleteConfigurationEligibility = .eligible,
         loadState: @escaping () -> ScriptEditorRestorationState? = { nil },
         saveState: @escaping (ScriptEditorRestorationState) -> Void = { _ in },
         onTextCommitted: @escaping (String) -> Void = { _ in },
@@ -1260,7 +1282,7 @@ final class EditorPersistenceTests: XCTestCase {
             sceneTitle: "Scene",
             autocompleteProvider: .openAICompatible,
             autocompleteConfigurationVersion: autocompleteConfigurationVersion,
-            autocompleteConfigurationIsEligible: autocompleteConfigurationIsEligible,
+            autocompleteConfigurationEligibility: autocompleteConfigurationEligibility,
             autocompleteDelay: .zero,
             autocompleteFallbackLanguage: .english,
             autocompleteState: .constant(.idle),

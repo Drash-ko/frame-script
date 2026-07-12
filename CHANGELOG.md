@@ -21,7 +21,8 @@
 
 ### Fixed
 
-- Restored a font-height Script insertion caret without changing configured line spacing.
+- Aligned the font-height Script insertion caret to TextKit's physical document-end and empty-final-line geometry without changing configured line spacing.
+- Distinguished DEBUG-only inline autocomplete diagnostics for disabled providers, missing stored-key metadata, and active cooldowns.
 - Gated inline autocomplete on stored-key metadata before debounce or Keychain access, and refreshed eligibility after provider/key changes.
 - Flushed and cancelled every live script editor on app resignation while keeping context transitions scoped to the active/key window editor.
 - Clamped restored editor selection and scroll origins after shorter document updates, and applied the warning color to the localized autocomplete Error control.
