@@ -55,7 +55,7 @@ final class EditorPersistenceTests: XCTestCase {
 
         let changelog = try repositoryText("CHANGELOG.md")
         let unreleased = try XCTUnwrap(changelog.components(separatedBy: "## [0.2.0]").first)
-        try assertNoVisibleBRoll(in: unreleased, file: "CHANGELOG.md [Unreleased]")
+        assertNoVisibleBRoll(in: unreleased, file: "CHANGELOG.md [Unreleased]")
     }
 
     func testFSCRCompatibilityKeepsBRollCodableNames() throws {

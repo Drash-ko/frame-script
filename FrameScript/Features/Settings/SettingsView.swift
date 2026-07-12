@@ -888,10 +888,6 @@ private struct AISettings: View {
         provider == .disabled ? "" : OpenAICompatibleLLMProvider.defaultBaseURL(for: provider)
     }
 
-    private func defaultModel(for provider: AIProviderKind) -> String {
-        AIProviderConfigurationStore.defaultModel(for: provider)
-    }
-
     private func saveProviderConfiguration(_ provider: AIProviderKind) {
         guard provider != .disabled else { return }
         configurationStore.save(

@@ -10,7 +10,7 @@
 	<array>
 		<dict>
 			<key>CFBundleTypeIconFile</key>
-			<string>FrameScriptDocument.icns</string>
+			<string>FrameScriptDocument.png</string>
 			<key>CFBundleTypeName</key>
 			<string>FrameScript Project</string>
 			<key>CFBundleTypeRole</key>

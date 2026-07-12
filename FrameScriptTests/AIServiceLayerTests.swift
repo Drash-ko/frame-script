@@ -312,7 +312,13 @@ final class AIServiceLayerTests: XCTestCase {
     }
 
     func testAutocompleteConfigurationEligibilityDistinguishesDisabledProviderAndMissingKeyMetadata() {
-        let appState = autocompleteAppState(provider: StaticResponseProvider(text: "unused"), hasStoredKey: false)
+        let defaults = UserDefaults(suiteName: "FrameScriptTests.autocomplete-eligibility.\(UUID().uuidString)")!
+        let configurationStore = AIProviderConfigurationStore(userDefaults: defaults)
+        let appState = autocompleteAppState(
+            provider: StaticResponseProvider(text: "unused"),
+            hasStoredKey: false,
+            configurationStore: configurationStore
+        )
 
         appState.settings.aiPreferences.provider = .disabled
         XCTAssertEqual(appState.autocompleteConfigurationEligibility, .blockedProviderDisabled)
@@ -320,7 +326,7 @@ final class AIServiceLayerTests: XCTestCase {
         appState.settings.aiPreferences.provider = .openAICompatible
         XCTAssertEqual(appState.autocompleteConfigurationEligibility, .blockedMissingKeyMetadata)
 
-        appState.aiProviderConfigurationStore.setHasStoredKey(true, for: .openAICompatible)
+        configurationStore.setHasStoredKey(true, for: .openAICompatible)
         XCTAssertEqual(appState.autocompleteConfigurationEligibility, .eligible)
     }
 
@@ -618,7 +624,14 @@ final class AIServiceLayerTests: XCTestCase {
     }
 
     func testValidatedCaretInsertionUsesCapturedRangeAndIsUndoable() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 160),
+            styleMask: [],
+            backing: .buffered,
+            defer: false
+        )
         let textView = NSTextView()
+        window.contentView?.addSubview(textView)
         textView.allowsUndo = true
         textView.string = "Before after"
         let snapshot = AutocompleteRequestSnapshot(
@@ -725,6 +738,7 @@ final class AIServiceLayerTests: XCTestCase {
         request.provider = .groq
         request.baseURL = OpenAICompatibleLLMProvider.defaultBaseURL(for: .groq)
         request.model = "llama-3.3-70b-versatile"
+        request.systemPrompt = PromptBuilder().systemPrompt(for: .analyze, language: .english)
 
         _ = try await provider.complete(request: request, apiKey: "secret")
 
@@ -911,11 +925,17 @@ final class AIServiceLayerTests: XCTestCase {
     private func autocompleteAppState(
         provider: any LLMProviderProtocol,
         errorCenter: ErrorCenter = ErrorCenter(),
-        hasStoredKey: Bool = true
+        hasStoredKey: Bool = true,
+        configurationStore: AIProviderConfigurationStore? = nil
     ) -> AppState {
-        let defaults = UserDefaults(suiteName: "FrameScriptTests.autocomplete.\(UUID().uuidString)")!
-        let configurationStore = AIProviderConfigurationStore(userDefaults: defaults)
-        configurationStore.setHasStoredKey(hasStoredKey, for: .openAICompatible)
+        let store: AIProviderConfigurationStore
+        if let configurationStore {
+            store = configurationStore
+        } else {
+            let defaults = UserDefaults(suiteName: "FrameScriptTests.autocomplete.\(UUID().uuidString)")!
+            store = AIProviderConfigurationStore(userDefaults: defaults)
+        }
+        store.setHasStoredKey(hasStoredKey, for: .openAICompatible)
         let appState = AppState(
             errorCenter: errorCenter,
             dependencies: AppDependencies(
@@ -925,7 +945,7 @@ final class AIServiceLayerTests: XCTestCase {
                 llmProvider: provider,
                 providerCredentials: ProviderCredentialSession(reader: { _ in "secret" })
             ),
-            aiProviderConfigurationStore: configurationStore
+            aiProviderConfigurationStore: store
         )
         appState.settings.aiPreferences.provider = .openAICompatible
         return appState
