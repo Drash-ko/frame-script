@@ -605,7 +605,7 @@ final class AppState {
     func autocompleteScript(context: AutocompleteContext) async -> AutocompleteResult {
         let provider = settings.aiPreferences.provider
         switch autocompleteConfigurationEligibility {
-        case .eligible:
+        case .eligible, .blockedCooldown:
             break
         case .blockedProviderDisabled:
             autocompleteIssue = nil
