@@ -774,13 +774,20 @@ private struct AISettings: View {
         .task { loadKeyMetadata() }
         .onChange(of: settings.aiPreferences.provider) { oldProvider, newProvider in
             saveProviderConfiguration(oldProvider)
+            appState.autocompleteProviderDidChange(from: oldProvider, to: newProvider)
             apiKey = ""
             status = ""
             loadKeyMetadata()
             loadProviderConfiguration(newProvider)
         }
-        .onChange(of: settings.aiPreferences.model) { _, _ in saveProviderConfiguration(settings.aiPreferences.provider) }
-        .onChange(of: settings.aiPreferences.baseURL) { _, _ in saveProviderConfiguration(settings.aiPreferences.provider) }
+        .onChange(of: settings.aiPreferences.model) { _, _ in
+            saveProviderConfiguration(settings.aiPreferences.provider)
+            appState.autocompleteProviderConfigurationDidChange(for: settings.aiPreferences.provider)
+        }
+        .onChange(of: settings.aiPreferences.baseURL) { _, _ in
+            saveProviderConfiguration(settings.aiPreferences.provider)
+            appState.autocompleteProviderConfigurationDidChange(for: settings.aiPreferences.provider)
+        }
     }
 
     private var keyStatusText: String {

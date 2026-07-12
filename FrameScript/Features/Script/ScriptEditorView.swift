@@ -10,6 +10,7 @@ struct ScriptEditorView: View {
     @State private var didApplyInitialNotesVisibility = false
     @State private var didManuallyToggleNotes = false
     @State private var autocompleteState: AutocompleteEditorState = .idle
+    @State private var autocompleteIssueDetails = AutocompleteIssueDetailsState()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -114,12 +115,22 @@ struct ScriptEditorView: View {
                     if appState.settings.editorPreferences.showSceneDuration && appState.settings.editorPreferences.showWordCount { Text("·") }
                     if appState.settings.editorPreferences.showWordCount { Text("\(wordCount) \(appState.localized("script.words"))") }
                 }
-                if case .temporarilyUnavailable(let reason) = autocompleteState {
-                    Image(systemName: "exclamationmark.circle")
-                        .foregroundStyle(theme.tertiaryText)
-                        .help(appState.localized(reason.localizationKey))
-                        .accessibilityLabel(appState.localized(reason.localizationKey))
-                        .onTapGesture { autocompleteState = .idle }
+                if let issue = activeAutocompleteIssue {
+                    Button {
+                        autocompleteIssueDetails.open()
+                    } label: {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.system(size: AutocompleteIssueIndicator.symbolSize))
+                            .foregroundStyle(theme.tertiaryText)
+                    }
+                    .buttonStyle(.plain)
+                    .help(autocompleteIssueHelp(issue))
+                    .accessibilityLabel(autocompleteIssueHelp(issue))
+                    .accessibilityHint(appState.localized("autocomplete.unavailable.detailsHint"))
+                    .popover(isPresented: $autocompleteIssueDetails.isPresented, arrowEdge: .bottom) {
+                        autocompleteIssueDetails(issue)
+                    }
+                    .padding(.leading, 4)
                 }
                 if shouldShowSectionTag {
                     Label("\(appState.localized("script.templateSection")): \(appState.displayName(scene.sectionType))", systemImage: "tag")
@@ -133,6 +144,49 @@ struct ScriptEditorView: View {
     }
 
     private var wordCount: Int { scene.scriptText.split { $0.isWhitespace || $0.isNewline }.count }
+
+    private var activeAutocompleteIssue: AutocompleteProviderIssue? {
+        guard let issue = appState.autocompleteIssue,
+              issue.provider == appState.settings.aiPreferences.provider else { return nil }
+        return issue
+    }
+
+    private func autocompleteIssueHelp(_ issue: AutocompleteProviderIssue) -> String {
+        "\(appState.localized("autocomplete.unavailable.title")): \(appState.localized(issue.reason.localizationKey))"
+    }
+
+    @ViewBuilder
+    private func autocompleteIssueDetails(_ issue: AutocompleteProviderIssue) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(appState.localized("autocomplete.unavailable.title"))
+                .font(.system(size: 13, weight: .semibold))
+            Text(autocompleteIssueMessage(issue))
+                .font(.system(size: 12))
+                .fixedSize(horizontal: false, vertical: true)
+            if let cooldownDeadline = issue.cooldownDeadline {
+                let remaining = max(1, Int(cooldownDeadline.timeIntervalSinceNow.rounded(.up)))
+                Text(String(format: appState.localized("autocomplete.unavailable.cooldown"), remaining))
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.secondaryText)
+            }
+        }
+        .frame(width: 290, alignment: .leading)
+        .padding(12)
+    }
+
+    private func autocompleteIssueMessage(_ issue: AutocompleteProviderIssue) -> String {
+        if issue.reason == .rateLimited {
+            return String(
+                format: appState.localized("autocomplete.unavailable.rateLimited.detail"),
+                appState.displayName(issue.provider)
+            )
+        }
+        return String(
+            format: appState.localized("autocomplete.unavailable.detail"),
+            appState.displayName(issue.provider),
+            appState.localized(issue.reason.localizationKey)
+        )
+    }
 
     private var productionMarkers: [ProductionTextMarker] {
         var markers: [ProductionTextMarker] = []
@@ -177,7 +231,18 @@ enum AutocompleteEditorState: Equatable {
     case idle
     case loading
     case suggestion(String)
-    case temporarilyUnavailable(AutocompleteUnavailableReason)
+}
+
+enum AutocompleteIssueIndicator {
+    static let symbolSize: CGFloat = 10
+}
+
+struct AutocompleteIssueDetailsState: Equatable {
+    var isPresented = false
+
+    mutating func open() {
+        isPresented = true
+    }
 }
 
 struct AutocompleteRequestSnapshot: Equatable {
@@ -307,6 +372,11 @@ struct LinkedScriptTextView: NSViewRepresentable {
             case programmaticTextView
         }
 
+        private struct EditTransaction {
+            let textRevision: Int
+            let expectedSelection: NSRange
+        }
+
         var parent: LinkedScriptTextView
         weak var view: MarkerTextContainerView?
         private(set) var changeOrigin: ChangeOrigin = .externalModel
@@ -321,7 +391,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
         private var autocompleteTask: Task<Void, Never>?
         private var autocompleteRevision = 0
         private var autocompleteSnapshot: AutocompleteRequestSnapshot?
-        private var expectedSelectionChangeAfterTextRevision: (textRevision: Int, range: NSRange)?
+        private var editTransaction: EditTransaction?
         private var observedAutocompleteProvider: AIProviderKind
         private var observedAutocompleteConfigurationVersion: Int
         init(parent: LinkedScriptTextView) {
@@ -402,6 +472,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
 
             modelRevision += 1
             textRevision += 1
+            editTransaction = nil
             pendingUserRevision = nil
             lastObservedModelValue = modelText
             changeOrigin = .programmaticTextView
@@ -423,6 +494,10 @@ struct LinkedScriptTextView: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             guard !isApplyingProgrammaticUpdate else { return }
             _ = emitCurrentText(from: textView, origin: .user, forceCommit: true)
+            editTransaction = EditTransaction(
+                textRevision: textRevision,
+                expectedSelection: textView.selectedRange()
+            )
             scheduleAutocomplete(for: textView)
             view?.invalidateMarkerGeometry()
             view?.needsDisplay = true
@@ -438,11 +513,11 @@ struct LinkedScriptTextView: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             let selectedRange = (notification.object as? NSTextView)?.selectedRange()
-            if let expectedSelectionChangeAfterTextRevision,
-               expectedSelectionChangeAfterTextRevision.textRevision == textRevision,
-               expectedSelectionChangeAfterTextRevision.range == selectedRange {
-                self.expectedSelectionChangeAfterTextRevision = nil
+            if let editTransaction,
+               editTransaction.textRevision == textRevision,
+               editTransaction.expectedSelection == selectedRange {
             } else {
+                editTransaction = nil
                 cancelAutocomplete()
             }
             captureRestorationState()
@@ -468,7 +543,6 @@ struct LinkedScriptTextView: NSViewRepresentable {
             autocompleteTask?.cancel()
             autocompleteTask = nil
             autocompleteSnapshot = nil
-            expectedSelectionChangeAfterTextRevision = nil
             view?.textView.ghostText = ""
             if clearStatus || parent.autocompleteState == .loading || isSuggestionVisible {
                 parent.autocompleteState = .idle
@@ -508,7 +582,6 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 selectionLength: selectedRange.length
             )
             autocompleteSnapshot = snapshot
-            expectedSelectionChangeAfterTextRevision = (textRevision, selectedRange)
             parent.autocompleteState = .loading
             autocompleteTask = Task { @MainActor [weak self] in
                 do { try await Task.sleep(for: self?.parent.autocompleteDelay ?? .zero) } catch { return }
@@ -521,8 +594,8 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 case .suggestion(let completion):
                     self.view?.textView.ghostText = completion
                     self.parent.autocompleteState = .suggestion(completion)
-                case .temporarilyUnavailable(let reason):
-                    self.parent.autocompleteState = .temporarilyUnavailable(reason)
+                case .temporarilyUnavailable:
+                    self.parent.autocompleteState = .idle
                 case .none:
                     self.parent.autocompleteState = .idle
                 }

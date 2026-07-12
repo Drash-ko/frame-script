@@ -144,6 +144,58 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertTrue(view.textView.ghostText.isEmpty)
     }
 
+    func testAutocompleteSurvivesRepeatedEditsAndPostEditSelectionNotificationsInOneEditor() async throws {
+        let box = TextBox("This is enough editor context")
+        let recorder = AutocompleteRequestRecorder()
+        let parent = makeRepresentable(
+            text: Binding(get: { box.value }, set: { box.value = $0 }),
+            autocomplete: { context in await recorder.request(context) }
+        )
+        let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
+        let view = MarkerTextContainerView()
+        coordinator.attach(to: view)
+        view.textView.delegate = coordinator
+        view.textView.string = box.value
+        view.textView.setSelectedRange(NSRange(location: (box.value as NSString).length, length: 0))
+
+        view.textView.keyDown(with: try keyEvent(keyCode: 0, characters: "a"))
+        try await waitUntil { recorder.requestCount == 1 }
+        recorder.respond(with: .suggestion("A beat follows."))
+        try await waitUntil { view.textView.ghostText == "A beat follows." }
+
+        view.textView.keyDown(with: try keyEvent(keyCode: 51, characters: "\u{7F}"))
+        try await waitUntil { recorder.requestCount == 2 }
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        coordinator.textViewDidChangeSelection(Notification(name: NSTextView.didChangeSelectionNotification, object: view.textView))
+        recorder.respond(with: .suggestion("Another beat follows."))
+        try await waitUntil { view.textView.ghostText == "Another beat follows." }
+
+        view.textView.keyDown(with: try keyEvent(keyCode: 0, characters: "a"))
+        try await waitUntil { recorder.requestCount == 3 }
+        recorder.respond(with: .suggestion("The scene continues."))
+        try await waitUntil { view.textView.ghostText == "The scene continues." }
+
+        view.textView.keyDown(with: try keyEvent(keyCode: 0, characters: "b"))
+        try await waitUntil { recorder.requestCount == 4 }
+
+        let length = (view.textView.string as NSString).length
+        view.textView.keyDown(with: try keyEvent(keyCode: 123, characters: "\u{F702}"))
+        try await waitUntil { view.textView.selectedRange().location == length - 1 }
+        recorder.respond(with: .suggestion("This must not appear."))
+        await Task.yield()
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
+
+        view.textView.keyDown(with: try keyEvent(keyCode: 0, characters: "c"))
+        try await waitUntil { recorder.requestCount == 5 }
+        recorder.respond(with: .suggestion("Forward delete works."))
+        try await waitUntil { view.textView.ghostText == "Forward delete works." }
+
+        let textBeforeForwardDelete = view.textView.string
+        view.textView.keyDown(with: try keyEvent(keyCode: 117, characters: "\u{F728}"))
+        try await waitUntil { view.textView.string != textBeforeForwardDelete }
+        try await waitUntil { recorder.requestCount == 6 }
+    }
+
     func testUntitledEditorEditUpdatesMetricsWithoutSaveAs() {
         let (appState, scene, _) = makeAppState(fileURL: nil)
         let (coordinator, view) = makeCoordinator(appState: appState, scene: scene)
@@ -544,5 +596,20 @@ final class EditorPersistenceTests: XCTestCase {
             }
             await Task.yield()
         }
+    }
+
+    private func keyEvent(keyCode: UInt16, characters: String) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: false,
+            keyCode: keyCode
+        ))
     }
 }

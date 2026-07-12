@@ -104,6 +104,12 @@ enum AutocompleteResult: Equatable {
     case temporarilyUnavailable(AutocompleteUnavailableReason)
 }
 
+struct AutocompleteProviderIssue: Equatable {
+    let provider: AIProviderKind
+    let reason: AutocompleteUnavailableReason
+    let cooldownDeadline: Date?
+}
+
 enum AutocompleteCompletion {
     static func sanitize(_ response: LLMResponse, context: AutocompleteContext) -> String? {
         guard !response.stoppedAtTokenLimit else { return nil }

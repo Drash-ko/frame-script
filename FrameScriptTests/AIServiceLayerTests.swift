@@ -272,6 +272,81 @@ final class AIServiceLayerTests: XCTestCase {
         XCTAssertEqual(provider.calls, 1)
     }
 
+    func testAutocompleteIssuePersistsAcrossTransientStatesAndCooldownUntilValidCompletion() async {
+        let provider = SequencedAutocompleteProvider(outcomes: [
+            .failure(.httpStatus(429, nil)),
+            .failure(.network(String(URLError.Code.cancelled.rawValue))),
+            .response(LLMResponse(text: "Sure, here is a continuation.")),
+            .response(LLMResponse(text: "The scene continues.")),
+            .failure(.httpStatus(429, nil))
+        ])
+        let appState = autocompleteAppState(provider: provider)
+        var now = Date(timeIntervalSinceReferenceDate: 1_000)
+        appState.autocompleteNow = { now }
+        let context = AutocompleteContext(prefix: "A narrator introduces the topic", suffix: "", sceneTitle: "Hook", language: .english)
+
+        XCTAssertEqual(await appState.autocompleteScript(context: context), .temporarilyUnavailable(.rateLimited))
+        let firstIssue = try! XCTUnwrap(appState.autocompleteIssue)
+        XCTAssertEqual(firstIssue.reason, .rateLimited)
+        XCTAssertEqual(firstIssue.provider, .openAICompatible)
+        XCTAssertNotNil(firstIssue.cooldownDeadline)
+
+        var requestState: AutocompleteEditorState = .loading
+        requestState = .idle // Typing, cancellation, and caret movement only change transient request state.
+        XCTAssertEqual(requestState, .idle)
+        XCTAssertEqual(appState.autocompleteIssue, firstIssue)
+        XCTAssertEqual(await appState.autocompleteScript(context: context), .temporarilyUnavailable(.rateLimited))
+        XCTAssertEqual(provider.calls, 1)
+
+        now = now.addingTimeInterval(31)
+        XCTAssertEqual(await appState.autocompleteScript(context: context), .none)
+        XCTAssertEqual(appState.autocompleteIssue, firstIssue)
+        XCTAssertEqual(await appState.autocompleteScript(context: context), .none)
+        XCTAssertEqual(appState.autocompleteIssue, firstIssue)
+
+        XCTAssertEqual(await appState.autocompleteScript(context: context), .suggestion(" The scene continues."))
+        XCTAssertNil(appState.autocompleteIssue)
+
+        XCTAssertEqual(await appState.autocompleteScript(context: context), .temporarilyUnavailable(.rateLimited))
+        XCTAssertEqual(appState.autocompleteIssue?.reason, .rateLimited)
+        XCTAssertEqual(provider.calls, 5)
+    }
+
+    func testAutocompleteIssueClearsForProviderConfigurationAndKeyChanges() async {
+        let appState = autocompleteAppState(provider: FailingAutocompleteProvider(error: .httpStatus(429, nil)))
+        let context = AutocompleteContext(prefix: "A narrator introduces the topic", suffix: "", sceneTitle: "Hook", language: .english)
+        _ = await appState.autocompleteScript(context: context)
+        XCTAssertNotNil(appState.autocompleteIssue)
+
+        appState.autocompleteProviderDidChange(from: .openAICompatible, to: .groq)
+        XCTAssertNil(appState.autocompleteIssue)
+
+        appState.autocompleteIssue = AutocompleteProviderIssue(provider: .groq, reason: .provider, cooldownDeadline: nil)
+        appState.invalidateProviderAPIKey(for: .groq)
+        XCTAssertNil(appState.autocompleteIssue)
+    }
+
+    func testAutocompleteIssueDetailLocalizationAndIndicatorSize() {
+        for language in [AppLanguage.english, .russian] {
+            XCTAssertFalse(L10n.tr("autocomplete.unavailable.title", language: language).isEmpty)
+            XCTAssertFalse(L10n.tr("autocomplete.unavailable.rateLimited.detail", language: language).isEmpty)
+            XCTAssertFalse(L10n.tr("autocomplete.unavailable.cooldown", language: language).isEmpty)
+        }
+        XCTAssertEqual(AutocompleteIssueIndicator.symbolSize, 10)
+    }
+
+    func testOpeningAutocompleteIssueDetailsDoesNotClearIssue() {
+        let issue = AutocompleteProviderIssue(provider: .googleAIStudio, reason: .rateLimited, cooldownDeadline: Date())
+        let appState = autocompleteAppState(provider: StaticResponseProvider(text: "unused"))
+        appState.autocompleteIssue = issue
+        var details = AutocompleteIssueDetailsState()
+
+        details.open()
+
+        XCTAssertTrue(details.isPresented)
+        XCTAssertEqual(appState.autocompleteIssue, issue)
+    }
+
     func testExplicitAnalyzeErrorStillUsesErrorCenter() async {
         let errorCenter = ErrorCenter()
         let appState = autocompleteAppState(provider: FailingAutocompleteProvider(error: .httpStatus(400, nil)), errorCenter: errorCenter)
@@ -757,5 +832,28 @@ private final class CapturingAutocompleteProvider: LLMProviderProtocol {
     func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
         self.request = request
         return response
+    }
+}
+
+@MainActor
+private final class SequencedAutocompleteProvider: LLMProviderProtocol {
+    enum Outcome {
+        case response(LLMResponse)
+        case failure(LLMProviderError)
+    }
+
+    private var outcomes: [Outcome]
+    private(set) var calls = 0
+
+    init(outcomes: [Outcome]) {
+        self.outcomes = outcomes
+    }
+
+    func complete(request: LLMRequest, apiKey: String) async throws -> LLMResponse {
+        calls += 1
+        switch outcomes.removeFirst() {
+        case .response(let response): return response
+        case .failure(let error): throw error
+        }
     }
 }

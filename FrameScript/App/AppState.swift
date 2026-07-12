@@ -97,8 +97,10 @@ final class AppState {
     private var autosaveTask: Task<Void, Never>?
     private var segmentRebuildTasks: [UUID: Task<Void, Never>] = [:]
     private var autocompleteCooldowns: [AIProviderKind: Date] = [:]
+    var autocompleteIssue: AutocompleteProviderIssue?
     var autocompleteConfigurationVersion = 0
     var autocompleteCompletionDelay: Duration = .milliseconds(280)
+    var autocompleteNow: () -> Date = Date.init
 #if DEBUG
     private var didApplyUITestLaunchArguments = false
 #endif
@@ -584,10 +586,15 @@ final class AppState {
     }
 
     func autocompleteScript(context: AutocompleteContext) async -> AutocompleteResult {
-        guard settings.aiPreferences.provider != .disabled,
-              !context.prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .none }
+        guard settings.aiPreferences.provider != .disabled else {
+            autocompleteIssue = nil
+            return .none
+        }
+        guard !context.prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .none }
         let provider = settings.aiPreferences.provider
-        if let cooldown = autocompleteCooldowns[provider], cooldown > .now {
+        let now = autocompleteNow()
+        if let cooldown = autocompleteCooldowns[provider], cooldown > now {
+            recordAutocompleteIssue(for: provider, reason: .rateLimited, cooldownDeadline: cooldown)
             return .temporarilyUnavailable(.rateLimited)
         }
         autocompleteCooldowns.removeValue(forKey: provider)
@@ -605,6 +612,9 @@ final class AppState {
                 maxTokens: min(settings.aiPreferences.maxTokens, 80)
             ), apiKey: apiKey)
             guard let completion = AutocompleteCompletion.sanitize(response, context: context) else { return .none }
+            if settings.aiPreferences.provider == provider {
+                autocompleteIssue = nil
+            }
             return .suggestion(completion)
         } catch is CancellationError {
             return .none
@@ -612,12 +622,43 @@ final class AppState {
             return .none
         } catch {
             let reason = AutocompleteUnavailableReason.from(error)
+            var cooldownDeadline: Date?
             if reason == .rateLimited {
                 let requestedDelay = AutocompleteRetryAfterCache.take(for: provider) ?? 30
-                autocompleteCooldowns[provider] = .now.addingTimeInterval(min(max(requestedDelay, 5), 300))
+                cooldownDeadline = autocompleteNow().addingTimeInterval(min(max(requestedDelay, 5), 300))
+                autocompleteCooldowns[provider] = cooldownDeadline
+            }
+            if settings.aiPreferences.provider == provider {
+                recordAutocompleteIssue(for: provider, reason: reason, cooldownDeadline: cooldownDeadline)
             }
             return .temporarilyUnavailable(reason)
         }
+    }
+
+    func autocompleteProviderDidChange(from oldProvider: AIProviderKind, to newProvider: AIProviderKind) {
+        autocompleteCooldowns.removeValue(forKey: oldProvider)
+        autocompleteIssue = nil
+        autocompleteConfigurationVersion += 1
+    }
+
+    func autocompleteProviderConfigurationDidChange(for provider: AIProviderKind) {
+        autocompleteCooldowns.removeValue(forKey: provider)
+        if autocompleteIssue?.provider == provider {
+            autocompleteIssue = nil
+        }
+        autocompleteConfigurationVersion += 1
+    }
+
+    private func recordAutocompleteIssue(
+        for provider: AIProviderKind,
+        reason: AutocompleteUnavailableReason,
+        cooldownDeadline: Date?
+    ) {
+        autocompleteIssue = AutocompleteProviderIssue(
+            provider: provider,
+            reason: reason,
+            cooldownDeadline: cooldownDeadline
+        )
     }
 
     func flushActiveEditorBoundary(saveImmediately: Bool = true) {
@@ -882,8 +923,7 @@ final class AppState {
 
     func invalidateProviderAPIKey(for provider: AIProviderKind) {
         dependencies.providerCredentials.invalidate(for: provider)
-        autocompleteCooldowns.removeValue(forKey: provider)
-        autocompleteConfigurationVersion += 1
+        autocompleteProviderConfigurationDidChange(for: provider)
     }
 
     private func providerAPIKeyIfNeeded() throws -> String {
