@@ -321,6 +321,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
         private var autocompleteTask: Task<Void, Never>?
         private var autocompleteRevision = 0
         private var autocompleteSnapshot: AutocompleteRequestSnapshot?
+        private var expectedSelectionChangeAfterTextRevision: (textRevision: Int, range: NSRange)?
         private var observedAutocompleteProvider: AIProviderKind
         private var observedAutocompleteConfigurationVersion: Int
         init(parent: LinkedScriptTextView) {
@@ -436,7 +437,14 @@ struct LinkedScriptTextView: NSViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
-            cancelAutocomplete()
+            let selectedRange = (notification.object as? NSTextView)?.selectedRange()
+            if let expectedSelectionChangeAfterTextRevision,
+               expectedSelectionChangeAfterTextRevision.textRevision == textRevision,
+               expectedSelectionChangeAfterTextRevision.range == selectedRange {
+                self.expectedSelectionChangeAfterTextRevision = nil
+            } else {
+                cancelAutocomplete()
+            }
             captureRestorationState()
         }
 
@@ -460,6 +468,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
             autocompleteTask?.cancel()
             autocompleteTask = nil
             autocompleteSnapshot = nil
+            expectedSelectionChangeAfterTextRevision = nil
             view?.textView.ghostText = ""
             if clearStatus || parent.autocompleteState == .loading || isSuggestionVisible {
                 parent.autocompleteState = .idle
@@ -499,6 +508,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 selectionLength: selectedRange.length
             )
             autocompleteSnapshot = snapshot
+            expectedSelectionChangeAfterTextRevision = (textRevision, selectedRange)
             parent.autocompleteState = .loading
             autocompleteTask = Task { @MainActor [weak self] in
                 do { try await Task.sleep(for: self?.parent.autocompleteDelay ?? .zero) } catch { return }

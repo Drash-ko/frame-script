@@ -21,6 +21,23 @@ final class EditorPersistenceTests: XCTestCase {
         var isActualFirstResponder: Bool { true }
     }
 
+    private final class AutocompleteRequestRecorder {
+        private(set) var requestCount = 0
+        private var continuations: [CheckedContinuation<AutocompleteResult, Never>] = []
+
+        func request(_ context: AutocompleteContext) async -> AutocompleteResult {
+            requestCount += 1
+            return await withCheckedContinuation { continuation in
+                continuations.append(continuation)
+            }
+        }
+
+        func respond(with result: AutocompleteResult) {
+            precondition(!continuations.isEmpty)
+            continuations.removeFirst().resume(returning: result)
+        }
+    }
+
     func testUserEditSynchronouslyUpdatesModel() {
         let box = TextBox("Old")
         let (coordinator, view) = makeCoordinator(box: box)
@@ -93,6 +110,38 @@ final class EditorPersistenceTests: XCTestCase {
 
         XCTAssertEqual(scene.scriptText, textView.string)
         XCTAssertEqual(scene.estimatedDuration, DurationEstimator.estimate(text: textView.string, wordsPerMinute: 150))
+    }
+
+    func testNativeTextEditKeepsAutocompleteThroughItsSelectionChangeAndCaretMovementCancels() async throws {
+        let box = TextBox("This is enough editor context")
+        let recorder = AutocompleteRequestRecorder()
+        let parent = makeRepresentable(
+            text: Binding(get: { box.value }, set: { box.value = $0 }),
+            autocomplete: { context in await recorder.request(context) }
+        )
+        let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
+        let view = MarkerTextContainerView()
+        coordinator.attach(to: view)
+        view.textView.delegate = coordinator
+        view.textView.string = box.value
+        view.textView.setSelectedRange(NSRange(location: (box.value as NSString).length, length: 0))
+
+        view.textView.insertText("!", replacementRange: view.textView.selectedRange())
+        try await waitUntil { recorder.requestCount == 1 }
+        recorder.respond(with: .suggestion("The next beat lands."))
+        try await waitUntil { view.textView.ghostText == "The next beat lands." }
+
+        XCTAssertEqual(recorder.requestCount, 1)
+        XCTAssertEqual(view.textView.ghostText, "The next beat lands.")
+
+        view.textView.insertText("?", replacementRange: view.textView.selectedRange())
+        try await waitUntil { recorder.requestCount == 2 }
+        view.textView.setSelectedRange(NSRange(location: 0, length: 0))
+        recorder.respond(with: .suggestion("The next beat lands."))
+        await Task.yield()
+
+        XCTAssertEqual(recorder.requestCount, 2)
+        XCTAssertTrue(view.textView.ghostText.isEmpty)
     }
 
     func testUntitledEditorEditUpdatesMetricsWithoutSaveAs() {
@@ -398,12 +447,19 @@ final class EditorPersistenceTests: XCTestCase {
         loadState: @escaping () -> ScriptEditorRestorationState? = { nil },
         saveState: @escaping (ScriptEditorRestorationState) -> Void = { _ in },
         onTextCommitted: @escaping (String) -> Void = { _ in },
+        autocomplete: @escaping (AutocompleteContext) async -> AutocompleteResult = { _ in .none },
         onTeardown: @escaping () -> Void = {}
     ) -> LinkedScriptTextView {
         LinkedScriptTextView(
             text: text,
             sceneID: UUID(),
             editorIdentity: UUID(),
+            sceneTitle: "Scene",
+            autocompleteProvider: .openAI,
+            autocompleteConfigurationVersion: 0,
+            autocompleteDelay: .zero,
+            autocompleteFallbackLanguage: .english,
+            autocompleteState: .constant(.idle),
             loadRestorationState: loadState,
             saveRestorationState: saveState,
             markers: [],
@@ -420,7 +476,7 @@ final class EditorPersistenceTests: XCTestCase {
             addBRollLabel: "B-roll",
             addEditingLabel: "Editing",
             onTextCommitted: onTextCommitted,
-            autocomplete: { _ in nil },
+            autocomplete: autocomplete,
             onTeardown: onTeardown,
             markerAction: { _, _ in },
             addMarkerAction: { _, _ in }
@@ -473,5 +529,20 @@ final class EditorPersistenceTests: XCTestCase {
             if let match = firstSubview(of: type, in: subview) { return match }
         }
         return nil
+    }
+
+    private func waitUntil(
+        _ condition: @escaping @MainActor () -> Bool,
+        timeout: Duration = .seconds(1)
+    ) async throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        while !condition() {
+            guard clock.now - start < timeout else {
+                XCTFail("Timed out waiting for editor delegate flow")
+                return
+            }
+            await Task.yield()
+        }
     }
 }
