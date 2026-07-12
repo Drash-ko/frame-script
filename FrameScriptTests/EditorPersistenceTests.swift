@@ -1097,6 +1097,63 @@ final class EditorPersistenceTests: XCTestCase {
         }
     }
 
+    func testInsertionCaretCentersInInteriorEmptyParagraph() {
+        let text = "First\n\nSecond"
+        let view = makeCaretTestView(text: text, fontSize: 18, lineSpacing: 16)
+        let emptyParagraph = (text as NSString).range(of: "\n\n").location + 1
+        let emptySystemRect = simulatedSystemCaretRect(in: view.textView, at: emptyParagraph)
+        let emptyCaretRect = normalizedCaretRect(in: view.textView, at: emptyParagraph, systemRect: emptySystemRect)
+
+        XCTAssertEqual(emptyCaretRect.height, caretGlyphHeight(in: view.textView), accuracy: 0.5)
+        XCTAssertEqual(emptyCaretRect.midY, emptySystemRect.midY, accuracy: 0.5)
+
+        let secondParagraph = (text as NSString).range(of: "Second").location
+        for index in [0, secondParagraph] {
+            let systemRect = simulatedSystemCaretRect(in: view.textView, at: index)
+            let caretRect = normalizedCaretRect(in: view.textView, at: index, systemRect: systemRect)
+            XCTAssertEqual(caretRect.minY, expectedCaretOriginY(in: view.textView, at: index, systemRect: systemRect), accuracy: 0.5)
+        }
+    }
+
+    func testInsertionCaretCentersEachConsecutiveInteriorEmptyParagraph() {
+        let text = "First\n\n\nSecond"
+        let view = makeCaretTestView(text: text, fontSize: 18, lineSpacing: 16)
+        let firstEmptyParagraph = (text as NSString).range(of: "\n\n\n").location + 1
+
+        for index in [firstEmptyParagraph, firstEmptyParagraph + 1] {
+            let systemRect = simulatedSystemCaretRect(in: view.textView, at: index)
+            let caretRect = normalizedCaretRect(in: view.textView, at: index, systemRect: systemRect)
+            XCTAssertEqual(caretRect.midY, systemRect.midY, accuracy: 0.5)
+            XCTAssertEqual(caretRect.height, caretGlyphHeight(in: view.textView), accuracy: 0.5)
+        }
+    }
+
+    func testInsertionCaretCentersInteriorEmptyParagraphWithCarriageReturns() {
+        let text = "First\r\rSecond"
+        let view = makeCaretTestView(text: text, fontSize: 18, lineSpacing: 16)
+        let emptyParagraph = (text as NSString).range(of: "\r\r").location + 1
+        let systemRect = simulatedSystemCaretRect(in: view.textView, at: emptyParagraph)
+        let caretRect = normalizedCaretRect(in: view.textView, at: emptyParagraph, systemRect: systemRect)
+
+        XCTAssertEqual(caretRect.midY, systemRect.midY, accuracy: 0.5)
+    }
+
+    func testInsertionCaretKeepsInteriorEmptyParagraphCenteredAcrossLineSpacing() {
+        let text = "First\n\nSecond"
+        let emptyParagraph = (text as NSString).range(of: "\n\n").location + 1
+        var heights: [CGFloat] = []
+
+        for lineSpacing in [CGFloat(0), 16] {
+            let view = makeCaretTestView(text: text, fontSize: 18, lineSpacing: lineSpacing)
+            let systemRect = simulatedSystemCaretRect(in: view.textView, at: emptyParagraph)
+            let caretRect = normalizedCaretRect(in: view.textView, at: emptyParagraph, systemRect: systemRect)
+            heights.append(caretRect.height)
+            XCTAssertEqual(caretRect.midY, systemRect.midY, accuracy: 0.5, "line spacing \(lineSpacing)")
+        }
+
+        XCTAssertEqual(heights[0], heights[1], accuracy: 0.5)
+    }
+
     func testInsertionCaretStaysValidForEmptyAndMixedUnicodeText() {
         let empty = makeCaretTestView(text: "", fontSize: 18, lineSpacing: 16)
         let emptyRect = normalizedCaretRect(in: empty.textView, at: 0, systemRect: simulatedSystemCaretRect(in: empty.textView, at: 0))
@@ -1125,6 +1182,22 @@ final class EditorPersistenceTests: XCTestCase {
             XCTAssertEqual(caretRect.minY, expectedCaretOriginY(in: view.textView, at: end, systemRect: systemRect), accuracy: 0.5, text)
             XCTAssertTrue(caretRect.origin.x.isFinite && caretRect.origin.y.isFinite, text)
         }
+    }
+
+    func testInsertionCaretKeepsEmptyDocumentAndTrailingNewlineBehavior() {
+        let empty = makeCaretTestView(text: "", fontSize: 18, lineSpacing: 16)
+        let emptySystemRect = simulatedSystemCaretRect(in: empty.textView, at: 0)
+        let emptyCaretRect = normalizedCaretRect(in: empty.textView, at: 0, systemRect: emptySystemRect)
+        XCTAssertEqual(emptyCaretRect.minY, emptySystemRect.minY, accuracy: 0.5)
+        XCTAssertEqual(emptyCaretRect.height, caretGlyphHeight(in: empty.textView), accuracy: 0.5)
+
+        let text = "First\n"
+        let trailing = makeCaretTestView(text: text, fontSize: 18, lineSpacing: 16)
+        let index = (text as NSString).length
+        let trailingSystemRect = simulatedSystemCaretRect(in: trailing.textView, at: index)
+        let trailingCaretRect = normalizedCaretRect(in: trailing.textView, at: index, systemRect: trailingSystemRect)
+        XCTAssertEqual(trailingCaretRect.minY, expectedCaretOriginY(in: trailing.textView, at: index, systemRect: trailingSystemRect), accuracy: 0.5)
+        XCTAssertEqual(trailingCaretRect.height, caretGlyphHeight(in: trailing.textView), accuracy: 0.5)
     }
 
     func testTypographyUpdatesCaretWithoutRecreatingTextViewOrChangingOrigins() {

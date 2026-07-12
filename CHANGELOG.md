@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- Centered the normalized insertion caret within interior empty paragraphs without changing its font-based height.
 - Grouped Script Visuals and Editing marker anchors by contiguous or whitespace-only text ranges before TextKit layout, preventing separate marked fragments from merging while preserving fixed right-side lanes and per-item hit targets.
 - Corrected Script insertion-caret geometry by translating TextKit glyph bounds into text-view coordinates, including the editor inset, while preserving native behavior.
 - Distinguished DEBUG-only inline autocomplete diagnostics for disabled providers, missing stored-key metadata, and active cooldowns.

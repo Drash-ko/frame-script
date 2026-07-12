@@ -981,6 +981,10 @@ final class PlaceholderTextView: NSTextView {
         let height = min(systemRect.height, glyphHeight)
         var caretRect = systemRect
         caretRect.size.height = height
+        if isEmptyParagraph(at: selectedRange().location) {
+            caretRect.origin.y = systemRect.midY - height / 2
+            return caretRect
+        }
         if let insertionLine = insertionCaretLine(at: selectedRange().location, font: font) {
             let lineRect = insertionLine.rect.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
             caretRect.origin.y = textContainerOrigin.y + insertionLine.baseline - font.ascender
@@ -1092,6 +1096,21 @@ final class PlaceholderTextView: NSTextView {
             }
         }
         return typingAttributes[.font] as? NSFont ?? font
+    }
+
+    private func isEmptyParagraph(at characterIndex: Int) -> Bool {
+        let text = string as NSString
+        let length = text.length
+        let insertion = min(max(0, characterIndex), length)
+        guard length > 0, insertion < length else { return false }
+
+        let previousIsNewline = insertion == 0 || isParagraphBreak(text.character(at: insertion - 1))
+        let currentIsNewline = isParagraphBreak(text.character(at: insertion))
+        return previousIsNewline && currentIsNewline
+    }
+
+    private func isParagraphBreak(_ character: unichar) -> Bool {
+        character == 10 || character == 13
     }
 
     private func insertionCaretLine(at characterIndex: Int, font: NSFont) -> (rect: NSRect, baseline: CGFloat)? {
