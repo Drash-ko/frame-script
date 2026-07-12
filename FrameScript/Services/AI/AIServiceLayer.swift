@@ -120,10 +120,14 @@ enum AutocompleteCompletion {
         guard normalizedPrefix.isEmpty || !normalizedPrefix.hasSuffix(lowercased) else { return nil }
 
         let suffix = context.suffix
-        let overlap = (1...min(candidate.count, suffix.count)).reversed().first { length in
+        let maximumOverlap = min(candidate.count, suffix.count)
+
+        let overlap = stride(from: maximumOverlap, through: 1, by: -1).first { length in
             candidate.suffix(length).caseInsensitiveCompare(suffix.prefix(length)) == .orderedSame
         } ?? 0
-        let completion = overlap == 0 ? candidate : String(candidate.dropLast(overlap))
+        let completion = overlap == 0
+            ? candidate
+            : String(candidate.dropLast(overlap))
         guard !completion.isEmpty else { return nil }
         if context.prefix.last?.isWhitespace == true || completion.first?.isWhitespace == true { return completion }
         return " " + completion

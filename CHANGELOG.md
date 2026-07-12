@@ -21,6 +21,7 @@
 
 ### Fixed
 
+- Prevented autocomplete sanitization from crashing at the end of a document when the suffix is empty.
 - Used Groq's JSON object response mode for Llama scene analysis while retaining strict schemas only for explicitly supported provider/model configurations.
 - Kept autocomplete failures out of global alerts, scoped requests and Tab insertion to their originating caret, and wrapped ghost completions with TextKit layout.
 - Treated cancelled inline AI autocomplete requests as silent cancellations instead of network failures.

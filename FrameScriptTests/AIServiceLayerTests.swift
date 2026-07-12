@@ -264,6 +264,60 @@ final class AIServiceLayerTests: XCTestCase {
         }
     }
 
+    func testAutocompleteCompletionSanitizeEmptySuffixReturnsCandidate() {
+        let context = AutocompleteContext(prefix: "Before the caret ", suffix: "", sceneTitle: "Hook", language: .english)
+
+        XCTAssertEqual(
+            AutocompleteCompletion.sanitize(LLMResponse(text: "continues here"), context: context),
+            "continues here"
+        )
+    }
+
+    func testAutocompleteCompletionSanitizeNoOverlapReturnsCandidate() {
+        let context = AutocompleteContext(prefix: "Before the caret ", suffix: "different text", sceneTitle: "Hook", language: .english)
+
+        XCTAssertEqual(
+            AutocompleteCompletion.sanitize(LLMResponse(text: "continues here"), context: context),
+            "continues here"
+        )
+    }
+
+    func testAutocompleteCompletionSanitizePartialCaseInsensitiveOverlap() {
+        let context = AutocompleteContext(prefix: "Before the caret ", suffix: "world ahead", sceneTitle: "Hook", language: .english)
+
+        XCTAssertEqual(
+            AutocompleteCompletion.sanitize(LLMResponse(text: "helloWORLD"), context: context),
+            "hello"
+        )
+    }
+
+    func testAutocompleteCompletionSanitizeFullOverlapReturnsNil() {
+        let context = AutocompleteContext(prefix: "Before the caret ", suffix: "WORLD ahead", sceneTitle: "Hook", language: .english)
+
+        XCTAssertNil(AutocompleteCompletion.sanitize(LLMResponse(text: "world"), context: context))
+    }
+
+    func testAutocompleteCompletionSanitizeEmptyCandidateReturnsNil() {
+        let context = AutocompleteContext(prefix: "Before the caret ", suffix: "next", sceneTitle: "Hook", language: .english)
+
+        XCTAssertNil(AutocompleteCompletion.sanitize(LLMResponse(text: ""), context: context))
+    }
+
+    func testAutocompleteCompletionSanitizeEndOfDocumentRegression() {
+        let context = AutocompleteContext(
+            prefix: "Всім привіт, мене звати Микита. Це моє перше відео на цьому каналі.",
+            suffix: "",
+            sceneTitle: "Нова сцена",
+            language: .russian
+        )
+        let response = LLMResponse(
+            text: " Я хочу розповісти про свій досвід використання різних технологій.",
+            finishReason: "stop"
+        )
+
+        XCTAssertEqual(AutocompleteCompletion.sanitize(response, context: context), response.text)
+    }
+
     func testCaretMovementRejectsStaleAutocompleteSnapshot() {
         let sceneID = UUID()
         let editorID = UUID()
