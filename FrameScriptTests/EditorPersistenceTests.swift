@@ -1057,10 +1057,10 @@ final class EditorPersistenceTests: XCTestCase {
         let view = makeCaretTestView(text: "First line\nSecond line", fontSize: 16, lineSpacing: 4)
         let systemRect = simulatedSystemCaretRect(in: view.textView, at: 0)
         let caretRect = normalizedCaretRect(in: view.textView, at: 0, systemRect: systemRect)
-        let fontHeight = renderedLineHeight(in: view.textView)
+        let glyphHeight = caretGlyphHeight(in: view.textView)
 
-        XCTAssertEqual(caretRect.height, fontHeight, accuracy: 0.5)
-        XCTAssertGreaterThan(systemRect.height, fontHeight + 3)
+        XCTAssertEqual(caretRect.height, glyphHeight, accuracy: 0.5)
+        XCTAssertGreaterThan(systemRect.height, glyphHeight + 3)
         XCTAssertLessThan(caretRect.height, systemRect.height - 3)
     }
 
@@ -1071,10 +1071,10 @@ final class EditorPersistenceTests: XCTestCase {
             let secondIndex = (view.textView.string as NSString).range(of: "Second").location
             let secondRect = simulatedSystemCaretRect(in: view.textView, at: secondIndex)
             let caretRect = normalizedCaretRect(in: view.textView, at: 0, systemRect: firstRect)
-            let fontHeight = renderedLineHeight(in: view.textView)
+            let glyphHeight = caretGlyphHeight(in: view.textView)
 
-            XCTAssertEqual(caretRect.height, fontHeight, accuracy: 0.5, "font size \(size)")
-            XCTAssertGreaterThan(secondRect.minY - firstRect.minY, fontHeight, "line spacing remains active at \(size)")
+            XCTAssertEqual(caretRect.height, glyphHeight, accuracy: 0.5, "font size \(size)")
+            XCTAssertGreaterThan(secondRect.minY - firstRect.minY, glyphHeight, "line spacing remains active at \(size)")
             XCTAssertLessThan(caretRect.height, firstRect.height, "caret excludes spacing at \(size)")
         }
     }
@@ -1100,7 +1100,7 @@ final class EditorPersistenceTests: XCTestCase {
     func testInsertionCaretStaysValidForEmptyAndMixedUnicodeText() {
         let empty = makeCaretTestView(text: "", fontSize: 18, lineSpacing: 16)
         let emptyRect = normalizedCaretRect(in: empty.textView, at: 0, systemRect: simulatedSystemCaretRect(in: empty.textView, at: 0))
-        XCTAssertEqual(emptyRect.height, renderedLineHeight(in: empty.textView), accuracy: 0.5)
+        XCTAssertEqual(emptyRect.height, caretGlyphHeight(in: empty.textView), accuracy: 0.5)
 
         let text = "Latin Привет 😀\n"
         let view = makeCaretTestView(text: text, fontSize: 18, lineSpacing: 16)
@@ -1121,7 +1121,7 @@ final class EditorPersistenceTests: XCTestCase {
             let systemRect = simulatedSystemCaretRect(in: view.textView, at: end)
             let caretRect = normalizedCaretRect(in: view.textView, at: end, systemRect: systemRect)
 
-            XCTAssertEqual(caretRect.height, renderedLineHeight(in: view.textView), accuracy: 0.5, text)
+            XCTAssertEqual(caretRect.height, caretGlyphHeight(in: view.textView), accuracy: 0.5, text)
             XCTAssertEqual(caretRect.minY, expectedCaretOriginY(in: view.textView, at: end, systemRect: systemRect), accuracy: 0.5, text)
             XCTAssertTrue(caretRect.origin.x.isFinite && caretRect.origin.y.isFinite, text)
         }
@@ -1141,7 +1141,7 @@ final class EditorPersistenceTests: XCTestCase {
         let updatedGhostX = textView.insertionPoint(at: 0, layoutManager: textView.layoutManager!, textContainer: textView.textContainer!).x
 
         XCTAssertTrue(textView === view.textView)
-        XCTAssertEqual(caretRect.height, renderedLineHeight(in: textView), accuracy: 0.5)
+        XCTAssertEqual(caretRect.height, caretGlyphHeight(in: textView), accuracy: 0.5)
         XCTAssertEqual(textView.textContainerOrigin, originalOrigin)
         XCTAssertEqual(textView.placeholderOrigin, originalPlaceholderOrigin)
         XCTAssertEqual(updatedGhostX, originalGhostX, accuracy: 0.5)
@@ -1406,13 +1406,19 @@ final class EditorPersistenceTests: XCTestCase {
         layout.ensureLayout(for: container)
         let length = (textView.string as NSString).length
         if index == length, !layout.extraLineFragmentRect.isEmpty {
-            return layout.extraLineFragmentRect
+            return layout.extraLineFragmentRect.offsetBy(dx: textView.textContainerOrigin.x, dy: textView.textContainerOrigin.y)
         }
         guard length > 0 else {
-            return NSRect(x: 0, y: 0, width: 1, height: layout.defaultLineHeight(for: textView.font!) + (textView.defaultParagraphStyle?.lineSpacing ?? 0))
+            return NSRect(
+                x: textView.textContainerOrigin.x,
+                y: textView.textContainerOrigin.y,
+                width: 1,
+                height: layout.defaultLineHeight(for: textView.font!) + (textView.defaultParagraphStyle?.lineSpacing ?? 0)
+            )
         }
         let glyph = layout.glyphIndexForCharacter(at: min(max(0, index), length - 1))
         return layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            .offsetBy(dx: textView.textContainerOrigin.x, dy: textView.textContainerOrigin.y)
     }
 
     private func lineStartIndices(in textView: PlaceholderTextView) -> [Int] {
@@ -1432,27 +1438,30 @@ final class EditorPersistenceTests: XCTestCase {
 
     private func expectedCaretOriginY(in textView: PlaceholderTextView, at index: Int, systemRect: NSRect) -> CGFloat {
         let font = textView.font!
-        let height = renderedLineHeight(in: textView)
+        let height = caretGlyphHeight(in: textView)
         let length = (textView.string as NSString).length
         let layout = textView.layoutManager!
         if index == length {
             if length == 0 || (textView.string as NSString).character(at: length - 1) == 10 || (textView.string as NSString).character(at: length - 1) == 13 {
-                let line = layout.extraLineFragmentRect
+                let line = layout.extraLineFragmentRect.offsetBy(dx: textView.textContainerOrigin.x, dy: textView.textContainerOrigin.y)
                 return min(max(line.minY, line.minY), line.maxY - height)
             }
             let glyph = layout.glyphIndexForCharacter(at: length - 1)
             let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-            let baseline = line.minY + layout.location(forGlyphAt: glyph).y
-            return min(max(baseline - font.ascender, line.minY), line.maxY - height)
+                .offsetBy(dx: textView.textContainerOrigin.x, dy: textView.textContainerOrigin.y)
+            let glyphTop = textView.textContainerOrigin.y + layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY + layout.location(forGlyphAt: glyph).y - font.ascender
+            return min(max(glyphTop, line.minY), line.maxY - height)
         }
         let glyph = layout.glyphIndexForCharacter(at: index)
         let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-        let baseline = line.minY + layout.location(forGlyphAt: glyph).y
-        return min(max(baseline - font.ascender, line.minY), line.maxY - height)
+            .offsetBy(dx: textView.textContainerOrigin.x, dy: textView.textContainerOrigin.y)
+        let glyphTop = textView.textContainerOrigin.y + layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY + layout.location(forGlyphAt: glyph).y - font.ascender
+        return min(max(glyphTop, line.minY), line.maxY - height)
     }
 
-    private func renderedLineHeight(in textView: PlaceholderTextView) -> CGFloat {
-        textView.layoutManager!.defaultLineHeight(for: textView.font!)
+    private func caretGlyphHeight(in textView: PlaceholderTextView) -> CGFloat {
+        let font = textView.font!
+        return font.ascender - font.descender
     }
 
     private func makeCoordinator(box: TextBox) -> (LinkedScriptTextView.Coordinator, MarkerTextContainerView) {

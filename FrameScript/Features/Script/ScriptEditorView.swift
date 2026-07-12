@@ -973,16 +973,18 @@ final class PlaceholderTextView: NSTextView {
         super.drawInsertionPoint(in: normalizedInsertionCaretRect(rect), color: color, turnedOn: flag)
     }
 
-    /// Keeps the native insertion point aligned to its TextKit insertion line when paragraph spacing enlarges a line fragment.
+    /// Keeps the native insertion point at glyph height when paragraph spacing enlarges a TextKit line fragment.
     func normalizedInsertionCaretRect(_ systemRect: NSRect) -> NSRect {
         guard systemRect.height > 0, let font = activeCaretFont() else { return systemRect }
 
-        let height = max(1, layoutManager?.defaultLineHeight(for: font) ?? (font.ascender - font.descender))
+        let glyphHeight = max(1, font.ascender - font.descender)
+        let height = min(systemRect.height, glyphHeight)
         var caretRect = systemRect
         caretRect.size.height = height
         if let insertionLine = insertionCaretLine(at: selectedRange().location, font: font) {
-            caretRect.origin.y = insertionLine.baseline - font.ascender
-            caretRect.origin.y = min(max(caretRect.origin.y, insertionLine.rect.minY), insertionLine.rect.maxY - height)
+            let lineRect = insertionLine.rect.offsetBy(dx: textContainerOrigin.x, dy: textContainerOrigin.y)
+            caretRect.origin.y = textContainerOrigin.y + insertionLine.baseline - font.ascender
+            caretRect.origin.y = min(max(caretRect.origin.y, lineRect.minY), lineRect.maxY - height)
         } else {
             caretRect.origin.y = min(max(caretRect.origin.y, systemRect.minY), systemRect.maxY - height)
         }
