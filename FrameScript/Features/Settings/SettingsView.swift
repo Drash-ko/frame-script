@@ -145,7 +145,7 @@ private struct GeneralSettings: View {
             settings.generalPreferences = AppSettings.defaults.generalPreferences
             appState.rebuildProductionSegments()
         }) {
-            SettingsRow(appState.localized("settings.language"), help: appState.localized("help.language")) {
+            SettingsRow(appState.localized("settings.language")) {
                 Picker("", selection: $settings.generalPreferences.language) {
                     ForEach(AppLanguage.allCases) { language in
                         Text(language.displayName).tag(language)
@@ -155,28 +155,16 @@ private struct GeneralSettings: View {
                 .frame(width: 180)
             }
 
-            SettingsRow(appState.localized("settings.showBrowserLaunch"), help: appState.localized("help.showBrowserLaunch")) {
-                Toggle("", isOn: $settings.generalPreferences.showProjectBrowserOnLaunch)
-                    .labelsHidden()
-                    .onChange(of: settings.generalPreferences.showProjectBrowserOnLaunch) { _, newValue in
-                        if newValue {
-                            settings.generalPreferences.restoreLastProjectOnLaunch = false
-                        }
-                    }
+            SettingsRow(appState.localized("settings.launchBehavior")) {
+                Picker("", selection: $settings.generalPreferences.launchBehavior) {
+                    Text(appState.localized("launch.showProjectBrowser")).tag(LaunchBehavior.showProjectBrowser)
+                    Text(appState.localized("launch.restoreLastProject")).tag(LaunchBehavior.restoreLastProject)
+                }
+                .labelsHidden()
+                .frame(width: 220)
             }
 
-            SettingsRow(appState.localized("settings.restoreLast"), help: appState.localized("help.restoreLast")) {
-                Toggle("", isOn: $settings.generalPreferences.restoreLastProjectOnLaunch)
-                    .labelsHidden()
-                    .disabled(settings.generalPreferences.showProjectBrowserOnLaunch)
-                    .onChange(of: settings.generalPreferences.restoreLastProjectOnLaunch) { _, newValue in
-                        if newValue {
-                            settings.generalPreferences.showProjectBrowserOnLaunch = false
-                        }
-                    }
-            }
-
-            SettingsRow(appState.localized("settings.autosave"), help: appState.localized("help.autosave")) {
+            SettingsRow(appState.localized("settings.autosave")) {
                 Toggle("", isOn: $settings.generalPreferences.autosaveEnabled)
                     .labelsHidden()
             }
@@ -186,7 +174,7 @@ private struct GeneralSettings: View {
                     .disabled(!settings.generalPreferences.autosaveEnabled)
             }
 
-            SettingsRow(appState.localized("settings.defaultTemplate"), help: appState.localized("help.defaultTemplate"), highlightKey: "general.defaultTemplate") {
+            SettingsRow(appState.localized("settings.defaultTemplate"), highlightKey: "general.defaultTemplate") {
                 Picker("", selection: $settings.generalPreferences.defaultNewProjectTemplate) {
                     ForEach(appState.scriptTemplates()) { template in
                         Text(appState.displayName(template)).tag(template.name)
@@ -196,7 +184,7 @@ private struct GeneralSettings: View {
                 .frame(width: 220)
             }
 
-            SettingsRow(appState.localized("settings.blankProjectStart"), help: appState.localized("help.blankProjectStart")) {
+            SettingsRow(appState.localized("settings.blankProjectStart")) {
                 Picker("", selection: $settings.generalPreferences.blankProjectStart) {
                     ForEach(BlankProjectStart.allCases) { option in
                         Text(blankProjectStartTitle(option)).tag(option)
@@ -206,7 +194,7 @@ private struct GeneralSettings: View {
                 .frame(width: 180)
             }
 
-            SettingsRow(appState.localized("settings.confirmDelete"), help: appState.localized("help.confirmDelete")) {
+            SettingsRow(appState.localized("settings.confirmDelete")) {
                 Toggle("", isOn: $settings.generalPreferences.confirmBeforeDeleting)
                     .labelsHidden()
             }
@@ -232,10 +220,9 @@ private struct AppearanceSettings: View {
             settings.windowPreferences.sidebarDefaultVisible = AppSettings.defaults.windowPreferences.sidebarDefaultVisible
             settings.windowPreferences.sidebarWidth = AppSettings.defaults.windowPreferences.sidebarWidth
             settings.windowPreferences.focusModeBehavior = AppSettings.defaults.windowPreferences.focusModeBehavior
-            settings.editorPreferences.showFooterShortcuts = AppSettings.defaults.editorPreferences.showFooterShortcuts
             settings.editorPreferences.showAIReviewPanel = AppSettings.defaults.editorPreferences.showAIReviewPanel
         }) {
-            SettingsRow(appState.localized("settings.theme"), help: appState.localized("help.theme"), highlightKey: "appearance.theme") {
+            SettingsRow(appState.localized("settings.theme"), highlightKey: "appearance.theme") {
                 Picker("", selection: $settings.theme) {
                     ForEach(AppearanceTheme.allCases) { option in
                         Text(appState.displayName(option)).tag(option)
@@ -245,17 +232,17 @@ private struct AppearanceSettings: View {
                 .frame(width: 160)
             }
 
-            SettingsRow(appState.localized("settings.accent"), help: appState.localized("help.accent")) {
+            SettingsRow(appState.localized("settings.accent")) {
                 AccentPicker(selection: $settings.accentColor)
                     .frame(width: 190)
             }
 
-            SettingsRow(appState.localized("settings.sidebarDefault"), help: appState.localized("help.sidebarDefault")) {
+            SettingsRow(appState.localized("settings.sidebarDefault")) {
                 Toggle("", isOn: $settings.windowPreferences.sidebarDefaultVisible)
                     .labelsHidden()
             }
 
-            SettingsRow(appState.localized("settings.sidebarWidth"), help: appState.localized("help.sidebarWidth")) {
+            SettingsRow(appState.localized("settings.sidebarWidth")) {
                 HStack(spacing: 10) {
                     Stepper("\(Int(settings.windowPreferences.sidebarWidth)) pt", value: $settings.windowPreferences.sidebarWidth, in: 170...360, step: 5)
                     Button(appState.localized("settings.resetSidebar")) {
@@ -265,17 +252,12 @@ private struct AppearanceSettings: View {
                 }
             }
 
-            SettingsRow(appState.localized("settings.footerShortcuts"), help: appState.localized("help.footerShortcuts")) {
-                Toggle("", isOn: $settings.editorPreferences.showFooterShortcuts)
-                    .labelsHidden()
-            }
-
-            SettingsRow(appState.localized("settings.aiPanel"), help: appState.localized("help.aiPanel")) {
+            SettingsRow(appState.localized("settings.aiPanel")) {
                 Toggle("", isOn: $settings.editorPreferences.showAIReviewPanel)
                     .labelsHidden()
             }
 
-            SettingsRow(appState.localized("settings.focusBehavior"), help: appState.localized("help.focusBehavior"), highlightKey: "appearance.focusBehavior") {
+            SettingsRow(appState.localized("settings.focusBehavior"), highlightKey: "appearance.focusBehavior") {
                 Picker("", selection: $settings.windowPreferences.focusModeBehavior) {
                     ForEach(FocusModeBehavior.allCases) { Text(appState.displayName($0)).tag($0) }
                 }
@@ -313,23 +295,23 @@ private struct EditorSettings: View {
             settings.generalPreferences.defaultSplitMode = AppSettings.defaults.generalPreferences.defaultSplitMode
             appState.rebuildProductionSegments()
         }) {
-            SettingsRow(appState.localized("settings.wordsPerMinute"), help: appState.localized("help.wordsPerMinute")) {
+            SettingsRow(appState.localized("settings.wordsPerMinute")) {
                 Stepper("\(settings.editorPreferences.wordsPerMinute)", value: $settings.editorPreferences.wordsPerMinute, in: 90...230)
             }
 
-            SettingsRow(appState.localized("settings.fontSize"), help: appState.localized("help.fontSize"), highlightKey: "editor.fontSize") {
+            SettingsRow(appState.localized("settings.fontSize"), highlightKey: "editor.fontSize") {
                 ValueSlider(value: $settings.editorPreferences.fontSize, range: 16...30, suffix: " pt", precision: 0)
             }
 
-            SettingsRow(appState.localized("settings.editorWidth"), help: appState.localized("help.editorWidth"), highlightKey: "editor.editorWidth") {
+            SettingsRow(appState.localized("settings.editorWidth"), highlightKey: "editor.editorWidth") {
                 ValueSlider(value: $settings.editorPreferences.editorWidth, range: 560...980, suffix: " pt", precision: 0)
             }
 
-            SettingsRow(appState.localized("settings.lineHeight"), help: appState.localized("help.lineHeight")) {
+            SettingsRow(appState.localized("settings.lineHeight")) {
                 ValueSlider(value: $settings.editorPreferences.lineHeight, range: 1.2...1.8, suffix: "x", precision: 2)
             }
 
-            SettingsRow(appState.localized("settings.spellcheck"), help: appState.localized("help.spellcheck")) {
+            SettingsRow(appState.localized("settings.spellcheck")) {
                 Toggle("", isOn: $settings.editorPreferences.spellcheck)
                     .labelsHidden()
             }
@@ -339,12 +321,12 @@ private struct EditorSettings: View {
                     .labelsHidden()
             }
 
-            SettingsRow(appState.localized("settings.wordCount"), help: appState.localized("help.wordCount")) {
+            SettingsRow(appState.localized("settings.wordCount")) {
                 Toggle("", isOn: $settings.editorPreferences.showWordCount)
                     .labelsHidden()
             }
 
-            SettingsRow(appState.localized("settings.sceneDuration"), help: appState.localized("help.sceneDuration")) {
+            SettingsRow(appState.localized("settings.sceneDuration")) {
                 Toggle("", isOn: $settings.editorPreferences.showSceneDuration)
                     .labelsHidden()
             }
@@ -360,7 +342,7 @@ private struct EditorSettings: View {
                 }
             }
 
-            SettingsRow(appState.localized("settings.defaultNotesVisibility"), help: appState.localized("help.defaultNotesVisibility")) {
+            SettingsRow(appState.localized("settings.defaultNotesVisibility")) {
                 Picker("", selection: $settings.editorPreferences.defaultNotesVisibility) {
                     ForEach(NotesDefaultVisibility.allCases) { option in
                         Text(notesVisibilityTitle(option)).tag(option)
@@ -392,10 +374,7 @@ private struct TemplateSettings: View {
     var body: some View {
         @Bindable var settingsStore = appState.settingsStore
 
-        SettingsSection(title: appState.localized("settings.templates"), resetHelp: appState.localized("help.resetTemplates"), resetTitle: appState.localized("settings.resetDefaultTemplate"), resetAction: {
-            settingsStore.settings.generalPreferences.defaultNewProjectTemplate = appState.scriptTemplates().first(where: \.isBlank)?.name
-                ?? AppSettings.defaults.generalPreferences.defaultNewProjectTemplate
-        }) {
+        SettingsSection(title: appState.localized("settings.templates")) {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -764,11 +743,9 @@ private struct AISettings: View {
                     .labelsHidden()
                     .disabled(providerDisabled)
             }
-            SettingsRow(appState.localized("settings.keychainInfo.title")) {
-                Text(appState.localized("settings.keychainInfo.message"))
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            SettingsRow(appState.localized("settings.inlineAutocomplete")) {
+                Toggle("", isOn: $settings.aiPreferences.enableInlineAutocomplete)
+                    .labelsHidden()
             }
         }
         .task { loadKeyMetadata() }
@@ -787,6 +764,9 @@ private struct AISettings: View {
         .onChange(of: settings.aiPreferences.baseURL) { _, _ in
             saveProviderConfiguration(settings.aiPreferences.provider)
             appState.autocompleteProviderConfigurationDidChange(for: settings.aiPreferences.provider)
+        }
+        .onChange(of: settings.aiPreferences.enableInlineAutocomplete) { _, _ in
+            appState.inlineAutocompletePreferenceDidChange()
         }
     }
 
@@ -911,7 +891,7 @@ private struct ExportSettings: View {
         SettingsSection(title: appState.localized("settings.export"), resetAction: {
             settings.exportPreferences = AppSettings.defaults.exportPreferences
         }) {
-            SettingsRow(appState.localized("settings.defaultFormat"), help: appState.localized("help.defaultFormat"), highlightKey: "export.defaultFormat") {
+            SettingsRow(appState.localized("settings.defaultFormat"), highlightKey: "export.defaultFormat") {
                 Picker("", selection: $settings.exportPreferences.defaultFormat) {
                     ForEach(ExportFormat.allCases) { Text(appState.displayName($0)).tag($0) }
                 }
@@ -922,16 +902,16 @@ private struct ExportSettings: View {
             SettingsRow(appState.localized("settings.timestamps"), help: appState.localized("help.timestamps")) {
                 Toggle("", isOn: $settings.exportPreferences.includeTimestamps).labelsHidden()
             }
-            SettingsRow(appState.localized("settings.sectionNames"), help: appState.localized("help.sectionNames")) {
+            SettingsRow(appState.localized("settings.sectionNames")) {
                 Toggle("", isOn: $settings.exportPreferences.includeSectionNames).labelsHidden()
             }
-            SettingsRow(appState.localized("settings.includeBRoll"), help: appState.localized("help.includeBRoll")) {
+            SettingsRow(appState.localized("settings.includeBRoll")) {
                 Toggle("", isOn: $settings.exportPreferences.includeBRoll).labelsHidden()
             }
-            SettingsRow(appState.localized("settings.includeEditing"), help: appState.localized("help.includeEditing")) {
+            SettingsRow(appState.localized("settings.includeEditing")) {
                 Toggle("", isOn: $settings.exportPreferences.includeEditingNotes).labelsHidden()
             }
-            SettingsRow(appState.localized("settings.includeAI"), help: appState.localized("help.includeAI")) {
+            SettingsRow(appState.localized("settings.includeAI")) {
                 Toggle("", isOn: $settings.exportPreferences.includeAINotes).labelsHidden()
             }
             SettingsRow(appState.localized("settings.teleprompter"), help: appState.localized("help.teleprompter")) {
@@ -969,15 +949,15 @@ private struct AdvancedSettings: View {
 
     var body: some View {
         SettingsSection(title: appState.localized("settings.advanced")) {
-            SettingsRow(appState.localized("settings.reset"), help: appState.localized("help.resetSettings")) {
+            SettingsRow(appState.localized("settings.reset")) {
                 Button(appState.localized("settings.reset"), action: resetAction)
                     .clickableCursor()
             }
-            SettingsRow(appState.localized("settings.clearRecents"), help: appState.localized("help.clearRecents")) {
+            SettingsRow(appState.localized("settings.clearRecents")) {
                 Button(appState.localized("settings.clearRecents"), action: clearRecentsAction)
                     .clickableCursor()
             }
-            SettingsRow(appState.localized("settings.clearKeys"), help: appState.localized("help.clearKeys")) {
+            SettingsRow(appState.localized("settings.clearKeys")) {
                 Button(appState.localized("settings.clearKeys"), action: appState.clearAPIKeysWithConfirmation)
                 .clickableCursor()
             }

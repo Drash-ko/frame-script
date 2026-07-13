@@ -273,6 +273,7 @@ struct AutocompleteEligibility {
 
 enum AutocompleteConfigurationEligibility: String, Equatable {
     case eligible
+    case blockedPreferenceDisabled
     case blockedProviderDisabled
     case blockedMissingKeyMetadata
     case blockedCooldown
@@ -950,6 +951,13 @@ final class ActiveScriptEditorSession {
             editor.cancelAutocomplete(clearStatus: true)
         }
         return !liveEditors.isEmpty
+    }
+
+    func cancelAllAutocomplete() {
+        editors.removeAll { $0.value == nil }
+        for editor in editors.compactMap(\.value) {
+            editor.cancelAutocomplete(clearStatus: true)
+        }
     }
 }
 

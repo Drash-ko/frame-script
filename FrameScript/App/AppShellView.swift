@@ -113,11 +113,6 @@ struct AppShellView: View {
                 .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            if appState.settings.editorPreferences.showFooterShortcuts && !appState.isFocusModeEnabled {
-                Divider()
-                    .overlay(theme.divider)
-                FooterShortcutBar()
-            }
         }
         .background(theme.background)
         .foregroundStyle(theme.primaryText)

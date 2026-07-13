@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Simplified Settings controls and help affordances, consolidated launch behavior, removed the footer-shortcuts preference, and added persisted inline-autocomplete control.
+- Enabled the AI review panel and inline autocomplete by default for new and reset settings while preserving saved preferences.
 - Made persisted Visuals and Editing relationships authoritative through exact text anchors; legacy segment-only links now migrate to anchors during loading and synchronization.
 - Made Visuals and Editing sections, labels, selection, and marker navigation anchor-first: identical anchored ranges group together in stable script order, while invalid or missing anchors appear under Unlinked.
 - Changed Script production markers to group only overlapping or touching current UTF-16 anchor ranges per Visuals or Editing lane; marker clicks now select the complete anchored group.

@@ -354,8 +354,7 @@ struct AppSettings: Codable, Hashable {
 }
 
 struct GeneralPreferences: Codable, Hashable {
-    var showProjectBrowserOnLaunch: Bool
-    var restoreLastProjectOnLaunch: Bool
+    var launchBehavior: LaunchBehavior
     var language: AppLanguage
     var autosaveEnabled: Bool
     var autosaveIntervalSeconds: Int
@@ -365,8 +364,7 @@ struct GeneralPreferences: Codable, Hashable {
     var confirmBeforeDeleting: Bool
 
     init(
-        showProjectBrowserOnLaunch: Bool,
-        restoreLastProjectOnLaunch: Bool,
+        launchBehavior: LaunchBehavior,
         language: AppLanguage = .system,
         autosaveEnabled: Bool,
         autosaveIntervalSeconds: Int,
@@ -375,8 +373,7 @@ struct GeneralPreferences: Codable, Hashable {
         defaultSplitMode: SegmentType,
         confirmBeforeDeleting: Bool
     ) {
-        self.showProjectBrowserOnLaunch = showProjectBrowserOnLaunch
-        self.restoreLastProjectOnLaunch = restoreLastProjectOnLaunch
+        self.launchBehavior = launchBehavior
         self.language = language
         self.autosaveEnabled = autosaveEnabled
         self.autosaveIntervalSeconds = autosaveIntervalSeconds
@@ -387,6 +384,8 @@ struct GeneralPreferences: Codable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case launchBehavior
+        // Legacy keys are read only to migrate existing settings files.
         case showProjectBrowserOnLaunch
         case restoreLastProjectOnLaunch
         case language
@@ -400,8 +399,13 @@ struct GeneralPreferences: Codable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        showProjectBrowserOnLaunch = try container.decode(Bool.self, forKey: .showProjectBrowserOnLaunch)
-        restoreLastProjectOnLaunch = try container.decode(Bool.self, forKey: .restoreLastProjectOnLaunch)
+        if let behavior = try container.decodeIfPresent(LaunchBehavior.self, forKey: .launchBehavior) {
+            launchBehavior = behavior
+        } else {
+            let restoreLastProject = try container.decodeIfPresent(Bool.self, forKey: .restoreLastProjectOnLaunch) ?? false
+            let showProjectBrowser = try container.decodeIfPresent(Bool.self, forKey: .showProjectBrowserOnLaunch) ?? true
+            launchBehavior = restoreLastProject && !showProjectBrowser ? .restoreLastProject : .showProjectBrowser
+        }
         language = try container.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .system
         autosaveEnabled = try container.decode(Bool.self, forKey: .autosaveEnabled)
         autosaveIntervalSeconds = try container.decode(Int.self, forKey: .autosaveIntervalSeconds)
@@ -409,6 +413,29 @@ struct GeneralPreferences: Codable, Hashable {
         blankProjectStart = try container.decodeIfPresent(BlankProjectStart.self, forKey: .blankProjectStart) ?? .oneEmptyScene
         defaultSplitMode = try container.decode(SegmentType.self, forKey: .defaultSplitMode)
         confirmBeforeDeleting = try container.decode(Bool.self, forKey: .confirmBeforeDeleting)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(launchBehavior, forKey: .launchBehavior)
+        try container.encode(language, forKey: .language)
+        try container.encode(autosaveEnabled, forKey: .autosaveEnabled)
+        try container.encode(autosaveIntervalSeconds, forKey: .autosaveIntervalSeconds)
+        try container.encode(defaultNewProjectTemplate, forKey: .defaultNewProjectTemplate)
+        try container.encode(blankProjectStart, forKey: .blankProjectStart)
+        try container.encode(defaultSplitMode, forKey: .defaultSplitMode)
+        try container.encode(confirmBeforeDeleting, forKey: .confirmBeforeDeleting)
+    }
+}
+
+enum LaunchBehavior: String, Codable, CaseIterable, Identifiable {
+    case showProjectBrowser
+    case restoreLastProject
+
+    var id: String { rawValue }
+
+    func shouldRestoreLastProject(hasOpenProject: Bool, hasRecentProject: Bool) -> Bool {
+        self == .restoreLastProject && !hasOpenProject && hasRecentProject
     }
 }
 
@@ -449,7 +476,6 @@ struct EditorPreferences: Codable, Hashable {
     var smartQuotes: Bool
     var showWordCount: Bool
     var showSceneDuration: Bool
-    var showFooterShortcuts: Bool
     var showAIReviewPanel: Bool
     var defaultNotesVisibility: NotesDefaultVisibility
 
@@ -462,7 +488,6 @@ struct EditorPreferences: Codable, Hashable {
         smartQuotes: Bool,
         showWordCount: Bool,
         showSceneDuration: Bool,
-        showFooterShortcuts: Bool,
         showAIReviewPanel: Bool,
         defaultNotesVisibility: NotesDefaultVisibility = .collapsed
     ) {
@@ -474,7 +499,6 @@ struct EditorPreferences: Codable, Hashable {
         self.smartQuotes = smartQuotes
         self.showWordCount = showWordCount
         self.showSceneDuration = showSceneDuration
-        self.showFooterShortcuts = showFooterShortcuts
         self.showAIReviewPanel = showAIReviewPanel
         self.defaultNotesVisibility = defaultNotesVisibility
     }
@@ -488,7 +512,6 @@ struct EditorPreferences: Codable, Hashable {
         case smartQuotes
         case showWordCount
         case showSceneDuration
-        case showFooterShortcuts
         case showAIReviewPanel
         case defaultNotesVisibility
     }
@@ -503,8 +526,7 @@ struct EditorPreferences: Codable, Hashable {
         smartQuotes = try container.decode(Bool.self, forKey: .smartQuotes)
         showWordCount = try container.decode(Bool.self, forKey: .showWordCount)
         showSceneDuration = try container.decode(Bool.self, forKey: .showSceneDuration)
-        showFooterShortcuts = try container.decode(Bool.self, forKey: .showFooterShortcuts)
-        showAIReviewPanel = try container.decode(Bool.self, forKey: .showAIReviewPanel)
+        showAIReviewPanel = try container.decodeIfPresent(Bool.self, forKey: .showAIReviewPanel) ?? true
         defaultNotesVisibility = try container.decodeIfPresent(NotesDefaultVisibility.self, forKey: .defaultNotesVisibility) ?? .collapsed
     }
 }
@@ -523,6 +545,46 @@ struct AIPreferences: Codable, Hashable {
     var temperature: Double
     var maxTokens: Int
     var privacyMode: Bool
+    var enableInlineAutocomplete: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case model
+        case baseURL
+        case temperature
+        case maxTokens
+        case privacyMode
+        case enableInlineAutocomplete
+    }
+
+    init(
+        provider: AIProviderKind,
+        model: String,
+        baseURL: String,
+        temperature: Double,
+        maxTokens: Int,
+        privacyMode: Bool,
+        enableInlineAutocomplete: Bool = true
+    ) {
+        self.provider = provider
+        self.model = model
+        self.baseURL = baseURL
+        self.temperature = temperature
+        self.maxTokens = maxTokens
+        self.privacyMode = privacyMode
+        self.enableInlineAutocomplete = enableInlineAutocomplete
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try container.decode(AIProviderKind.self, forKey: .provider)
+        model = try container.decode(String.self, forKey: .model)
+        baseURL = try container.decode(String.self, forKey: .baseURL)
+        temperature = try container.decode(Double.self, forKey: .temperature)
+        maxTokens = try container.decode(Int.self, forKey: .maxTokens)
+        privacyMode = try container.decode(Bool.self, forKey: .privacyMode)
+        enableInlineAutocomplete = try container.decodeIfPresent(Bool.self, forKey: .enableInlineAutocomplete) ?? true
+    }
 }
 
 enum AIProviderKind: String, Codable, CaseIterable, Identifiable {
@@ -606,8 +668,7 @@ struct ExportPreset: Identifiable, Codable, Hashable {
 extension AppSettings {
     static let defaults = AppSettings(
         generalPreferences: GeneralPreferences(
-            showProjectBrowserOnLaunch: true,
-            restoreLastProjectOnLaunch: false,
+            launchBehavior: .showProjectBrowser,
             language: .system,
             autosaveEnabled: true,
             autosaveIntervalSeconds: 10,
@@ -627,8 +688,7 @@ extension AppSettings {
             smartQuotes: true,
             showWordCount: true,
             showSceneDuration: true,
-            showFooterShortcuts: false,
-            showAIReviewPanel: false,
+            showAIReviewPanel: true,
             defaultNotesVisibility: .collapsed
         ),
         aiPreferences: AIPreferences(
@@ -637,7 +697,8 @@ extension AppSettings {
             baseURL: "",
             temperature: 0.4,
             maxTokens: 420,
-            privacyMode: true
+            privacyMode: true,
+            enableInlineAutocomplete: true
         ),
         voicePreferences: VoicePreferences(
             provider: .system,

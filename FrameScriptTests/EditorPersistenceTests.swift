@@ -11,7 +11,7 @@ final class EditorPersistenceTests: XCTestCase {
             "production.addBRollForSelection", "dialog.deleteScene.message", "settings.defaultSplit",
             "broll.linkedSubtitle", "broll.emptyTitle", "broll.addItem", "broll.addEmpty",
             "broll.segmentEmpty", "broll.writeScriptFirst", "settings.includeBRoll",
-            "export.label.broll", "help.defaultSplit", "help.includeBRoll"
+            "export.label.broll", "help.defaultSplit"
         ]
         for key in englishVisualsKeys {
             XCTAssertTrue(L10n.tr(key, language: .english).contains("Visual"), "Expected natural Visuals terminology for \(key)")
@@ -25,7 +25,7 @@ final class EditorPersistenceTests: XCTestCase {
             "broll.linkedSubtitle", "broll.emptyTitle", "broll.emptyMessage", "broll.addItem",
             "broll.addEmpty", "broll.segmentEmpty", "broll.writeScriptFirst", "broll.item",
             "broll.duplicateItem", "broll.deleteItem", "settings.includeBRoll", "export.label.broll",
-            "help.defaultSplit", "help.includeBRoll"
+            "help.defaultSplit"
         ]
         for key in russianVisualsKeys {
             XCTAssertTrue(L10n.tr(key, language: .russian).localizedLowercase.contains("видеоряд"), "Expected natural видеоряд terminology for \(key)")

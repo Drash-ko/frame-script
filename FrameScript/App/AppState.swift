@@ -185,13 +185,14 @@ final class AppState {
             settings.generalPreferences.language = .russian
         }
         if arguments.contains("--framescript-ui-test-show-browser") {
-            settings.generalPreferences.showProjectBrowserOnLaunch = true
+            settings.generalPreferences.launchBehavior = .showProjectBrowser
         }
 #endif
-        if settings.generalPreferences.restoreLastProjectOnLaunch,
-           !settings.generalPreferences.showProjectBrowserOnLaunch,
-           !hasOpenProject,
-           let entry = recentProjectStore.entries.first {
+        if let entry = recentProjectStore.entries.first,
+           settings.generalPreferences.launchBehavior.shouldRestoreLastProject(
+               hasOpenProject: hasOpenProject,
+               hasRecentProject: true
+           ) {
             openRecentProject(entry, reportsMissingNotice: false, presentsErrors: false)
         }
 #if DEBUG
@@ -275,6 +276,7 @@ final class AppState {
     }
 
     var autocompleteConfigurationEligibility: AutocompleteConfigurationEligibility {
+        guard settings.aiPreferences.enableInlineAutocomplete else { return .blockedPreferenceDisabled }
         let provider = settings.aiPreferences.provider
         guard provider != .disabled else { return .blockedProviderDisabled }
         guard aiProviderConfigurationStore.hasStoredKey(for: provider) else { return .blockedMissingKeyMetadata }
@@ -618,6 +620,10 @@ final class AppState {
             autocompleteIssue = nil
             logAutocompleteBlockedOutcome(.blockedProviderDisabled, provider: provider)
             return .none
+        case .blockedPreferenceDisabled:
+            autocompleteIssue = nil
+            logAutocompleteBlockedOutcome(.blockedPreferenceDisabled, provider: provider)
+            return .none
         case .blockedMissingKeyMetadata:
             if autocompleteIssue?.provider == provider { autocompleteIssue = nil }
             logAutocompleteBlockedOutcome(.blockedMissingKeyMetadata, provider: provider)
@@ -745,6 +751,12 @@ final class AppState {
             autocompleteIssue = nil
         }
         autocompleteConfigurationVersion += 1
+    }
+
+    func inlineAutocompletePreferenceDidChange() {
+        autocompleteIssue = nil
+        autocompleteConfigurationVersion += 1
+        ActiveScriptEditorSession.shared.cancelAllAutocomplete()
     }
 
     private func recordAutocompleteIssue(
