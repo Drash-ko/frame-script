@@ -5,24 +5,26 @@ struct ShortcutsOverlay: View {
     @Environment(\.frameTheme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(appState.localized("shortcuts.title"))
-                .font(.system(size: 24, weight: .semibold))
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(appState.localized("shortcuts.title"))
+                    .font(.system(size: 24, weight: .semibold))
 
-            ForEach(ShortcutsOverlayLayout.categorySections) { section in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(appState.localized(section.category.localizationKey))
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(theme.secondaryText)
+                ForEach(ShortcutsOverlayLayout.categorySections) { section in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(appState.localized(section.category.localizationKey))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(theme.secondaryText)
 
-                    LazyVGrid(columns: [GridItem(.fixed(90)), GridItem(.flexible())], alignment: .leading, spacing: 10) {
-                        ForEach(section.definitions) { shortcut in
-                            Text(appState.shortcutDisplay(for: shortcut.command))
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundStyle(theme.primaryText)
-                            Text(appState.localized(shortcut.localizationKey))
-                                .font(.system(size: 13))
-                                .foregroundStyle(theme.secondaryText)
+                        LazyVGrid(columns: [GridItem(.fixed(90)), GridItem(.flexible())], alignment: .leading, spacing: 10) {
+                            ForEach(section.definitions) { shortcut in
+                                Text(appState.shortcutDisplay(for: shortcut.command))
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(theme.primaryText)
+                                Text(appState.localized(shortcut.localizationKey))
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(theme.secondaryText)
+                            }
                         }
                     }
                 }
@@ -30,6 +32,7 @@ struct ShortcutsOverlay: View {
         }
         .padding(24)
         .frame(width: 420)
+        .frame(maxHeight: ShortcutsOverlayLayout.maximumContentHeight)
         .background(theme.background)
     }
 }
@@ -42,6 +45,8 @@ struct ShortcutsOverlayCategorySection: Identifiable {
 }
 
 enum ShortcutsOverlayLayout {
+    static let maximumContentHeight: CGFloat = 620
+
     /// Filtering the registry preserves its definition order. Categories are
     /// deliberately driven by allCases rather than a global order comparison.
     static let categorySections = ShortcutCategory.allCases.map { category in

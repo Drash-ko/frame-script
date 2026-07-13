@@ -8,7 +8,6 @@
 
 ### Changed
 
-- Removed adjustable script-column width and line spacing in favor of a consistent responsive 900 pt editor layout and fixed default typography.
 - Polished Keyboard Shortcuts Settings to use the shared Settings cards, rows, themed keycaps, and focused recording state.
 - Unified every configurable menu key equivalent and visible shortcut hint behind the active shortcut state, including explicit localized unassigned labels, and consolidated project exit into Back to Project List.
 - Replaced the built-in English and Russian demos with five-scene, anchor-first product showcases containing production plans, editing direction, and prepared local AI review notes; demo sessions now discard edits without prompts or autosave until explicitly saved as a project file.
@@ -18,6 +17,10 @@
 - Made Visuals and Editing sections, labels, selection, and marker navigation anchor-first: identical anchored ranges group together in stable script order, while invalid or missing anchors appear under Unlinked.
 - Changed Script production markers to group only overlapping or touching current UTF-16 anchor ranges per Visuals or Editing lane; marker clicks now select the complete anchored group.
 - Kept Visuals and Editing hit regions in separate fixed lanes, and assign separated same-line groups distinct deterministic regions in script order.
+
+### Removed
+
+- Removed adjustable script-column width and line spacing in favor of a consistent responsive 900 pt editor layout and fixed default typography.
 
 ### Fixed
 

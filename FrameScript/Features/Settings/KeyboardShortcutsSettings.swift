@@ -8,8 +8,9 @@ struct KeyboardShortcutsSettings: View {
     @State private var recording: ShortcutCommand?
     @State private var pendingBinding: ShortcutBinding?
     @State private var reassignPrompt: ShortcutReassignPrompt?
-    @State private var captureSession: ShortcutCaptureSession?
+    @State private var lifecycle = ShortcutRecordingLifecycle()
     @State private var showResetConfirmation = false
+    @State private var reservedShortcutWarning: ShortcutBinding?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -18,11 +19,18 @@ struct KeyboardShortcutsSettings: View {
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(theme.primaryText)
                 Spacer()
-                Button(appState.localized("shortcuts.resetAll")) { showResetConfirmation = true }
+                Button(appState.localized("shortcuts.resetAll")) {
+                    lifecycle.stopForAlert()
+                    showResetConfirmation = true
+                }
                     .font(.system(size: 12))
                     .buttonStyle(.borderless)
-                    .disabled(settings.shortcutOverrides.isEmpty)
-                    .clickableCursor(enabled: !settings.shortcutOverrides.isEmpty)
+                    .disabled(!ShortcutSettingsLayout.canResetAll(
+                        customizedCommands: Set(settings.shortcutOverrides.keys), recording: recording
+                    ))
+                    .clickableCursor(enabled: ShortcutSettingsLayout.canResetAll(
+                        customizedCommands: Set(settings.shortcutOverrides.keys), recording: recording
+                    ))
             }
             ForEach(ShortcutSettingsLayout.categoryCards) { card in
                 VStack(alignment: .leading, spacing: 8) {
@@ -66,7 +74,18 @@ struct KeyboardShortcutsSettings: View {
                 ))
             }
         }
-        .onDisappear { cancelRecording() }
+        .alert(appState.localized("shortcuts.reserved.title"), isPresented: isReservedShortcutWarningPresented) {
+            Button(appState.localized("dialog.ok")) { resumeRecordingAfterAlert() }
+        } message: {
+            if let reservedShortcutWarning {
+                Text(String(format: appState.localized("shortcuts.reserved.message"), reservedShortcutWarning.display))
+            }
+        }
+        .onDisappear { lifecycle.viewDidDisappear(); clearRecordingState() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
+            lifecycle.settingsWindowDidClose()
+            clearRecordingState()
+        }
     }
 
     @ViewBuilder private func row(for definition: ShortcutDefinition) -> some View {
@@ -84,9 +103,11 @@ struct KeyboardShortcutsSettings: View {
                         // The local monitor is already running before this field is
                         // inserted. This view exists solely to take first responder
                         // asynchronously once AppKit has attached it to a window.
-                        ShortcutRecordingField()
-                        .frame(width: 1, height: 1)
-                        .accessibilityLabel(appState.localized("shortcuts.recording"))
+                        if isWaitingForKey {
+                            ShortcutRecordingField()
+                                .frame(width: 1, height: 1)
+                                .accessibilityLabel(appState.localized("shortcuts.recording"))
+                        }
 
                         if pendingBinding != nil {
                             ShortcutSettingsActionButton(appState.localized("shortcuts.save")) {
@@ -96,7 +117,7 @@ struct KeyboardShortcutsSettings: View {
                         ShortcutSettingsActionButton(appState.localized("project.unsaved.cancel")) {
                             cancelRecording()
                         }
-                    } else {
+                    } else if state.showsEdit {
                         ShortcutSettingsActionButton(appState.localized("shortcuts.edit")) {
                             beginRecording(definition.command)
                         }
@@ -135,6 +156,12 @@ struct KeyboardShortcutsSettings: View {
 
     private func savePending(for command: ShortcutCommand) {
         guard let pendingBinding else { return }
+        guard ShortcutRegistry.isAssignable(pendingBinding) else {
+            self.pendingBinding = nil
+            reservedShortcutWarning = pendingBinding
+            lifecycle.stopForAlert()
+            return
+        }
         if let conflictingCommand = ShortcutRegistry.conflict(
             for: pendingBinding,
             excluding: command,
@@ -145,26 +172,44 @@ struct KeyboardShortcutsSettings: View {
                 conflicting: conflictingCommand,
                 action: .assign(pendingBinding)
             )
+            lifecycle.stopForAlert()
             return
         }
         _ = settings.setShortcut(pendingBinding, for: command)
-        cancelRecording()
+        lifecycle.save()
+        clearRecordingState()
     }
 
     private func beginRecording(_ command: ShortcutCommand) {
         // Start suppression synchronously, before the row changes into its visible
         // recording state. First-responder assignment may follow on the next runloop.
-        ShortcutCaptureSession.stopActiveSession()
-        captureSession?.stop()
+        lifecycle.stopForAlert()
+        recording = command
+        pendingBinding = nil
+        reassignPrompt = nil
+        reservedShortcutWarning = nil
+        startCapture(for: command)
+    }
 
+    private func startCapture(for command: ShortcutCommand) {
         let recordingState = $recording
         let pendingBindingState = $pendingBinding
         let reassignPromptState = $reassignPrompt
+        let reservedWarningState = $reservedShortcutWarning
         let settingsState = $settings
+        let lifecycle = lifecycle
         let session = ShortcutCaptureSession(
-            onRecord: { binding in
+            onRecord: { [weak lifecycle] binding in
                 // ShortcutCaptureSession has already removed its event monitor,
                 // so an alert cannot have its keyboard interaction intercepted.
+                guard let lifecycle else { return }
+                lifecycle.candidateCaptured()
+                guard recordingState.wrappedValue == command else { return }
+                if ShortcutRecordingCoordinator.result(for: binding) == .reserved {
+                    pendingBindingState.wrappedValue = nil
+                    reservedWarningState.wrappedValue = binding
+                    return
+                }
                 pendingBindingState.wrappedValue = binding
                 if let conflictingCommand = ShortcutRegistry.conflict(
                     for: binding,
@@ -178,20 +223,18 @@ struct KeyboardShortcutsSettings: View {
                     )
                 }
             },
-            onCancel: {
+            onCancel: { [weak lifecycle] in
+                lifecycle?.cancel()
                 recordingState.wrappedValue = nil
                 pendingBindingState.wrappedValue = nil
                 reassignPromptState.wrappedValue = nil
             }
         )
-        captureSession = session
-        pendingBinding = nil
-        reassignPrompt = nil
-        session.start()
-        recording = command
+        lifecycle.start(session)
     }
 
     private func reset(_ command: ShortcutCommand) {
+        lifecycle.stopForAlert()
         if let conflictingCommand = settings.resetConflict(for: command) {
             reassignPrompt = .init(destination: command, conflicting: conflictingCommand, action: .reset)
         } else {
@@ -200,12 +243,31 @@ struct KeyboardShortcutsSettings: View {
     }
 
     private func cancelRecording() {
-        captureSession?.stop()
-        captureSession = nil
-        ShortcutCaptureSession.stopActiveSession()
+        lifecycle.cancel()
+        clearRecordingState()
+    }
+
+    private func clearRecordingState() {
         recording = nil
         pendingBinding = nil
         reassignPrompt = nil
+        reservedShortcutWarning = nil
+    }
+
+    private var isWaitingForKey: Bool {
+        recording != nil
+            && reassignPrompt == nil
+            && reservedShortcutWarning == nil
+            && ShortcutCapturePresentation.showsRecordingField(
+                pendingBinding: pendingBinding,
+                isCaptureActive: lifecycle.isCaptureActive
+            )
+    }
+
+    private func resumeRecordingAfterAlert() {
+        reservedShortcutWarning = nil
+        guard let recording, pendingBinding == nil, reassignPrompt == nil, !lifecycle.isCaptureActive else { return }
+        startCapture(for: recording)
     }
 
     private var isReassignPromptPresented: Binding<Bool> {
@@ -214,11 +276,22 @@ struct KeyboardShortcutsSettings: View {
             set: { if !$0 { cancelRecording() } }
         )
     }
+
+    private var isReservedShortcutWarningPresented: Binding<Bool> {
+        Binding(
+            get: { reservedShortcutWarning != nil },
+            set: { if !$0 { resumeRecordingAfterAlert() } }
+        )
+    }
 }
 
 enum ShortcutCapturePresentation {
     static func label(pendingBinding: ShortcutBinding?, pressShortcut: String) -> String {
         pendingBinding?.display ?? pressShortcut
+    }
+
+    static func showsRecordingField(pendingBinding: ShortcutBinding?, isCaptureActive: Bool) -> Bool {
+        pendingBinding == nil && isCaptureActive
     }
 }
 
@@ -254,8 +327,10 @@ struct ShortcutSettingsCategoryCard: Identifiable {
 struct ShortcutSettingsRowState {
     let isCustomized: Bool
     let isRecording: Bool
+    let isLocked: Bool
 
-    var showsReset: Bool { isCustomized }
+    var showsEdit: Bool { !isRecording && !isLocked }
+    var showsReset: Bool { isCustomized && !isLocked }
 }
 
 enum ShortcutSettingsLayout {
@@ -275,8 +350,13 @@ enum ShortcutSettingsLayout {
     ) -> ShortcutSettingsRowState {
         ShortcutSettingsRowState(
             isCustomized: customizedCommands.contains(definition.command),
-            isRecording: recording == definition.command
+            isRecording: recording == definition.command,
+            isLocked: recording != nil
         )
+    }
+
+    static func canResetAll(customizedCommands: Set<ShortcutCommand>, recording: ShortcutCommand?) -> Bool {
+        !customizedCommands.isEmpty && recording == nil
     }
 }
 
@@ -316,6 +396,61 @@ private final class AppKitShortcutCaptureEventMonitor: ShortcutCaptureEventMonit
 
     func removeMonitor(_ monitor: Any) {
         NSEvent.removeMonitor(monitor)
+    }
+}
+
+/// Owns the recorder lifetime independently from the SwiftUI view state. Keeping
+/// this seam small makes every exit path release the local event monitor before
+/// the UI can present another control or native alert.
+final class ShortcutRecordingLifecycle {
+    private var session: ShortcutCaptureSession?
+
+    var isCaptureActive: Bool { session?.isActive == true }
+
+    func start(_ session: ShortcutCaptureSession) {
+        stopForAlert()
+        self.session = session
+        session.start()
+    }
+
+    func candidateCaptured() {
+        // The session has already stopped itself before invoking onRecord.
+        session = nil
+    }
+
+    func save() {
+        stopForAlert()
+    }
+
+    func cancel() {
+        stopForAlert()
+    }
+
+    func viewDidDisappear() {
+        stopForAlert()
+    }
+
+    func settingsWindowDidClose() {
+        stopForAlert()
+    }
+
+    func stopForAlert() {
+        session?.stop()
+        session = nil
+        ShortcutCaptureSession.stopActiveSession()
+    }
+
+    deinit { stopForAlert() }
+}
+
+enum ShortcutRecordingCoordinator {
+    enum CandidateResult: Equatable {
+        case accepted
+        case reserved
+    }
+
+    static func result(for binding: ShortcutBinding) -> CandidateResult {
+        ShortcutRegistry.isAssignable(binding) ? .accepted : .reserved
     }
 }
 

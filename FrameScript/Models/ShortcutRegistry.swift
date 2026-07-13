@@ -155,6 +155,27 @@ enum ShortcutDisplayFormatter {
 }
 
 enum ShortcutRegistry {
+    /// Bindings owned by macOS, the application menu, or standard text editing.
+    /// They are intentionally outside the configurable FrameScript command registry.
+    /// Keeping them here leaves native menu handling authoritative.
+    static let nonAssignableBindings: Set<ShortcutBinding> = [
+        .init("q", modifiers: [.command]),
+        .init("w", modifiers: [.command]),
+        .init("h", modifiers: [.command]),
+        .init("h", modifiers: [.command, .option]),
+        .init("m", modifiers: [.command]),
+        .init("z", modifiers: [.command]),
+        .init("z", modifiers: [.command, .shift]),
+        .init("x", modifiers: [.command]),
+        .init("c", modifiers: [.command]),
+        .init("v", modifiers: [.command]),
+        .init("a", modifiers: [.command])
+    ]
+
+    static func isAssignable(_ binding: ShortcutBinding) -> Bool {
+        binding.isValid && !nonAssignableBindings.contains(binding)
+    }
+
     static let definitions: [ShortcutDefinition] = [
         .init(command: .newProject, localizationKey: "menu.newProject", category: .project, factoryDefault: .init("n", modifiers: [.command]), order: 0),
         .init(command: .newProjectFromTemplate, localizationKey: "menu.newProjectFromTemplate", category: .project, factoryDefault: .init("n", modifiers: [.command, .shift]), order: 1),
@@ -187,7 +208,8 @@ enum ShortcutRegistry {
 
     static func binding(for command: ShortcutCommand, overrides: [ShortcutCommand: ShortcutOverride]) -> ShortcutBinding? {
         switch overrides[command] {
-        case let .assigned(binding): binding
+        case let .assigned(binding) where isAssignable(binding): binding
+        case .assigned: nil
         case .unassigned: nil
         case nil: definition(for: command).factoryDefault
         }
@@ -206,7 +228,7 @@ extension AppSettings {
     }
 
     mutating func setShortcut(_ binding: ShortcutBinding, for command: ShortcutCommand) -> ShortcutCommand? {
-        guard binding.isValid else { return command }
+        guard ShortcutRegistry.isAssignable(binding) else { return command }
         if let conflict = ShortcutRegistry.conflict(for: binding, excluding: command, overrides: shortcutOverrides) {
             return conflict
         }
@@ -215,7 +237,7 @@ extension AppSettings {
     }
 
     mutating func reassignShortcut(_ binding: ShortcutBinding, for command: ShortcutCommand) -> ShortcutCommand? {
-        guard binding.isValid else { return command }
+        guard ShortcutRegistry.isAssignable(binding) else { return command }
         let displacedCommand = ShortcutRegistry.conflict(for: binding, excluding: command, overrides: shortcutOverrides)
         applyShortcut(binding, for: command)
         if let displacedCommand {
