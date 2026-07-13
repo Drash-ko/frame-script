@@ -24,6 +24,7 @@
 
 ### Fixed
 
+- Fixed configurable shortcut capture and execution to use physical ANSI-US key positions independently of the active keyboard input language.
 - Fixed Keyboard Shortcuts recording so a scoped AppKit capture session consumes application commands, and conflicting assignments can be safely reassigned with explicit unassigned commands persisted in app settings.
 - Fixed configurable shortcut capture to stop before pending confirmation or conflict alerts, preserve native alert keyboard handling, order overlay categories deterministically, and refresh project-menu hints from active bindings.
 - Fixed the autosave interval row’s obsolete help affordance and made inline autocomplete ghost wrapping honor TextKit’s usable width, whitespace, and paragraph spacing.

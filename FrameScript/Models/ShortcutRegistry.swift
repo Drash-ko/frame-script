@@ -40,7 +40,7 @@ struct ShortcutBinding: Codable, Hashable {
 
     init(_ character: String, modifiers: Set<ShortcutModifier>) {
         self.key = .character
-        self.character = character.lowercased()
+        self.character = Self.canonicalCharacter(from: character)
         self.modifiers = modifiers
     }
 
@@ -56,7 +56,7 @@ struct ShortcutBinding: Codable, Hashable {
 
     var isValid: Bool {
         if key == .character {
-            guard let character, character.count == 1 else { return false }
+            guard let character, Self.canonicalCharacter(from: character) == character else { return false }
             return !modifiers.isEmpty
         }
         return true
@@ -88,6 +88,74 @@ struct ShortcutBinding: Codable, Hashable {
             }
         }
     }
+
+    /// Converts persisted character bindings to their ANSI-US physical-key
+    /// equivalent. This is deliberately independent of the active input source.
+    private static func canonicalCharacter(from value: String) -> String? {
+        guard value.count == 1, let character = value.lowercased().first else { return nil }
+        if let mapped = legacyRussianCharacters[character] { return mapped }
+        return ansiUSCharacters.contains(character) ? String(character) : nil
+    }
+
+    private static let ansiUSCharacters = Set("abcdefghijklmnopqrstuvwxyz0123456789-=[]\\;'`,./")
+
+    /// ЙЦУКЕН bindings written by earlier releases were derived from the active
+    /// layout. These are the deterministic key-position equivalents.
+    private static let legacyRussianCharacters: [Character: String] = [
+        "й": "q", "ц": "w", "у": "e", "к": "r", "е": "t", "н": "y", "г": "u", "ш": "i", "щ": "o", "з": "p", "х": "[", "ъ": "]",
+        "ф": "a", "ы": "s", "в": "d", "а": "f", "п": "g", "р": "h", "о": "j", "л": "k", "д": "l", "ж": ";", "э": "'",
+        "я": "z", "ч": "x", "с": "c", "м": "v", "и": "b", "т": "n", "ь": "m", "б": ",", "ю": ".", "ё": "`"
+    ]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(ShortcutKey.self, forKey: .key)
+        modifiers = try container.decode(Set<ShortcutModifier>.self, forKey: .modifiers)
+        if key == .character {
+            character = Self.canonicalCharacter(from: try container.decodeIfPresent(String.self, forKey: .character) ?? "")
+        } else {
+            character = nil
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(key, forKey: .key)
+        try container.encode(modifiers, forKey: .modifiers)
+        if key == .character {
+            try container.encode(Self.canonicalCharacter(from: character ?? "") ?? "", forKey: .character)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key, character, modifiers
+    }
+}
+
+/// The application’s canonical map from macOS virtual key codes to ANSI-US
+/// shortcut keys. It intentionally never asks the active input source to
+/// translate a key position.
+enum ShortcutPhysicalKeyMapper {
+    static func binding(for keyCode: UInt16, modifiers: Set<ShortcutModifier>) -> ShortcutBinding? {
+        switch keyCode {
+        case 51: return .init(key: .delete, modifiers: modifiers)
+        case 117: return .init(key: .forwardDelete, modifiers: modifiers)
+        case 123: return .init(key: .leftArrow, modifiers: modifiers)
+        case 124: return .init(key: .rightArrow, modifiers: modifiers)
+        case 125: return .init(key: .downArrow, modifiers: modifiers)
+        case 126: return .init(key: .upArrow, modifiers: modifiers)
+        default:
+            guard let character = ansiUSCharacters[keyCode] else { return nil }
+            return .init(character, modifiers: modifiers)
+        }
+    }
+
+    private static let ansiUSCharacters: [UInt16: String] = [
+        0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z", 7: "x", 8: "c", 9: "v",
+        11: "b", 12: "q", 13: "w", 14: "e", 15: "r", 16: "y", 17: "t",
+        18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 24: "=", 25: "9", 26: "7", 27: "-", 28: "8", 29: "0",
+        30: "]", 31: "o", 32: "u", 33: "[", 34: "i", 35: "p", 37: "l", 38: "j", 39: "'", 40: "k", 41: ";", 42: "\\", 43: ",", 44: "/", 45: "n", 46: "m", 47: ".", 50: "`"
+    ]
 }
 
 /// The persisted override for a command. Encoding assignments as their binding
@@ -102,15 +170,18 @@ enum ShortcutOverride: Codable, Hashable {
         if container.decodeNil() {
             self = .unassigned
         } else {
-            self = .assigned(try container.decode(ShortcutBinding.self))
+            let binding = try container.decode(ShortcutBinding.self)
+            self = binding.isValid ? .assigned(binding) : .unassigned
         }
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch self {
-        case let .assigned(binding): try container.encode(binding)
-        case .unassigned: try container.encodeNil()
+        case let .assigned(binding) where binding.isValid:
+            try container.encode(binding)
+        case .assigned, .unassigned:
+            try container.encodeNil()
         }
     }
 }
@@ -219,6 +290,38 @@ enum ShortcutRegistry {
         ShortcutCommand.allCases.first { candidate in
             candidate != command && self.binding(for: candidate, overrides: overrides) == binding
         }
+    }
+
+    /// Settings decoding is the one-time migration boundary for legacy
+    /// layout-derived values. Explicit valid assignments take precedence over
+    /// factory defaults; any ambiguous duplicate is made explicitly unassigned.
+    static func normalizedOverrides(_ overrides: [ShortcutCommand: ShortcutOverride]) -> [ShortcutCommand: ShortcutOverride] {
+        var normalized: [ShortcutCommand: ShortcutOverride] = [:]
+        var usedBindings = Set<ShortcutBinding>()
+
+        for command in ShortcutCommand.allCases {
+            switch overrides[command] {
+            case let .assigned(binding) where isAssignable(binding) && !usedBindings.contains(binding):
+                normalized[command] = .assigned(binding)
+                usedBindings.insert(binding)
+            case .assigned:
+                normalized[command] = .unassigned
+            case .unassigned:
+                normalized[command] = .unassigned
+            case nil:
+                break
+            }
+        }
+
+        for command in ShortcutCommand.allCases where overrides[command] == nil {
+            let defaultBinding = definition(for: command).factoryDefault
+            if usedBindings.contains(defaultBinding) {
+                normalized[command] = .unassigned
+            } else {
+                usedBindings.insert(defaultBinding)
+            }
+        }
+        return normalized
     }
 }
 

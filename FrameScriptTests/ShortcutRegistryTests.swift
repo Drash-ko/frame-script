@@ -25,6 +25,101 @@ final class ShortcutRegistryTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode([ShortcutBinding].self, from: JSONEncoder().encode(bindings)), bindings)
     }
 
+    func testPhysicalLetterCaptureIgnoresEnglishAndRussianProducedCharacters() throws {
+        let englishO = try keyEvent(keyCode: 31, characters: "o", modifiers: .command)
+        let russianO = try keyEvent(keyCode: 31, characters: "щ", modifiers: .command)
+        let englishC = try keyEvent(keyCode: 8, characters: "c", modifiers: .command)
+        let russianC = try keyEvent(keyCode: 8, characters: "с", modifiers: .command)
+
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: englishO), .init("o", modifiers: [.command]))
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: russianO), .init("o", modifiers: [.command]))
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: englishC), .init("c", modifiers: [.command]))
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: russianC), .init("c", modifiers: [.command]))
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: englishO), ShortcutCaptureParser.binding(from: russianO))
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: englishC), ShortcutCaptureParser.binding(from: russianC))
+    }
+
+    func testPhysicalPunctuationArrowsAndDeleteRemainStableAcrossLayouts() throws {
+        let englishComma = try keyEvent(keyCode: 43, characters: ",", modifiers: .command)
+        let russianComma = try keyEvent(keyCode: 43, characters: "б", modifiers: .command)
+
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: englishComma), .init(",", modifiers: [.command]))
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: russianComma), .init(",", modifiers: [.command]))
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: try keyEvent(keyCode: 123, characters: "", modifiers: .command)), .init(key: .leftArrow, modifiers: [.command]))
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: try keyEvent(keyCode: 51, characters: "", modifiers: .command)), .init(key: .delete, modifiers: [.command]))
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: try keyEvent(keyCode: 117, characters: "", modifiers: .command)), .init(key: .forwardDelete, modifiers: [.command]))
+        XCTAssertNil(ShortcutCaptureParser.binding(from: try keyEvent(keyCode: 36, characters: "\r", modifiers: .command)))
+    }
+
+    func testCanonicalBindingsDisplayAndEncodeWithLatinANSICharacters() throws {
+        let binding = ShortcutBinding("щ", modifiers: [.command])
+        let encoded = String(data: try JSONEncoder().encode(binding), encoding: .utf8)
+
+        XCTAssertEqual(binding, .init("o", modifiers: [.command]))
+        XCTAssertEqual(binding.display, "⌘O")
+        XCTAssertFalse(encoded?.unicodeScalars.contains(where: { $0.value >= 0x0400 && $0.value <= 0x052F }) == true)
+    }
+
+    func testLegacyRussianBindingsMigrateWithoutDuplicateActiveShortcuts() throws {
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(AppSettings.defaults)) as? [String: Any])
+        root["shortcutOverrides"] = [
+            ShortcutCommand.commandPalette.rawValue,
+            [
+                "key": ShortcutKey.character.rawValue,
+                "character": "щ",
+                "modifiers": [ShortcutModifier.command.rawValue]
+            ],
+            ShortcutCommand.toggleFocusMode.rawValue,
+            [
+                "key": ShortcutKey.character.rawValue,
+                "character": "ґ",
+                "modifiers": [ShortcutModifier.command.rawValue]
+            ]
+        ]
+
+        let settings = try JSONDecoder().decode(AppSettings.self, from: JSONSerialization.data(withJSONObject: root))
+        XCTAssertEqual(settings.activeShortcut(for: .commandPalette), .init("o", modifiers: [.command]))
+        XCTAssertNil(settings.activeShortcut(for: .openProject))
+        XCTAssertEqual(settings.shortcutOverrides[.openProject], .unassigned)
+        XCTAssertNil(settings.activeShortcut(for: .toggleFocusMode))
+        XCTAssertEqual(settings.shortcutOverrides[.toggleFocusMode], .unassigned)
+        XCTAssertFalse(ShortcutCommand.allCases.compactMap(settings.activeShortcut(for:)).contains { $0.character?.unicodeScalars.contains(where: { $0.value >= 0x0400 && $0.value <= 0x052F }) == true })
+    }
+
+    func testConflictAndReservedValidationUseTheCanonicalPhysicalBinding() throws {
+        let englishO = try XCTUnwrap(ShortcutCaptureParser.binding(from: keyEvent(keyCode: 31, characters: "o", modifiers: .command)))
+        let russianO = try XCTUnwrap(ShortcutCaptureParser.binding(from: keyEvent(keyCode: 31, characters: "щ", modifiers: .command)))
+        let englishC = try XCTUnwrap(ShortcutCaptureParser.binding(from: keyEvent(keyCode: 8, characters: "c", modifiers: .command)))
+        let russianC = try XCTUnwrap(ShortcutCaptureParser.binding(from: keyEvent(keyCode: 8, characters: "с", modifiers: .command)))
+        let russianW = try XCTUnwrap(ShortcutCaptureParser.binding(from: keyEvent(keyCode: 13, characters: "ц", modifiers: .command)))
+        var settings = AppSettings.defaults
+
+        XCTAssertEqual(englishO, russianO)
+        XCTAssertEqual(settings.setShortcut(englishO, for: .duplicateScene), .openProject)
+        XCTAssertEqual(settings.setShortcut(russianO, for: .duplicateScene), .openProject)
+        XCTAssertEqual(englishC, russianC)
+        XCTAssertEqual(settings.setShortcut(englishC, for: .duplicateScene), .duplicateScene)
+        XCTAssertEqual(settings.setShortcut(russianC, for: .duplicateScene), .duplicateScene)
+        XCTAssertEqual(russianW, .init("w", modifiers: [.command]))
+        XCTAssertEqual(ShortcutRecordingCoordinator.result(for: russianW), .reserved)
+    }
+
+    func testConfiguredCommandUsesOneCanonicalPathWhenInputLayoutsSwitch() throws {
+        let configuredBinding = try XCTUnwrap(AppSettings.defaults.activeShortcut(for: .openProject))
+        let events = [
+            try keyEvent(keyCode: 31, characters: "o", modifiers: .command),
+            try keyEvent(keyCode: 31, characters: "щ", modifiers: .command)
+        ]
+
+        for event in events {
+            var executions = 0
+            if ShortcutCaptureParser.binding(from: event) == configuredBinding { executions += 1 }
+            XCTAssertEqual(executions, 1)
+        }
+        XCTAssertEqual(ShortcutCaptureParser.binding(from: events[0]), ShortcutCaptureParser.binding(from: events[1]))
+        XCTAssertNotEqual(events[1].charactersIgnoringModifiers, configuredBinding.character)
+    }
+
     func testFactoryDefaultsAreUniqueAndModifierOrderIsMacStandard() {
         let defaults = ShortcutRegistry.definitions.map(\.factoryDefault)
         XCTAssertEqual(Set(defaults).count, defaults.count)

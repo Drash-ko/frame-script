@@ -523,16 +523,7 @@ final class ShortcutCaptureSession: @unchecked Sendable {
 enum ShortcutCaptureParser {
     static func binding(from event: NSEvent) -> ShortcutBinding? {
         let modifiers = shortcutModifiers(from: event.modifierFlags)
-        let binding: ShortcutBinding?
-        switch event.keyCode {
-        case 51: binding = .init(key: .delete, modifiers: modifiers)
-        case 117: binding = .init(key: .forwardDelete, modifiers: modifiers)
-        case 123: binding = .init(key: .leftArrow, modifiers: modifiers)
-        case 124: binding = .init(key: .rightArrow, modifiers: modifiers)
-        case 125: binding = .init(key: .downArrow, modifiers: modifiers)
-        case 126: binding = .init(key: .upArrow, modifiers: modifiers)
-        default: binding = event.charactersIgnoringModifiers.map { ShortcutBinding($0.lowercased(), modifiers: modifiers) }
-        }
+        let binding = ShortcutPhysicalKeyMapper.binding(for: event.keyCode, modifiers: modifiers)
         guard let binding, binding.isValid else { return nil }
         return binding
     }

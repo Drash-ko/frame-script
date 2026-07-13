@@ -385,7 +385,8 @@ struct AppSettings: Codable, Hashable {
         exportPreferences = try container.decode(ExportPreferences.self, forKey: .exportPreferences)
         windowPreferences = try container.decode(WindowPreferences.self, forKey: .windowPreferences)
         // Existing installations did not encode shortcut preferences.
-        shortcutOverrides = try container.decodeIfPresent([ShortcutCommand: ShortcutOverride].self, forKey: .shortcutOverrides) ?? [:]
+        let decodedOverrides = try container.decodeIfPresent([ShortcutCommand: ShortcutOverride].self, forKey: .shortcutOverrides) ?? [:]
+        shortcutOverrides = ShortcutRegistry.normalizedOverrides(decodedOverrides)
     }
 }
 
