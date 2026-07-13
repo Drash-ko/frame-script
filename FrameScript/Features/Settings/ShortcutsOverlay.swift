@@ -4,29 +4,8 @@ struct ShortcutsOverlay: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
 
-    private var shortcuts: [(String, String)] {
-        [
-            ("⌘N", appState.localized("welcome.newProject")),
-            ("⌘⇧N", appState.localized("welcome.newFromTemplate")),
-            ("⌘O", appState.localized("welcome.openProject")),
-            ("⌘S", appState.localized("project.save")),
-            ("⌘⇧S", appState.localized("project.saveAs")),
-            ("⌘E", appState.localized("project.export")),
-            ("⌘⌥N", appState.localized("scene.add")),
-            ("⌘D", appState.localized("scene.duplicate")),
-            ("⌘⌫", appState.localized("scene.delete")),
-            ("⌘⌥↑", appState.localized("scene.moveUp")),
-            ("⌘⌥↓", appState.localized("scene.moveDown")),
-            ("⌘1", appState.localized("mode.script")),
-            ("⌘2", appState.localized("mode.bRoll")),
-            ("⌘3", appState.localized("mode.editing")),
-            ("⌘K", appState.localized("toolbar.commandPalette")),
-            ("⌘\\", appState.localized("command.toggleSidebar")),
-            ("⌘⇧R", appState.localized("command.toggleAIReview")),
-            ("⌘'", appState.localized("command.toggleFocus")),
-            ("⌘⇧A", appState.localized("ai.analyzeCurrentScene")),
-            ("⌘,", appState.localized("toolbar.settings"))
-        ]
+    private var shortcuts: [ShortcutDefinition] {
+        ShortcutRegistry.definitions.sorted { $0.order < $1.order }
     }
 
     var body: some View {
@@ -35,11 +14,11 @@ struct ShortcutsOverlay: View {
                 .font(.system(size: 24, weight: .semibold))
 
             LazyVGrid(columns: [GridItem(.fixed(90)), GridItem(.flexible())], alignment: .leading, spacing: 10) {
-                ForEach(shortcuts, id: \.0) { key, label in
-                    Text(key)
+                ForEach(shortcuts) { shortcut in
+                    Text(appState.settings.shortcut(for: shortcut.command).display)
                         .font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(theme.primaryText)
-                    Text(label)
+                    Text(appState.localized(shortcut.localizationKey))
                         .font(.system(size: 13))
                         .foregroundStyle(theme.secondaryText)
                 }

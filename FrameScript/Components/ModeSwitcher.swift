@@ -19,7 +19,7 @@ struct ModeSwitcher: View {
                             Text(title(for: mode))
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.88)
-                            Text(mode.shortcut)
+                            Text(appState.settings.shortcut(for: shortcutCommand(for: mode)).display)
                                 .font(.system(size: 9, weight: .medium, design: .rounded))
                                 .foregroundStyle(theme.tertiaryText)
                                 .padding(.horizontal, 4)
@@ -79,6 +79,14 @@ struct ModeSwitcher: View {
         case .script: "mode-switcher-script"
         case .bRoll: "mode-switcher-broll"
         case .editing: "mode-switcher-editing"
+        }
+    }
+
+    private func shortcutCommand(for mode: WorkspaceMode) -> ShortcutCommand {
+        switch mode {
+        case .script: .scriptMode
+        case .bRoll: .visualsMode
+        case .editing: .editingMode
         }
     }
 }

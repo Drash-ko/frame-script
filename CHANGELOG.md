@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Added a centralized configurable keyboard-shortcut registry, recorder, conflict validation, and localized Settings tab; menu commands, keycaps, palette, and overlay now update immediately from persisted app-level bindings.
 - Replaced the built-in English and Russian demos with five-scene, anchor-first product showcases containing production plans, editing direction, and prepared local AI review notes; demo sessions now discard edits without prompts or autosave until explicitly saved as a project file.
 - Simplified Settings controls and help affordances, consolidated launch behavior, removed the footer-shortcuts preference, and added persisted inline-autocomplete control.
 - Enabled the AI review panel and inline autocomplete by default for new and reset settings while preserving saved preferences.

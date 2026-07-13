@@ -37,6 +37,8 @@ struct SettingsRootView: View {
                             AISettings(settings: $settingsStore.settings)
                         case .export:
                             ExportSettings(settings: $settingsStore.settings)
+                        case .keyboardShortcuts:
+                            KeyboardShortcutsSettings(settings: $settingsStore.settings)
                         case .advanced:
                             AdvancedSettings(
                                 resetAction: appState.resetSettingsWithConfirmation,

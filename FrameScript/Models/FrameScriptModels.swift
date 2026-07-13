@@ -8,13 +8,6 @@ enum WorkspaceMode: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var shortcut: String {
-        switch self {
-        case .script: "⌘1"
-        case .bRoll: "⌘2"
-        case .editing: "⌘3"
-        }
-    }
 }
 
 enum SectionType: String, Codable, CaseIterable, Identifiable {
@@ -351,6 +344,49 @@ struct AppSettings: Codable, Hashable {
     var voicePreferences: VoicePreferences
     var exportPreferences: ExportPreferences
     var windowPreferences: WindowPreferences
+    /// User bindings are application preferences and never belong in project files.
+    var shortcutOverrides: [ShortcutCommand: ShortcutBinding] = [:]
+
+    enum CodingKeys: String, CodingKey {
+        case generalPreferences, theme, accentColor, editorPreferences, aiPreferences
+        case voicePreferences, exportPreferences, windowPreferences, shortcutOverrides
+    }
+
+    init(
+        generalPreferences: GeneralPreferences,
+        theme: AppearanceTheme,
+        accentColor: AccentPalette,
+        editorPreferences: EditorPreferences,
+        aiPreferences: AIPreferences,
+        voicePreferences: VoicePreferences,
+        exportPreferences: ExportPreferences,
+        windowPreferences: WindowPreferences,
+        shortcutOverrides: [ShortcutCommand: ShortcutBinding] = [:]
+    ) {
+        self.generalPreferences = generalPreferences
+        self.theme = theme
+        self.accentColor = accentColor
+        self.editorPreferences = editorPreferences
+        self.aiPreferences = aiPreferences
+        self.voicePreferences = voicePreferences
+        self.exportPreferences = exportPreferences
+        self.windowPreferences = windowPreferences
+        self.shortcutOverrides = shortcutOverrides
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        generalPreferences = try container.decode(GeneralPreferences.self, forKey: .generalPreferences)
+        theme = try container.decode(AppearanceTheme.self, forKey: .theme)
+        accentColor = try container.decode(AccentPalette.self, forKey: .accentColor)
+        editorPreferences = try container.decode(EditorPreferences.self, forKey: .editorPreferences)
+        aiPreferences = try container.decode(AIPreferences.self, forKey: .aiPreferences)
+        voicePreferences = try container.decode(VoicePreferences.self, forKey: .voicePreferences)
+        exportPreferences = try container.decode(ExportPreferences.self, forKey: .exportPreferences)
+        windowPreferences = try container.decode(WindowPreferences.self, forKey: .windowPreferences)
+        // Existing installations did not encode shortcut preferences.
+        shortcutOverrides = try container.decodeIfPresent([ShortcutCommand: ShortcutBinding].self, forKey: .shortcutOverrides) ?? [:]
+    }
 }
 
 struct GeneralPreferences: Codable, Hashable {

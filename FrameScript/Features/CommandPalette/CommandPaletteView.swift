@@ -11,33 +11,33 @@ struct CommandPaletteView: View {
 
     private var commandResults: [PaletteResult] {
         [
-            PaletteResult(title: appState.localized("command.switchScript"), detail: "⌘1") {
+            PaletteResult(title: appState.localized("command.switchScript"), detail: shortcut(.scriptMode)) {
                 appState.selectMode(.script)
             },
-            PaletteResult(title: appState.localized("command.switchBRoll"), detail: "⌘2") {
+            PaletteResult(title: appState.localized("command.switchBRoll"), detail: shortcut(.visualsMode)) {
                 appState.selectMode(.bRoll)
             },
-            PaletteResult(title: appState.localized("command.switchEditing"), detail: "⌘3") {
+            PaletteResult(title: appState.localized("command.switchEditing"), detail: shortcut(.editingMode)) {
                 appState.selectMode(.editing)
             },
-            PaletteResult(title: appState.localized("scene.add"), detail: "⌘⌥N", action: appState.addScene),
-            PaletteResult(title: appState.localized("scene.duplicate"), detail: "⌘D", action: appState.duplicateSelectedScene),
-            PaletteResult(title: appState.localized("scene.delete"), detail: "⌘⌫", action: appState.deleteSelectedScene),
-            PaletteResult(title: appState.localized("ai.analyzeCurrentScene"), detail: "⌘⇧A") {
+            PaletteResult(title: appState.localized("scene.add"), detail: shortcut(.addScene), action: appState.addScene),
+            PaletteResult(title: appState.localized("scene.duplicate"), detail: shortcut(.duplicateScene), action: appState.duplicateSelectedScene),
+            PaletteResult(title: appState.localized("scene.delete"), detail: shortcut(.deleteScene), action: appState.deleteSelectedScene),
+            PaletteResult(title: appState.localized("ai.analyzeCurrentScene"), detail: shortcut(.analyzeCurrentScene)) {
                 appState.settings.editorPreferences.showAIReviewPanel = true
                 Task { await appState.analyzeSelectedScene() }
             },
-            PaletteResult(title: appState.localized("command.openSettings"), detail: "⌘,", action: {
+            PaletteResult(title: appState.localized("command.openSettings"), detail: shortcut(.openSettings), action: {
                 appState.openSettings(tab: .general)
                 openSettings()
             }),
-            PaletteResult(title: appState.localized("command.toggleFocus"), detail: "⌘'") {
+            PaletteResult(title: appState.localized("command.toggleFocus"), detail: shortcut(.toggleFocusMode)) {
                 appState.isFocusModeEnabled.toggle()
             },
-            PaletteResult(title: appState.localized("command.toggleSidebar"), detail: "⌘\\") {
+            PaletteResult(title: appState.localized("command.toggleSidebar"), detail: shortcut(.toggleContentsPanel)) {
                 appState.isSidebarVisible.toggle()
             },
-            PaletteResult(title: appState.localized("command.toggleAIReview"), detail: "⌘⇧R") {
+            PaletteResult(title: appState.localized("command.toggleAIReview"), detail: shortcut(.toggleAIReview)) {
                 appState.settings.editorPreferences.showAIReviewPanel.toggle()
             },
             PaletteResult(title: appState.localized("command.closeProject"), detail: "") {
@@ -46,10 +46,14 @@ struct CommandPaletteView: View {
             PaletteResult(title: appState.localized("command.projectBrowser"), detail: "") {
                 appState.showProjectBrowser()
             },
-            PaletteResult(title: appState.localized("command.showShortcuts"), detail: "?") {
+            PaletteResult(title: appState.localized("command.showShortcuts"), detail: shortcut(.showShortcuts)) {
                 appState.isShortcutsPresented = true
             }
         ]
+    }
+
+    private func shortcut(_ command: ShortcutCommand) -> String {
+        appState.settings.shortcut(for: command).display
     }
 
     private var settingResults: [PaletteResult] {

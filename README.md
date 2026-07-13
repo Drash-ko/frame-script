@@ -34,6 +34,7 @@ Then select the `FrameScript` scheme, choose `My Mac`, and press `Cmd+R`.
 - Export as plain text, Markdown, CSV, or production outline.
 - AI review, rewrites, inline autocomplete, and production suggestions for OpenAI-compatible endpoints, OpenRouter, Groq, and Google AI Studio when configured with API keys. At the logical end of a script, autocomplete uses a short local context, shows at most one complete sentence as ghost text, accepts with Tab, and dismisses with Escape. AI output follows the script's dominant language, falling back to the resolved macOS language when the interface uses System.
 - API keys are stored in the macOS Keychain, not in project files.
+- Configurable keyboard shortcuts with immediate menu and keycap updates; custom bindings are stored in app settings, never project files.
 
 ## Project Structure
 

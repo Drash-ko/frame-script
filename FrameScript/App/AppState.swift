@@ -34,6 +34,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Codable, Hashable {
     case templates
     case ai
     case export
+    case keyboardShortcuts
     case advanced
 
     var id: String { rawValue }
@@ -46,6 +47,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Codable, Hashable {
         case .templates: "doc.on.doc"
         case .ai: "sparkles"
         case .export: "square.and.arrow.up"
+        case .keyboardShortcuts: "keyboard"
         case .advanced: "wrench.and.screwdriver"
         }
     }
@@ -59,6 +61,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Codable, Hashable {
         case .templates: appState.localized("settings.templates")
         case .ai: appState.localized("settings.ai")
         case .export: appState.localized("settings.export")
+        case .keyboardShortcuts: appState.localized("settings.keyboardShortcuts")
         case .advanced: appState.localized("settings.advanced")
         }
     }

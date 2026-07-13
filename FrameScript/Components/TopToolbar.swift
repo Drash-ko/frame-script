@@ -81,7 +81,7 @@ struct TopToolbar: View {
                     HStack(spacing: 5) {
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 13, weight: .medium))
-                        Text("⌘K")
+                        Text(appState.settings.shortcut(for: .commandPalette).display)
                             .font(.system(size: 10, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.tertiaryText)
                             .padding(.horizontal, 4)
