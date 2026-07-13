@@ -9,12 +9,12 @@ struct TopToolbar: View {
         HStack(spacing: 14) {
             Menu {
                 Button(appState.localized("project.rename")) { appState.renameProject() }
-                Button(appState.localized("project.save")) { appState.saveProject() }
-                Button(appState.localized("project.saveAs")) { appState.saveProjectAs() }
+                projectMenuButton(appState.localized("project.save"), shortcut: .save) { appState.saveProject() }
+                projectMenuButton(appState.localized("project.saveAs"), shortcut: .saveAs) { appState.saveProjectAs() }
                 Button(appState.localized("project.reveal")) { appState.revealProjectInFinder() }
                     .disabled(appState.projectStore.currentFileURL == nil)
                 Divider()
-                Button(appState.localized("project.export")) { appState.exportProject() }
+                projectMenuButton(appState.localized("project.export"), shortcut: .export) { appState.exportProject() }
                 Divider()
                 Button(appState.localized("project.browser")) { appState.returnToProjectList() }
             } label: {
@@ -129,5 +129,31 @@ struct TopToolbar: View {
             .fill(theme.divider)
             .frame(width: 1, height: 18)
             .padding(.horizontal, 2)
+    }
+
+    /// This is a display-only hint. The application command menu owns the
+    /// actual key equivalent, avoiding duplicate execution paths.
+    private func projectMenuButton(
+        _ title: String,
+        shortcut: ShortcutCommand,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(title)
+                Spacer()
+                if let binding = ProjectTitleMenuShortcutHints.binding(for: shortcut, settings: appState.settings) {
+                    Text(binding.display)
+                        .foregroundStyle(theme.secondaryText)
+                }
+            }
+        }
+    }
+}
+
+enum ProjectTitleMenuShortcutHints {
+    static func binding(for command: ShortcutCommand, settings: AppSettings) -> ShortcutBinding? {
+        guard [.save, .saveAs, .export].contains(command) else { return nil }
+        return settings.activeShortcut(for: command)
     }
 }

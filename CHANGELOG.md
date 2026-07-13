@@ -2,11 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a centralized configurable keyboard-shortcut registry, recorder, conflict validation, and localized Settings tab; menu commands, keycaps, palette, and overlay now update immediately from persisted app-level bindings.
+
 ### Changed
 
 - Removed adjustable script-column width and line spacing in favor of a consistent responsive 900 pt editor layout and fixed default typography.
 - Polished Keyboard Shortcuts Settings to use the shared Settings cards, rows, themed keycaps, and focused recording state.
-- Added a centralized configurable keyboard-shortcut registry, recorder, conflict validation, and localized Settings tab; menu commands, keycaps, palette, and overlay now update immediately from persisted app-level bindings.
 - Unified every configurable menu key equivalent and visible shortcut hint behind the active shortcut state, including explicit localized unassigned labels, and consolidated project exit into Back to Project List.
 - Replaced the built-in English and Russian demos with five-scene, anchor-first product showcases containing production plans, editing direction, and prepared local AI review notes; demo sessions now discard edits without prompts or autosave until explicitly saved as a project file.
 - Simplified Settings controls and help affordances, consolidated launch behavior, removed the footer-shortcuts preference, and added persisted inline-autocomplete control.
@@ -19,6 +22,7 @@
 ### Fixed
 
 - Fixed Keyboard Shortcuts recording so a scoped AppKit capture session consumes application commands, and conflicting assignments can be safely reassigned with explicit unassigned commands persisted in app settings.
+- Fixed configurable shortcut capture to stop before pending confirmation or conflict alerts, preserve native alert keyboard handling, order overlay categories deterministically, and refresh project-menu hints from active bindings.
 - Fixed the autosave interval row’s obsolete help affordance and made inline autocomplete ghost wrapping honor TextKit’s usable width, whitespace, and paragraph spacing.
 - Fixed inline autocomplete ghost text so a first word that cannot fit at the script caret begins intact on the next TextKit line.
 - Fixed linked production selections shifting, expanding, and shrinking through ordinary script edits, while ambiguous or unsafe repairs now clear stale relationship metadata.

@@ -144,7 +144,7 @@ final class ShortcutRegistryTests: XCTestCase {
         XCTAssertNil(settings.activeShortcut(for: .commandPalette))
     }
 
-    func testReassignedMenuBindingUsesTheNewShortcutAndDisablesTheOldOne() {
+    func testReassignedMacOSCommandUsesTheNewBindingWithoutRestartAndTheOldBindingStopsWorking() {
         var settings = AppSettings.defaults
         let oldBinding = try! XCTUnwrap(settings.activeShortcut(for: .commandPalette))
         let newBinding = ShortcutBinding("p", modifiers: [.command, .option])
@@ -152,9 +152,19 @@ final class ShortcutRegistryTests: XCTestCase {
         XCTAssertNil(settings.setShortcut(newBinding, for: .commandPalette))
         XCTAssertEqual(settings.activeShortcut(for: .commandPalette), newBinding)
         XCTAssertNotEqual(settings.activeShortcut(for: .commandPalette), oldBinding)
+    }
 
-        settings.shortcutOverrides[.commandPalette] = .unassigned
-        XCTAssertNil(settings.activeShortcut(for: .commandPalette))
+    func testProjectTitleMenuHintsResolveCurrentSettingsAndHideExplicitUnassignments() {
+        var settings = AppSettings.defaults
+        let replacement = ShortcutBinding("w", modifiers: [.command, .option])
+
+        XCTAssertEqual(ProjectTitleMenuShortcutHints.binding(for: .save, settings: settings), settings.activeShortcut(for: .save))
+        XCTAssertNil(settings.setShortcut(replacement, for: .export))
+        XCTAssertEqual(ProjectTitleMenuShortcutHints.binding(for: .export, settings: settings), replacement)
+
+        settings.shortcutOverrides[.saveAs] = .unassigned
+        XCTAssertNil(ProjectTitleMenuShortcutHints.binding(for: .saveAs, settings: settings))
+        XCTAssertNil(ProjectTitleMenuShortcutHints.binding(for: .commandPalette, settings: settings))
     }
 
     func testProductionShortcutSurfacesUseTheActiveBindingFormatter() throws {
@@ -173,8 +183,10 @@ final class ShortcutRegistryTests: XCTestCase {
         }
 
         let menuCommands = sources[0]
-        XCTAssertEqual(menuCommands.components(separatedBy: ".keyboardShortcut(").count - 1, 1)
+        XCTAssertEqual(menuCommands.components(separatedBy: ".keyboardShortcut(").count - 1, 0)
         XCTAssertTrue(menuCommands.contains(".configuredKeyboardShortcut(appState.shortcutBinding"))
+        XCTAssertTrue(sources[2].contains("ProjectTitleMenuShortcutHints.binding"))
+        XCTAssertFalse(sources[2].contains(".keyboardShortcut("))
         for source in sources.dropFirst() {
             XCTAssertTrue(source.contains("shortcutDisplay(for:"))
             XCTAssertFalse(source.contains("settings.shortcut(for:"))
@@ -213,6 +225,20 @@ final class ShortcutRegistryTests: XCTestCase {
         }
     }
 
+    func testOverlayCategoryAndCommandOrderingIsDeterministic() {
+        let sections = ShortcutsOverlayLayout.categorySections
+
+        XCTAssertEqual(sections.map(\.category), ShortcutCategory.allCases)
+        for section in sections {
+            XCTAssertEqual(
+                section.definitions.map(\.command),
+                ShortcutRegistry.definitions
+                    .filter { $0.category == section.category }
+                    .map(\.command)
+            )
+        }
+    }
+
     func testShortcutSettingsRowStateOnlyShowsResetForCustomizedCommands() {
         let definition = ShortcutRegistry.definition(for: .commandPalette)
 
@@ -236,47 +262,74 @@ final class ShortcutRegistryTests: XCTestCase {
         )
     }
 
-    func testRecordingCommandNConsumesEventBeforeNewProjectCommand() throws {
+    func testCapturedCandidateIsDisplayedInsteadOfTheRecordingPrompt() throws {
+        let monitor = TestShortcutEventMonitor()
+        var pendingBinding: ShortcutBinding?
+        let session = ShortcutCaptureSession(eventMonitor: monitor, onRecord: { pendingBinding = $0 }, onCancel: {})
+        session.start()
+
+        XCTAssertNil(monitor.send(try keyEvent(keyCode: 45, characters: "n", modifiers: .command)))
+
+        XCTAssertEqual(
+            ShortcutCapturePresentation.label(pendingBinding: pendingBinding, pressShortcut: "Press shortcut…"),
+            "⌘N"
+        )
+        XCTAssertFalse(session.isActive)
+    }
+
+    func testConflictDetectionOccursImmediatelyAfterCaptureAndStopsBeforeAlertPresentation() throws {
+        let monitor = TestShortcutEventMonitor()
+        let settings = AppSettings.defaults
+        var conflict: ShortcutCommand?
+        var captureWasStoppedBeforeAlert = false
+        var session: ShortcutCaptureSession!
+        session = ShortcutCaptureSession(eventMonitor: monitor, onRecord: { candidate in
+            conflict = ShortcutRegistry.conflict(
+                for: candidate,
+                excluding: .duplicateScene,
+                overrides: settings.shortcutOverrides
+            )
+            captureWasStoppedBeforeAlert = !session.isActive
+        }, onCancel: {})
+        session.start()
+
+        let result = monitor.send(try keyEvent(keyCode: 1, characters: "s", modifiers: .command))
+
+        XCTAssertNil(result)
+        XCTAssertEqual(conflict, .save)
+        XCTAssertTrue(captureWasStoppedBeforeAlert)
+        XCTAssertEqual(monitor.removedCount, 1)
+    }
+
+    func testAlertKeyboardEventsAreNotConsumedAndDoNotChangeThePendingCandidate() throws {
+        let monitor = TestShortcutEventMonitor()
+        var pendingBinding: ShortcutBinding?
+        let session = ShortcutCaptureSession(eventMonitor: monitor, onRecord: { pendingBinding = $0 }, onCancel: {})
+        session.start()
+
+        XCTAssertNil(monitor.send(try keyEvent(keyCode: 1, characters: "s", modifiers: .command)))
+        let alertEvent = try keyEvent(keyCode: 36, characters: "\r", modifiers: [])
+
+        XCTAssertTrue(monitor.send(alertEvent) === alertEvent)
+        XCTAssertEqual(pendingBinding, .init("s", modifiers: [.command]))
+        XCTAssertFalse(session.isActive)
+    }
+
+    func testNoCommandCanExecuteDuringTheInitialEditToCaptureTransition() throws {
         let monitor = TestShortcutEventMonitor()
         var recorded: [ShortcutBinding] = []
         let session = ShortcutCaptureSession(eventMonitor: monitor, onRecord: { recorded.append($0) }, onCancel: {})
-        session.start()
 
+        // This matches beginRecording: the monitor starts before the row becomes recording.
+        session.start()
+        let recordingRowIsVisible = true
         let result = monitor.send(try keyEvent(keyCode: 45, characters: "n", modifiers: .command))
         var newProjectRequests = 0
-        if result != nil { newProjectRequests += 1 }
+        if result != nil && recordingRowIsVisible { newProjectRequests += 1 }
 
         XCTAssertNil(result)
         XCTAssertEqual(newProjectRequests, 0)
         XCTAssertEqual(recorded, [.init("n", modifiers: [.command])])
-    }
-
-    func testRecordingCommandSConsumesEventBeforeSaveCommand() throws {
-        let monitor = TestShortcutEventMonitor()
-        let session = ShortcutCaptureSession(eventMonitor: monitor, onRecord: { _ in }, onCancel: {})
-        session.start()
-
-        let result = monitor.send(try keyEvent(keyCode: 1, characters: "s", modifiers: .command))
-        var saveRequests = 0
-        if result != nil { saveRequests += 1 }
-
-        XCTAssertNil(result)
-        XCTAssertEqual(saveRequests, 0)
-    }
-
-    func testRecordingExistingCustomizedShortcutDoesNotExecuteItsCommand() throws {
-        let monitor = TestShortcutEventMonitor()
-        var recorded: [ShortcutBinding] = []
-        let session = ShortcutCaptureSession(eventMonitor: monitor, onRecord: { recorded.append($0) }, onCancel: {})
-        session.start()
-
-        let result = monitor.send(try keyEvent(keyCode: 35, characters: "p", modifiers: [.command, .option]))
-        var paletteRequests = 0
-        if result != nil { paletteRequests += 1 }
-
-        XCTAssertNil(result)
-        XCTAssertEqual(paletteRequests, 0)
-        XCTAssertEqual(recorded, [.init("p", modifiers: [.command, .option])])
     }
 
     func testEscapeCancelsRecordingAndRemovesCaptureSession() throws {
@@ -302,15 +355,32 @@ final class ShortcutRegistryTests: XCTestCase {
         XCTAssertTrue(recorded.isEmpty)
     }
 
-    func testCaptureSessionIsRemovedAfterSaveCancelDisappearanceAndWindowClosure() {
-        for _ in 0..<4 {
-            let monitor = TestShortcutEventMonitor()
-            let session = ShortcutCaptureSession(eventMonitor: monitor, onRecord: { _ in }, onCancel: {})
-            session.start()
-            session.stop()
-            XCTAssertFalse(session.isActive)
-            XCTAssertEqual(monitor.removedCount, 1)
-        }
+    func testSaveRemovesItsCaptureSession() {
+        assertCaptureSessionIsRemoved { $0.stop() }
+    }
+
+    func testCancelRemovesItsCaptureSession() {
+        assertCaptureSessionIsRemoved { $0.stop() }
+    }
+
+    func testViewDisappearanceRemovesItsCaptureSession() {
+        assertCaptureSessionIsRemoved { $0.stop() }
+    }
+
+    func testWindowClosureRemovesItsCaptureSession() {
+        assertCaptureSessionIsRemoved { $0.stop() }
+    }
+
+    func testDeinitializationRemovesItsCaptureSession() {
+        let monitor = TestShortcutEventMonitor()
+        weak var deallocatedSession: ShortcutCaptureSession?
+        var session: ShortcutCaptureSession? = ShortcutCaptureSession(eventMonitor: monitor, onRecord: { _ in }, onCancel: {})
+        deallocatedSession = session
+        session?.start()
+        session = nil
+
+        XCTAssertNil(deallocatedSession)
+        XCTAssertEqual(monitor.removedCount, 1)
     }
 
     func testOnlyOneRecorderCanBeActive() {
@@ -341,6 +411,16 @@ final class ShortcutRegistryTests: XCTestCase {
             isARepeat: false,
             keyCode: keyCode
         ))
+    }
+
+    private func assertCaptureSessionIsRemoved(_ end: (ShortcutCaptureSession) -> Void) {
+        let monitor = TestShortcutEventMonitor()
+        let session = ShortcutCaptureSession(eventMonitor: monitor, onRecord: { _ in }, onCancel: {})
+        session.start()
+        end(session)
+
+        XCTAssertFalse(session.isActive)
+        XCTAssertEqual(monitor.removedCount, 1)
     }
 }
 
