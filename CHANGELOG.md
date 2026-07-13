@@ -6,6 +6,7 @@
 
 - Polished Keyboard Shortcuts Settings to use the shared Settings cards, rows, themed keycaps, and focused recording state.
 - Added a centralized configurable keyboard-shortcut registry, recorder, conflict validation, and localized Settings tab; menu commands, keycaps, palette, and overlay now update immediately from persisted app-level bindings.
+- Unified every configurable menu key equivalent and visible shortcut hint behind the active shortcut state, including explicit localized unassigned labels, and consolidated project exit into Back to Project List.
 - Replaced the built-in English and Russian demos with five-scene, anchor-first product showcases containing production plans, editing direction, and prepared local AI review notes; demo sessions now discard edits without prompts or autosave until explicitly saved as a project file.
 - Simplified Settings controls and help affordances, consolidated launch behavior, removed the footer-shortcuts preference, and added persisted inline-autocomplete control.
 - Enabled the AI review panel and inline autocomplete by default for new and reset settings while preserving saved preferences.

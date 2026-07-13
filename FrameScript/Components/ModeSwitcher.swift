@@ -19,7 +19,7 @@ struct ModeSwitcher: View {
                             Text(title(for: mode))
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.88)
-                            Text(appState.settings.shortcut(for: shortcutCommand(for: mode)).display)
+                            Text(appState.shortcutDisplay(for: shortcutCommand(for: mode)))
                                 .font(.system(size: 9, weight: .medium, design: .rounded))
                                 .foregroundStyle(theme.tertiaryText)
                                 .padding(.horizontal, 4)
@@ -47,11 +47,7 @@ struct ModeSwitcher: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(title(for: mode))
                 .accessibilityValue(
-                    appState.localized(
-                        selection == mode
-                            ? "accessibility.selected"
-                            : "accessibility.notSelected"
-                    )
+                    "\(appState.localized(selection == mode ? "accessibility.selected" : "accessibility.notSelected")), \(appState.shortcutDisplay(for: shortcutCommand(for: mode)))"
                 )
                 .accessibilityAddTraits(selection == mode ? [.isSelected] : [])
                 .accessibilityIdentifier(accessibilityIdentifier(for: mode))

@@ -31,9 +31,9 @@ struct SceneSidebar: View {
                 .overlay(theme.divider)
 
             VStack(spacing: 6) {
-                SidebarAction(title: appState.localized("scene.add"), shortcut: appState.settings.shortcut(for: .addScene).display, action: appState.addScene)
-                SidebarAction(title: appState.localized("scene.duplicate"), shortcut: appState.settings.shortcut(for: .duplicateScene).display, action: appState.duplicateSelectedScene)
-                SidebarAction(title: appState.localized("scene.delete"), shortcut: appState.settings.shortcut(for: .deleteScene).display, action: appState.deleteSelectedScene)
+                SidebarAction(title: appState.localized("scene.add"), shortcut: appState.shortcutDisplay(for: .addScene), action: appState.addScene)
+                SidebarAction(title: appState.localized("scene.duplicate"), shortcut: appState.shortcutDisplay(for: .duplicateScene), action: appState.duplicateSelectedScene)
+                SidebarAction(title: appState.localized("scene.delete"), shortcut: appState.shortcutDisplay(for: .deleteScene), action: appState.deleteSelectedScene)
             }
             .padding(10)
         }

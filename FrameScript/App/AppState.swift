@@ -84,6 +84,11 @@ final class AppState {
 #endif
     typealias ExportFolderBookmarkCreator = @MainActor @Sendable (URL) throws -> Data
     typealias ExportFolderBookmarkResolver = @MainActor @Sendable (Data, inout Bool) throws -> URL
+    typealias CloseConfirmation = @MainActor () -> CloseConfirmationResult
+
+    enum CloseConfirmationResult {
+        case save, discard, cancel
+    }
 
     let projectStore: ProjectStore
     let recentProjectStore: RecentProjectStore
@@ -98,6 +103,7 @@ final class AppState {
     private let securityScope: SecurityScopedResourceAccess
     private let exportFolderBookmarkCreator: ExportFolderBookmarkCreator
     private let exportFolderBookmarkResolver: ExportFolderBookmarkResolver
+    private let closeConfirmation: CloseConfirmation?
 
     var templates: [FrameTemplate]
     private let builtInTemplates: [FrameTemplate]
@@ -126,6 +132,7 @@ final class AppState {
         dependencies: AppDependencies = .live,
         aiProviderConfigurationStore: AIProviderConfigurationStore = AIProviderConfigurationStore(),
         securityScope: SecurityScopedResourceAccess = .live,
+        closeConfirmation: CloseConfirmation? = nil,
         exportFolderBookmarkCreator: @escaping ExportFolderBookmarkCreator = { url in
             try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
         },
@@ -145,6 +152,7 @@ final class AppState {
         self.dependencies = dependencies
         self.aiProviderConfigurationStore = aiProviderConfigurationStore
         self.securityScope = securityScope
+        self.closeConfirmation = closeConfirmation
         self.exportFolderBookmarkCreator = exportFolderBookmarkCreator
         self.exportFolderBookmarkResolver = exportFolderBookmarkResolver
         self.builtInTemplates = templates.filter(\.builtIn)
@@ -294,15 +302,26 @@ final class AppState {
         L10n.tr(key, language: currentLanguage)
     }
 
+    func shortcutDisplay(for command: ShortcutCommand) -> String {
+        ShortcutDisplayFormatter.display(
+            for: command,
+            settings: settings,
+            notAssigned: localized("shortcuts.notAssigned")
+        )
+    }
+
+    func shortcutBinding(for command: ShortcutCommand) -> ShortcutBinding? {
+        settings.activeShortcut(for: command)
+    }
+
     func selectMode(_ mode: WorkspaceMode) {
         guard editorState.selectedMode != mode else { return }
         transitionEditorContext(mode: mode)
     }
 
     @discardableResult
-    func showProjectBrowser() -> Bool {
+    func returnToProjectList() -> Bool {
         guard closeProject() else { return false }
-        setEditorContextAfterFlush(sceneID: .some(nil))
         return true
     }
 
@@ -1268,6 +1287,13 @@ final class AppState {
 
     private func confirmCloseProjectIfNeeded() -> Bool {
         guard projectStore.needsCloseConfirmation else { return true }
+        if let closeConfirmation {
+            switch closeConfirmation() {
+            case .save: return saveProject()
+            case .discard: return true
+            case .cancel: return false
+            }
+        }
         let alert = NSAlert()
         alert.messageText = localized("project.unsaved.title")
         alert.informativeText = projectStore.currentFileURL == nil

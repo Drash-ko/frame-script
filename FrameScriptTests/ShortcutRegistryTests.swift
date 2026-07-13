@@ -11,7 +11,7 @@ final class ShortcutRegistryTests: XCTestCase {
 
         let settings = try JSONDecoder().decode(AppSettings.self, from: legacy)
         XCTAssertTrue(settings.shortcutOverrides.isEmpty)
-        XCTAssertEqual(settings.shortcut(for: .commandPalette), ShortcutRegistry.definition(for: .commandPalette).factoryDefault)
+        XCTAssertEqual(settings.activeShortcut(for: .commandPalette), ShortcutRegistry.definition(for: .commandPalette).factoryDefault)
     }
 
     func testBindingsRoundTripForCharactersPunctuationArrowsAndDelete() throws {
@@ -33,28 +33,31 @@ final class ShortcutRegistryTests: XCTestCase {
 
     func testConflictWarningIdentifiesTheExistingCommandAndCancelPreservesAssignments() {
         var settings = AppSettings.defaults
-        let original = settings.shortcut(for: .duplicateScene)
-        let conflict = settings.setShortcut(settings.shortcut(for: .save), for: .duplicateScene)
+        let original = settings.activeShortcut(for: .duplicateScene)
+        let conflict = settings.setShortcut(try! XCTUnwrap(settings.activeShortcut(for: .save)), for: .duplicateScene)
         XCTAssertEqual(conflict, .save)
-        XCTAssertEqual(settings.shortcut(for: .duplicateScene), original)
+        XCTAssertEqual(settings.activeShortcut(for: .duplicateScene), original)
         XCTAssertEqual(settings.activeShortcut(for: .save), ShortcutRegistry.definition(for: .save).factoryDefault)
     }
 
     func testReassignMovesShortcutAndExplicitlyUnassignsDisplacedCommand() {
         var settings = AppSettings.defaults
-        let saveBinding = settings.shortcut(for: .save)
+        let saveBinding = try! XCTUnwrap(settings.activeShortcut(for: .save))
 
         XCTAssertEqual(settings.reassignShortcut(saveBinding, for: .duplicateScene), .save)
         XCTAssertEqual(settings.activeShortcut(for: .duplicateScene), saveBinding)
         XCTAssertNil(settings.activeShortcut(for: .save))
         XCTAssertEqual(settings.shortcutOverrides[.save], .unassigned)
-        XCTAssertEqual(settings.shortcut(for: .save), ShortcutRegistry.definition(for: .save).factoryDefault)
+        XCTAssertEqual(
+            ShortcutDisplayFormatter.display(for: .save, settings: settings, notAssigned: "Not assigned"),
+            "Not assigned"
+        )
     }
 
     func testAssignedAndUnassignedShortcutsRoundTripThroughCodable() throws {
         var settings = AppSettings.defaults
         _ = settings.setShortcut(.init("p", modifiers: [.command, .option]), for: .commandPalette)
-        _ = settings.reassignShortcut(settings.shortcut(for: .save), for: .duplicateScene)
+        _ = settings.reassignShortcut(try! XCTUnwrap(settings.activeShortcut(for: .save)), for: .duplicateScene)
 
         let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
         XCTAssertEqual(decoded.shortcutOverrides, settings.shortcutOverrides)
@@ -76,7 +79,7 @@ final class ShortcutRegistryTests: XCTestCase {
         var settings = AppSettings.defaults
         XCTAssertNil(settings.setShortcut(ShortcutBinding("z", modifiers: [.command, .option]), for: .duplicateScene))
         XCTAssertNil(settings.resetShortcut(.duplicateScene))
-        XCTAssertEqual(settings.shortcut(for: .duplicateScene), ShortcutRegistry.definition(for: .duplicateScene).factoryDefault)
+        XCTAssertEqual(settings.activeShortcut(for: .duplicateScene), ShortcutRegistry.definition(for: .duplicateScene).factoryDefault)
         XCTAssertNil(settings.setShortcut(ShortcutBinding("z", modifiers: [.command, .option]), for: .duplicateScene))
         XCTAssertNil(settings.setShortcut(ShortcutBinding("g", modifiers: [.command, .option]), for: .toggleFocusMode))
         settings.resetAllShortcuts()
@@ -85,7 +88,7 @@ final class ShortcutRegistryTests: XCTestCase {
 
     func testPerCommandResetIsConflictSafe() {
         var settings = AppSettings.defaults
-        let defaultBinding = settings.shortcut(for: .duplicateScene)
+        let defaultBinding = try! XCTUnwrap(settings.activeShortcut(for: .duplicateScene))
         _ = settings.reassignShortcut(defaultBinding, for: .save)
 
         XCTAssertEqual(settings.resetConflict(for: .duplicateScene), .save)
@@ -100,7 +103,7 @@ final class ShortcutRegistryTests: XCTestCase {
 
     func testResetAllRestoresUniqueFactoryDefaults() {
         var settings = AppSettings.defaults
-        _ = settings.reassignShortcut(settings.shortcut(for: .save), for: .duplicateScene)
+        _ = settings.reassignShortcut(try! XCTUnwrap(settings.activeShortcut(for: .save)), for: .duplicateScene)
         _ = settings.setShortcut(.init("p", modifiers: [.command, .option]), for: .commandPalette)
 
         settings.resetAllShortcuts()
@@ -126,12 +129,73 @@ final class ShortcutRegistryTests: XCTestCase {
         XCTAssertEqual(L10n.tr("shortcuts.notAssigned", language: .russian), "Не назначено")
     }
 
-    func testConfiguredBindingIsTheSingleSourceForKeycapsAndCommands() {
+    func testConfiguredBindingUpdatesEverySharedShortcutHintAndCommandBinding() {
         var settings = AppSettings.defaults
         let replacement = ShortcutBinding("p", modifiers: [.command, .option])
         XCTAssertNil(settings.setShortcut(replacement, for: .commandPalette))
-        XCTAssertEqual(settings.shortcut(for: .commandPalette).display, "⌥⌘P")
-        XCTAssertNotEqual(settings.shortcut(for: .commandPalette), ShortcutRegistry.definition(for: .commandPalette).factoryDefault)
+        let hint = ShortcutDisplayFormatter.display(for: .commandPalette, settings: settings, notAssigned: "Not assigned")
+
+        XCTAssertEqual(hint, "⌥⌘P")
+        XCTAssertEqual(settings.activeShortcut(for: .commandPalette), replacement)
+        XCTAssertNotEqual(settings.activeShortcut(for: .commandPalette), ShortcutRegistry.definition(for: .commandPalette).factoryDefault)
+
+        settings.shortcutOverrides[.commandPalette] = .unassigned
+        XCTAssertEqual(ShortcutDisplayFormatter.display(for: .commandPalette, settings: settings, notAssigned: "Not assigned"), "Not assigned")
+        XCTAssertNil(settings.activeShortcut(for: .commandPalette))
+    }
+
+    func testReassignedMenuBindingUsesTheNewShortcutAndDisablesTheOldOne() {
+        var settings = AppSettings.defaults
+        let oldBinding = try! XCTUnwrap(settings.activeShortcut(for: .commandPalette))
+        let newBinding = ShortcutBinding("p", modifiers: [.command, .option])
+
+        XCTAssertNil(settings.setShortcut(newBinding, for: .commandPalette))
+        XCTAssertEqual(settings.activeShortcut(for: .commandPalette), newBinding)
+        XCTAssertNotEqual(settings.activeShortcut(for: .commandPalette), oldBinding)
+
+        settings.shortcutOverrides[.commandPalette] = .unassigned
+        XCTAssertNil(settings.activeShortcut(for: .commandPalette))
+    }
+
+    func testProductionShortcutSurfacesUseTheActiveBindingFormatter() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sources = try [
+            "FrameScript/App/FrameScriptApp.swift",
+            "FrameScript/Components/ModeSwitcher.swift",
+            "FrameScript/Components/TopToolbar.swift",
+            "FrameScript/Components/SceneSidebar.swift",
+            "FrameScript/Features/CommandPalette/CommandPaletteView.swift",
+            "FrameScript/Features/Settings/ShortcutsOverlay.swift"
+        ].map { path in
+            try String(contentsOf: root.appendingPathComponent(path))
+        }
+
+        let menuCommands = sources[0]
+        XCTAssertEqual(menuCommands.components(separatedBy: ".keyboardShortcut(").count - 1, 1)
+        XCTAssertTrue(menuCommands.contains(".configuredKeyboardShortcut(appState.shortcutBinding"))
+        for source in sources.dropFirst() {
+            XCTAssertTrue(source.contains("shortcutDisplay(for:"))
+            XCTAssertFalse(source.contains("settings.shortcut(for:"))
+        }
+    }
+
+    func testOnlyOneProjectListExitActionRemainsInProductionSurfaces() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let paths = [
+            "FrameScript/App/FrameScriptApp.swift",
+            "FrameScript/Components/TopToolbar.swift",
+            "FrameScript/Features/CommandPalette/CommandPaletteView.swift"
+        ]
+        let sources = try paths.map { try String(contentsOf: root.appendingPathComponent($0)) }.joined(separator: "\n")
+
+        XCTAssertEqual(sources.components(separatedBy: "returnToProjectList()").count - 1, 3)
+        XCTAssertFalse(sources.contains("closeProject()"))
+        XCTAssertFalse(sources.contains("project.close"))
+        XCTAssertFalse(sources.contains("command.closeProject"))
     }
 
     func testShortcutSettingsLayoutUsesOneOrderedCardForEveryCategory() {

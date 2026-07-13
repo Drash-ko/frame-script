@@ -15,7 +15,7 @@ struct ShortcutsOverlay: View {
 
             LazyVGrid(columns: [GridItem(.fixed(90)), GridItem(.flexible())], alignment: .leading, spacing: 10) {
                 ForEach(shortcuts) { shortcut in
-                    Text(appState.settings.shortcut(for: shortcut.command).display)
+                    Text(appState.shortcutDisplay(for: shortcut.command))
                         .font(.system(size: 12, weight: .semibold, design: .rounded))
                         .foregroundStyle(theme.primaryText)
                     Text(appState.localized(shortcut.localizationKey))

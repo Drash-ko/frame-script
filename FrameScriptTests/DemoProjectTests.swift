@@ -29,6 +29,28 @@ final class DemoProjectTests: XCTestCase {
         XCTAssertTrue(store.needsCloseConfirmation)
     }
 
+    func testReturningToProjectListPromptsDirtyProjectOnceAndNeverPromptsBuiltInDemo() {
+        let normal = FrameProject(title: "Untitled", scenes: [])
+        let store = ProjectStore(project: normal)
+        store.openProject(normal, fileURL: nil, wordsPerMinute: 150, markUnsaved: true)
+        var confirmations = 0
+        let appState = makeAppState(store: store, closeConfirmation: {
+            confirmations += 1
+            return .discard
+        })
+
+        XCTAssertTrue(appState.returnToProjectList())
+        XCTAssertEqual(confirmations, 1)
+        XCTAssertFalse(store.hasOpenProject)
+
+        let demo = SampleData.demoProject(language: .english)
+        store.openProject(demo, fileURL: nil, wordsPerMinute: 150, markUnsaved: false, origin: .builtInDemo)
+        store.markProjectDirty()
+        XCTAssertTrue(appState.returnToProjectList())
+        XCTAssertEqual(confirmations, 1)
+        XCTAssertFalse(store.hasOpenProject)
+    }
+
     func testDemoEditsDoNotAutosave() async throws {
         let demo = SampleData.demoProject(language: .english)
         var writes = 0
@@ -143,14 +165,18 @@ final class DemoProjectTests: XCTestCase {
         }
     }
 
-    private func makeAppState(store: ProjectStore) -> AppState {
+    private func makeAppState(
+        store: ProjectStore,
+        closeConfirmation: AppState.CloseConfirmation? = nil
+    ) -> AppState {
         let suite = UserDefaults(suiteName: "DemoProjectTests-\(UUID().uuidString)")!
         var settings = AppSettings.defaults
         settings.generalPreferences.autosaveEnabled = true
         return AppState(
             projectStore: store,
             recentProjectStore: RecentProjectStore(userDefaults: suite),
-            settingsStore: SettingsStore(settings: settings, userDefaults: suite, key: "settings")
+            settingsStore: SettingsStore(settings: settings, userDefaults: suite, key: "settings"),
+            closeConfirmation: closeConfirmation
         )
     }
 

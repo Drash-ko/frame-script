@@ -16,8 +16,7 @@ struct TopToolbar: View {
                 Divider()
                 Button(appState.localized("project.export")) { appState.exportProject() }
                 Divider()
-                Button(appState.localized("project.close")) { appState.closeProject() }
-                Button(appState.localized("project.browser")) { appState.showProjectBrowser() }
+                Button(appState.localized("project.browser")) { appState.returnToProjectList() }
             } label: {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -81,7 +80,7 @@ struct TopToolbar: View {
                     HStack(spacing: 5) {
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 13, weight: .medium))
-                        Text(appState.settings.shortcut(for: .commandPalette).display)
+                        Text(appState.shortcutDisplay(for: .commandPalette))
                             .font(.system(size: 10, weight: .medium, design: .rounded))
                             .foregroundStyle(theme.tertiaryText)
                             .padding(.horizontal, 4)
@@ -99,7 +98,7 @@ struct TopToolbar: View {
                 }
                 .buttonStyle(.cursorPlain)
                 .foregroundStyle(theme.secondaryText)
-                .help(appState.localized("toolbar.commandPalette"))
+                .help("\(appState.localized("toolbar.commandPalette")) (\(appState.shortcutDisplay(for: .commandPalette)))")
 
                 toolbarDivider
 

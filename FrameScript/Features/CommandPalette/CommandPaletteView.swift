@@ -40,11 +40,8 @@ struct CommandPaletteView: View {
             PaletteResult(title: appState.localized("command.toggleAIReview"), detail: shortcut(.toggleAIReview)) {
                 appState.settings.editorPreferences.showAIReviewPanel.toggle()
             },
-            PaletteResult(title: appState.localized("command.closeProject"), detail: "") {
-                appState.closeProject()
-            },
-            PaletteResult(title: appState.localized("command.projectBrowser"), detail: "") {
-                appState.showProjectBrowser()
+            PaletteResult(title: appState.localized("project.browser"), detail: "") {
+                appState.returnToProjectList()
             },
             PaletteResult(title: appState.localized("command.showShortcuts"), detail: shortcut(.showShortcuts)) {
                 appState.isShortcutsPresented = true
@@ -53,7 +50,7 @@ struct CommandPaletteView: View {
     }
 
     private func shortcut(_ command: ShortcutCommand) -> String {
-        appState.settings.shortcut(for: command).display
+        appState.shortcutDisplay(for: command)
     }
 
     private var settingResults: [PaletteResult] {

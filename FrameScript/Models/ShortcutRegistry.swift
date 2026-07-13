@@ -142,6 +142,18 @@ struct ShortcutDefinition: Identifiable {
     var id: ShortcutCommand { command }
 }
 
+/// The sole formatter for shortcut labels outside the shortcut recorder.
+/// It always reflects the current binding, including an explicit unassignment.
+enum ShortcutDisplayFormatter {
+    static func display(
+        for command: ShortcutCommand,
+        settings: AppSettings,
+        notAssigned: String
+    ) -> String {
+        settings.activeShortcut(for: command)?.display ?? notAssigned
+    }
+}
+
 enum ShortcutRegistry {
     static let definitions: [ShortcutDefinition] = [
         .init(command: .newProject, localizationKey: "menu.newProject", category: .project, factoryDefault: .init("n", modifiers: [.command]), order: 0),
@@ -189,12 +201,6 @@ enum ShortcutRegistry {
 }
 
 extension AppSettings {
-    func shortcut(for command: ShortcutCommand) -> ShortcutBinding {
-        // Existing shortcut hints outside Settings retain their established
-        // appearance. Commands themselves use `activeShortcut(for:)`.
-        activeShortcut(for: command) ?? command.definition.factoryDefault
-    }
-
     func activeShortcut(for command: ShortcutCommand) -> ShortcutBinding? {
         ShortcutRegistry.binding(for: command, overrides: shortcutOverrides)
     }
