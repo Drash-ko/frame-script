@@ -47,8 +47,8 @@ struct ScriptEditorView: View {
                 editingColor: NSColor(theme.editingMarker),
                 addBRollLabel: appState.localized("production.addBRollForSelection"),
                 addEditingLabel: appState.localized("production.addEditingForSelection"),
-                onTextCommitted: { text in
-                    appState.commitScriptTextChange(sceneID: scene.id, text: text)
+                onTextCommitted: { previousText, text in
+                    appState.commitScriptTextChange(sceneID: scene.id, previousText: previousText, text: text)
                 },
                 autocomplete: { context in await appState.autocompleteScript(context: context) },
                 onTeardown: { appState.flushActiveEditorBoundary(flushEditor: false) },
@@ -357,7 +357,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
     let editingColor: NSColor
     let addBRollLabel: String
     let addEditingLabel: String
-    let onTextCommitted: (String) -> Void
+    let onTextCommitted: (String, String) -> Void
     let autocomplete: @MainActor (AutocompleteContext) async -> AutocompleteResult
     let onTeardown: () -> Void
     let markerAction: ([UUID], WorkspaceMode) -> Void
@@ -640,7 +640,8 @@ struct LinkedScriptTextView: NSViewRepresentable {
         @discardableResult
         private func emitCurrentText(from textView: NSTextView, origin: ChangeOrigin, forceCommit: Bool = false) -> Bool {
             let value = textView.string
-            let changed = parent.text != value
+            let previousValue = parent.text
+            let changed = previousValue != value
             changeOrigin = origin
             lastUserEmittedValue = value
             if origin == .user {
@@ -649,7 +650,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
                 pendingUserRevision = userRevision
             }
             parent.text = value
-            if changed || forceCommit { parent.onTextCommitted(value) }
+            if changed || forceCommit { parent.onTextCommitted(previousValue, value) }
             return changed
         }
 
@@ -1223,7 +1224,7 @@ final class MarkerTextContainerView: NSView {
     }
 
     func markerHitTest(at point: NSPoint) -> ViewportMarkerRect? {
-        markerHitRects().reversed().first { $0.rect.insetBy(dx: -2, dy: 0).contains(point) }
+        markerHitRects().first { $0.rect.contains(point) }
     }
 
     func documentMarkerGeometry() -> MarkerGeometry {
@@ -1319,13 +1320,19 @@ enum TextAnchorGeometry {
     fileprivate static func documentMarkers(groups: [MarkerRangeGroup], textView: NSTextView) -> MarkerGeometry {
         guard let layout = textView.layoutManager, let container = textView.textContainer else { return MarkerGeometry() }
         layout.ensureLayout(for: container)
-        let hitRegions = groups.flatMap {
-            markerHitRegions(for: $0, layout: layout, textInset: textView.textContainerInset.height)
+        let fragments = groups.enumerated().flatMap { index, group in
+            markerLineFragments(
+                for: group,
+                groupIndex: index,
+                layout: layout,
+                textInset: textView.textContainerInset.height
+            )
         }
-        let renderRuns = groups.compactMap {
-            visualRun(for: $0, layout: layout, textInset: textView.textContainerInset.height)
-        }
-        return MarkerGeometry(hitRegions: hitRegions, renderRuns: renderRuns)
+        let allocated = allocateLaneLocalRegions(fragments)
+        return MarkerGeometry(
+            hitRegions: allocated.map(\.marker),
+            renderRuns: mergedVisualRuns(from: allocated)
+        )
     }
 
     fileprivate static func markerGroups(markers: [ProductionTextMarker], in text: String) -> [MarkerRangeGroup] {
@@ -1379,24 +1386,75 @@ enum TextAnchorGeometry {
         }
     }
 
-    private static func markerHitRegions(
+    private struct MarkerLineFragment {
+        let groupIndex: Int
+        let marker: DocumentMarkerRect
+    }
+
+    private struct AllocatedMarkerFragment {
+        let groupIndex: Int
+        let marker: DocumentMarkerRect
+        let sharesLine: Bool
+    }
+
+    private static func markerLineFragments(
         for group: MarkerRangeGroup,
+        groupIndex: Int,
         layout: NSLayoutManager,
         textInset: CGFloat
-    ) -> [DocumentMarkerRect] {
+    ) -> [MarkerLineFragment] {
         var actual = NSRange()
         let glyphRange = layout.glyphRange(forCharacterRange: group.range, actualCharacterRange: &actual)
         guard glyphRange.length > 0 else { return [] }
-        var regions: [DocumentMarkerRect] = []
+        var regions: [MarkerLineFragment] = []
         layout.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, lineGlyphRange, _ in
             guard NSIntersectionRange(glyphRange, lineGlyphRange).length > 0 else { return }
-            regions.append(DocumentMarkerRect(
-                itemIDs: group.itemIDs,
-                mode: group.mode,
-                documentRect: markerRect(for: group.mode, usedRect: usedRect, textInset: textInset)
+            regions.append(MarkerLineFragment(
+                groupIndex: groupIndex,
+                marker: DocumentMarkerRect(
+                    itemIDs: group.itemIDs,
+                    mode: group.mode,
+                    documentRect: markerRect(for: group.mode, usedRect: usedRect, textInset: textInset)
+                )
             ))
         }
         return regions
+    }
+
+    private static func allocateLaneLocalRegions(_ fragments: [MarkerLineFragment]) -> [AllocatedMarkerFragment] {
+        let grouped = Dictionary(grouping: fragments) { fragment in
+            LaneLineKey(
+                mode: fragment.marker.mode,
+                minY: fragment.marker.documentRect.minY,
+                maxY: fragment.marker.documentRect.maxY
+            )
+        }
+        return grouped.values.flatMap { lineFragments in
+            let ordered = lineFragments.sorted { $0.groupIndex < $1.groupIndex }
+            let count = CGFloat(ordered.count)
+            return ordered.enumerated().map { index, fragment in
+                var rect = fragment.marker.documentRect
+                let height = rect.height / count
+                rect.origin.y += height * CGFloat(index)
+                rect.size.height = height
+                return AllocatedMarkerFragment(
+                    groupIndex: fragment.groupIndex,
+                    marker: DocumentMarkerRect(itemIDs: fragment.marker.itemIDs, mode: fragment.marker.mode, documentRect: rect),
+                    sharesLine: ordered.count > 1
+                )
+            }
+        }
+        .sorted { lhs, rhs in
+            if lhs.marker.mode != rhs.marker.mode { return lhs.marker.mode == .bRoll }
+            if lhs.marker.documentRect.minY != rhs.marker.documentRect.minY { return lhs.marker.documentRect.minY < rhs.marker.documentRect.minY }
+            return lhs.groupIndex < rhs.groupIndex
+        }
+    }
+
+    private struct LaneLineKey: Hashable {
+        let mode: WorkspaceMode
+        let minY: CGFloat
+        let maxY: CGFloat
     }
 
     private static func groupedRanges(
@@ -1431,33 +1489,28 @@ enum TextAnchorGeometry {
         return groups
     }
 
-    private static func visualRun(
-        for group: MarkerRangeGroup,
-        layout: NSLayoutManager,
-        textInset: CGFloat
-    ) -> DocumentMarkerRect? {
-        var actual = NSRange()
-        let glyphRange = layout.glyphRange(forCharacterRange: group.range, actualCharacterRange: &actual)
-        guard glyphRange.length > 0 else { return nil }
-        var minY: CGFloat?
-        var maxY: CGFloat?
-        layout.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, lineGlyphRange, _ in
-            guard NSIntersectionRange(glyphRange, lineGlyphRange).length > 0 else { return }
-            let rect = markerRect(for: group.mode, usedRect: usedRect, textInset: textInset)
-            minY = min(minY ?? rect.minY, rect.minY)
-            maxY = max(maxY ?? rect.maxY, rect.maxY)
+    private static func mergedVisualRuns(from fragments: [AllocatedMarkerFragment]) -> [DocumentMarkerRect] {
+        let byGroup = Dictionary(grouping: fragments, by: \.groupIndex)
+        return byGroup.values.flatMap { groupFragments in
+            let ordered = groupFragments.sorted { $0.marker.documentRect.minY < $1.marker.documentRect.minY }
+            var runs: [DocumentMarkerRect] = []
+            for fragment in ordered {
+                guard let last = runs.indices.last,
+                      !fragment.sharesLine,
+                      runs[last].documentRect.minX == fragment.marker.documentRect.minX,
+                      runs[last].documentRect.width == fragment.marker.documentRect.width else {
+                    runs.append(fragment.marker)
+                    continue
+                }
+                runs[last].documentRect.size.height = fragment.marker.documentRect.maxY - runs[last].documentRect.minY
+            }
+            return runs
         }
-        guard let minY, let maxY else { return nil }
-        return DocumentMarkerRect(
-            itemIDs: group.itemIDs,
-            mode: group.mode,
-            documentRect: NSRect(
-                x: markerLaneX(for: group.mode),
-                y: minY,
-                width: TextMarkerStyle.stripWidth,
-                height: max(8, maxY - minY)
-            )
-        )
+        .sorted { lhs, rhs in
+            if lhs.mode != rhs.mode { return lhs.mode == .bRoll }
+            if lhs.documentRect.minY != rhs.documentRect.minY { return lhs.documentRect.minY < rhs.documentRect.minY }
+            return lhs.documentRect.minX < rhs.documentRect.minX
+        }
     }
 }
 

@@ -7,12 +7,14 @@
 - Made persisted Visuals and Editing relationships authoritative through exact text anchors; legacy segment-only links now migrate to anchors during loading and synchronization.
 - Made Visuals and Editing sections, labels, selection, and marker navigation anchor-first: identical anchored ranges group together in stable script order, while invalid or missing anchors appear under Unlinked.
 - Changed Script production markers to group only overlapping or touching current UTF-16 anchor ranges per Visuals or Editing lane; marker clicks now select the complete anchored group.
+- Kept Visuals and Editing hit regions in separate fixed lanes, and assign separated same-line groups distinct deterministic regions in script order.
 
 ### Fixed
 
 - Fixed linked production selections shifting, expanding, and shrinking through ordinary script edits, while ambiguous or unsafe repairs now clear stale relationship metadata.
 - Fixed stale anchors, whitespace-separated ranges, and cross-workspace marker interaction so they no longer produce misleading geometry or selection.
 - Fixed production anchors and Script markers to refresh immediately on committed text edits, while rejecting distant or ambiguous repair evidence and avoiding unnecessary TextKit geometry work.
+- Fixed live anchor repair to use the pre-edit script text for deterministic boundary-preserving edits, refresh anchor context, and normalize selection after groups change.
 
 ## [0.3.0] - 2026-07-13
 

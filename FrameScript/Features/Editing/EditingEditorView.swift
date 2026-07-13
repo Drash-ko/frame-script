@@ -75,6 +75,7 @@ struct EditingEditorView: View {
             ForEach(Array(scene.textSegments.sortedByOrder.enumerated()), id: \.element.id) { index, segment in
                 Button(segmentTitle(index, segment)) {
                     appState.projectStore.link(item, to: segment, in: scene)
+                    appState.normalizeProductionSelection()
                     appState.touchProject()
                 }
             }
@@ -102,7 +103,7 @@ struct EditingEditorView: View {
     }
     private func deleteItem(_ item: EditingItem) {
         scene.editingItems.removeAll { $0.id == item.id }
-        appState.clearProductionSelection(containing: item.id)
+        appState.normalizeProductionSelection()
         appState.touchProject()
     }
     private func linkLabel(_ item: EditingItem) -> String {

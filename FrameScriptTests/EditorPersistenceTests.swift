@@ -170,6 +170,27 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(insideItem.textAnchor?.selectedText, "taget")
     }
 
+    func testLiveRepairCrossingOneAnchorBoundaryPreservesTheSurvivingBoundary() throws {
+        let (appState, scene, item) = try makeAnchoredAppState(linkedSegmentID: UUID())
+
+        appState.commitScriptTextChange(sceneID: scene.id, text: "alphget omega")
+
+        XCTAssertEqual(item.textAnchor?.startUTF16, 4)
+        XCTAssertEqual(item.textAnchor?.selectedText, "get")
+        XCTAssertEqual(item.textAnchor?.prefixContext, "alph")
+        XCTAssertEqual(item.textAnchor?.suffixContext, " omega")
+        XCTAssertNotNil(item.linkedSegmentID)
+    }
+
+    func testLiveRepairClearsBothRelationshipFieldsWhenBothAnchorBoundariesAreDestroyed() throws {
+        let (appState, scene, item) = try makeAnchoredAppState(linkedSegmentID: UUID())
+
+        appState.commitScriptTextChange(sceneID: scene.id, text: "alpha X omega")
+
+        XCTAssertNil(item.textAnchor)
+        XCTAssertNil(item.linkedSegmentID)
+    }
+
     func testCommittedTextClearsBothRelationshipFieldsWhenRepairFails() throws {
         let (appState, scene, item) = try makeAnchoredAppState(linkedSegmentID: UUID())
 
@@ -282,7 +303,6 @@ final class EditorPersistenceTests: XCTestCase {
 
         XCTAssertEqual(appState.editorState.selectedMode, .bRoll)
         XCTAssertEqual(appState.editorState.selectedProductionItemIDs, [item.id])
-        XCTAssertNil(appState.editorState.selectedProductionSegmentID)
         XCTAssertEqual(sections.first?.items.map(\.id), [item.id])
     }
 
@@ -303,6 +323,21 @@ final class EditorPersistenceTests: XCTestCase {
 
         appState.selectMode(.editing)
         XCTAssertTrue(appState.editorState.selectedProductionItemIDs.isEmpty)
+    }
+
+    func testProductionSelectionCollapsesToOneCurrentGroupWhenRepairSplitsIt() throws {
+        let text = "abcdef"
+        let first = BRollItem(textAnchor: try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: NSRange(location: 0, length: 3))), templateType: "", sourceType: .custom, descriptionText: "")
+        let second = BRollItem(textAnchor: try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: NSRange(location: 3, length: 3))), templateType: "", sourceType: .custom, descriptionText: "")
+        let scene = Scene(order: 0, sectionType: .custom, title: "Scene", scriptText: text, bRollItems: [first, second])
+        let (appState, _, _) = makeAppState(project: FrameProject(title: "Project", scenes: [scene]), fileURL: nil)
+        appState.selectProductionItems([first.id, second.id], mode: .bRoll)
+
+        appState.commitScriptTextChange(sceneID: scene.id, text: "abcXdef")
+
+        XCTAssertEqual(appState.editorState.selectedProductionItemIDs, [first.id])
+        XCTAssertEqual(first.textAnchor?.selectedText, "abc")
+        XCTAssertEqual(second.textAnchor?.selectedText, "def")
     }
 
     func testLegacySegmentLinksMigrateToAnchorsAndStaleLinksClear() throws {
@@ -502,7 +537,7 @@ final class EditorPersistenceTests: XCTestCase {
         let (appState, scene, _) = makeAppState(fileURL: nil)
         let representable = makeRepresentable(
             text: Binding(get: { scene.scriptText }, set: { _ in }),
-            onTextCommitted: { text in appState.commitScriptTextChange(sceneID: scene.id, text: text) }
+            onTextCommitted: { previousText, text in appState.commitScriptTextChange(sceneID: scene.id, previousText: previousText, text: text) }
         )
         let host = NSHostingView(rootView: representable)
         host.frame = NSRect(x: 0, y: 0, width: 640, height: 480)
@@ -1519,9 +1554,12 @@ final class EditorPersistenceTests: XCTestCase {
 
     func testMarkerOverlappingRangesProduceOneGroup() {
         let text = "abcdef"
-        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: NSRange(location: 0, length: 4)), marker(.bRoll, in: text, range: NSRange(location: 2, length: 3))])
+        let first = marker(.bRoll, in: text, range: NSRange(location: 0, length: 4))
+        let second = marker(.bRoll, in: text, range: NSRange(location: 2, length: 3))
+        let geometry = markerGeometry(text: text, markers: [first, second])
 
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 1)
+        XCTAssertEqual(geometry.renderRuns.first?.itemIDs, [first.itemID, second.itemID])
     }
 
     func testMarkerTouchingRangesProduceOneGroup() {
@@ -1532,6 +1570,7 @@ final class EditorPersistenceTests: XCTestCase {
 
         XCTAssertNotEqual(first.itemID, second.itemID)
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 1)
+        XCTAssertEqual(geometry.renderRuns.first?.itemIDs, [first.itemID, second.itemID])
     }
 
     func testMarkerDuplicateIdenticalAnchorsDrawOneStripPerMarkerType() {
@@ -1553,6 +1592,7 @@ final class EditorPersistenceTests: XCTestCase {
             let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: NSRange(location: 0, length: 3)), marker(.bRoll, in: text, range: NSRange(location: secondStart, length: 5))])
 
             XCTAssertEqual(runs(.bRoll, in: geometry).count, 2, text)
+            XCTAssertEqual(geometry.hitRegions.count, 2, text)
         }
     }
 
@@ -1561,6 +1601,7 @@ final class EditorPersistenceTests: XCTestCase {
         let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: NSRange(location: 0, length: 3)), marker(.bRoll, in: text, range: NSRange(location: 4, length: 5))])
 
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 2)
+        XCTAssertEqual(geometry.hitRegions.count, 2)
     }
 
     func testMarkerUkrainianSeparatedAnchorsRemainSeparateVisualRunsInNarrowTextView() {
@@ -1618,6 +1659,38 @@ final class EditorPersistenceTests: XCTestCase {
         let point = NSPoint(x: group.rect.midX, y: group.rect.midY)
         XCTAssertEqual(group.itemIDs, [first.itemID, second.itemID])
         XCTAssertEqual(view.markerHitTest(at: point)?.itemIDs, [first.itemID, second.itemID])
+    }
+
+    func testSameLineSeparatedAnchorsUseDistinctClickableLaneRegions() {
+        let text = "one three"
+        let first = marker(.bRoll, in: text, range: NSRange(location: 0, length: 3))
+        let second = marker(.bRoll, in: text, range: NSRange(location: 4, length: 5))
+        let view = makeMarkerTestView(text: text)
+        view.markers = [first, second]
+        let render = runs(.bRoll, in: view.documentMarkerGeometry())
+        let hits = view.markerHitRects().filter { $0.mode == .bRoll }
+
+        XCTAssertEqual(render.count, 2)
+        XCTAssertEqual(hits.count, 2)
+        XCTAssertNotEqual(render[0].documentRect, render[1].documentRect)
+        XCTAssertFalse(hits[0].rect.intersects(hits[1].rect))
+        XCTAssertEqual(view.markerHitTest(at: NSPoint(x: hits[0].rect.midX, y: hits[0].rect.midY))?.itemIDs, [first.itemID])
+        XCTAssertEqual(view.markerHitTest(at: NSPoint(x: hits[1].rect.midX, y: hits[1].rect.midY))?.itemIDs, [second.itemID])
+    }
+
+    func testVisualAndEditingLaneEdgesNeverHitTheOtherLane() {
+        let text = "one"
+        let visual = marker(.bRoll, in: text, range: NSRange(location: 0, length: 3))
+        let editing = marker(.editing, in: text, range: NSRange(location: 0, length: 3))
+        let view = makeMarkerTestView(text: text)
+        view.markers = [visual, editing]
+        let hits = view.markerHitRects()
+        let visualHit = try! XCTUnwrap(hits.first { $0.mode == .bRoll })
+        let editingHit = try! XCTUnwrap(hits.first { $0.mode == .editing })
+
+        XCTAssertFalse(visualHit.rect.intersects(editingHit.rect))
+        XCTAssertEqual(view.markerHitTest(at: NSPoint(x: visualHit.rect.maxX - 0.01, y: visualHit.rect.midY))?.mode, .bRoll)
+        XCTAssertEqual(view.markerHitTest(at: NSPoint(x: editingHit.rect.minX, y: editingHit.rect.midY))?.mode, .editing)
     }
 
     func testMarkerSameLengthTextEditWithDifferentWrappingRebuildsGeometry() {
@@ -1927,7 +2000,7 @@ final class EditorPersistenceTests: XCTestCase {
         autocompleteConfigurationEligibility: AutocompleteConfigurationEligibility = .eligible,
         loadState: @escaping () -> ScriptEditorRestorationState? = { nil },
         saveState: @escaping (ScriptEditorRestorationState) -> Void = { _ in },
-        onTextCommitted: @escaping (String) -> Void = { _ in },
+        onTextCommitted: @escaping (String, String) -> Void = { _, _ in },
         autocomplete: @escaping @MainActor (AutocompleteContext) async -> AutocompleteResult = { _ in .none },
         onTeardown: @escaping () -> Void = {}
     ) -> LinkedScriptTextView {
@@ -1997,7 +2070,7 @@ final class EditorPersistenceTests: XCTestCase {
     private func makeCoordinator(appState: AppState, scene: FrameScript.Scene) -> (LinkedScriptTextView.Coordinator, MarkerTextContainerView) {
         let parent = makeRepresentable(
             text: Binding(get: { scene.scriptText }, set: { _ in }),
-            onTextCommitted: { text in appState.commitScriptTextChange(sceneID: scene.id, text: text) }
+            onTextCommitted: { previousText, text in appState.commitScriptTextChange(sceneID: scene.id, previousText: previousText, text: text) }
         )
         let coordinator = LinkedScriptTextView.Coordinator(parent: parent)
         let view = MarkerTextContainerView()

@@ -294,12 +294,6 @@ final class AppState {
         transitionEditorContext(mode: mode)
     }
 
-    func selectProductionSegment(_ segmentID: UUID, mode: WorkspaceMode) {
-        editorState.selectedProductionItemIDs = []
-        editorState.selectedProductionSegmentID = segmentID
-        selectMode(mode)
-    }
-
     @discardableResult
     func showProjectBrowser() -> Bool {
         guard closeProject() else { return false }
@@ -602,10 +596,11 @@ final class AppState {
         commitScriptTextChange(sceneID: sceneID)
     }
 
-    func commitScriptTextChange(sceneID: UUID, text: String? = nil) {
+    func commitScriptTextChange(sceneID: UUID, previousText: String? = nil, text: String? = nil) {
         projectStore.setSegmentSplitMode(settings.generalPreferences.defaultSplitMode)
+        let oldText = previousText ?? project.scenes.first(where: { $0.id == sceneID })?.scriptText
         if let text {
-            projectStore.commitScriptText(text, sceneID: sceneID)
+            projectStore.commitScriptText(text, sceneID: sceneID, previousText: oldText)
         }
         projectStore.updateCurrentSceneMetrics(sceneID: sceneID, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
         validateProductionSelection()
@@ -837,10 +832,10 @@ final class AppState {
                   TextAnchorRepair.current(anchor, in: scene.scriptText) != nil else { return }
             result.append(itemID)
         }
-        guard !selectedIDs.isEmpty else { return }
+        guard let selectedID = selectedIDs.first,
+              let group = productionMarkerGroups(in: scene, mode: mode).first(where: { $0.itemIDs.contains(selectedID) }) else { return }
         transitionEditorContext(mode: mode, preservingProductionSelection: true) {
-            editorState.selectedProductionItemIDs = selectedIDs
-            editorState.selectedProductionSegmentID = nil
+            editorState.selectedProductionItemIDs = group.itemIDs
         }
     }
 
@@ -853,23 +848,77 @@ final class AppState {
         editorState.selectedProductionItemIDs = []
     }
 
+    func normalizeProductionSelection() {
+        validateProductionSelection()
+    }
+
     private func validateProductionSelection() {
         guard !editorState.selectedProductionItemIDs.isEmpty,
               let scene = selectedScene else {
             return
         }
-        let anchorsByID: [UUID: TextAnchor?] = switch editorState.selectedMode {
-        case .bRoll: Dictionary(uniqueKeysWithValues: scene.bRollItems.map { ($0.id, $0.textAnchor) })
-        case .editing: Dictionary(uniqueKeysWithValues: scene.editingItems.map { ($0.id, $0.textAnchor) })
-        case .script: [:]
-        }
-        guard editorState.selectedProductionItemIDs.allSatisfy({ itemID in
-            guard let anchor = anchorsByID[itemID] else { return false }
-            return TextAnchorRepair.current(anchor, in: scene.scriptText) != nil
-        }) else {
+        guard let selectedID = editorState.selectedProductionItemIDs.first(where: { selected in
+            productionMarkerGroups(in: scene, mode: editorState.selectedMode).contains { $0.itemIDs.contains(selected) }
+        }), let group = productionMarkerGroups(in: scene, mode: editorState.selectedMode).first(where: { $0.itemIDs.contains(selectedID) }) else {
             clearProductionSelection()
             return
         }
+        editorState.selectedProductionItemIDs = group.itemIDs
+    }
+
+    private func productionMarkerGroups(in scene: Scene, mode: WorkspaceMode) -> [ProductionMarkerGroup] {
+        let anchors: [(id: UUID, anchor: TextAnchor, itemOrder: Int)] = switch mode {
+        case .bRoll:
+            scene.bRollItems.enumerated().compactMap { index, item in
+                TextAnchorRepair.current(item.textAnchor, in: scene.scriptText).map { (item.id, $0, index) }
+            }
+        case .editing:
+            scene.editingItems.enumerated().compactMap { index, item in
+                TextAnchorRepair.current(item.textAnchor, in: scene.scriptText).map { (item.id, $0, index) }
+            }
+        case .script:
+            []
+        }
+        let sorted = anchors.sorted {
+            if $0.anchor.startUTF16 != $1.anchor.startUTF16 { return $0.anchor.startUTF16 < $1.anchor.startUTF16 }
+            if $0.anchor.lengthUTF16 != $1.anchor.lengthUTF16 { return $0.anchor.lengthUTF16 < $1.anchor.lengthUTF16 }
+            return $0.itemOrder < $1.itemOrder
+        }
+        guard let first = sorted.first else { return [] }
+        var groups: [ProductionMarkerGroup] = []
+        var group = ProductionMarkerGroup(range: first.anchor.nsRange, itemIDs: [first.id])
+        for entry in sorted.dropFirst() {
+            let range = entry.anchor.nsRange
+            let groupEnd = NSMaxRange(group.range)
+            if range.location <= groupEnd {
+                group.range.length = max(groupEnd, NSMaxRange(range)) - group.range.location
+                group.itemIDs.append(entry.id)
+            } else {
+                groups.append(group)
+                group = ProductionMarkerGroup(range: range, itemIDs: [entry.id])
+            }
+        }
+        groups.append(group)
+        return groups
+    }
+
+    private func productionSuggestionTarget(in scene: Scene) -> TextAnchor? {
+        let selectedAnchor: TextAnchor? = switch editorState.selectedMode {
+        case .bRoll:
+            editorState.selectedProductionItemIDs.lazy.compactMap { selectedID in
+                scene.bRollItems.first(where: { $0.id == selectedID }).flatMap { TextAnchorRepair.current($0.textAnchor, in: scene.scriptText) }
+            }.first
+        case .editing:
+            editorState.selectedProductionItemIDs.lazy.compactMap { selectedID in
+                scene.editingItems.first(where: { $0.id == selectedID }).flatMap { TextAnchorRepair.current($0.textAnchor, in: scene.scriptText) }
+            }.first
+        case .script:
+            nil
+        }
+        return selectedAnchor ?? TextAnchorRepair.anchor(
+            in: scene.scriptText,
+            range: NSRange(location: 0, length: (scene.scriptText as NSString).length)
+        )
     }
 
     func addScene() {
@@ -954,9 +1003,7 @@ final class AppState {
             return
         }
         guard let scene = selectedScene else { return }
-        rebuildProductionSegments(markUnsaved: false)
-        let segments = scene.textSegments.sortedByOrder
-        guard let segment = segments.first(where: { $0.id == editorState.selectedProductionSegmentID }) ?? segments.first else {
+        guard let target = productionSuggestionTarget(in: scene) else {
             errorCenter.present(AppError(kind: .invalidProjectData))
             return
         }
@@ -965,8 +1012,8 @@ final class AppState {
             ? "Return only one JSON object with string fields: source, description, notes. Source must be one of: \(BRollSourceType.allCases.map(\.rawValue).joined(separator: ", "))."
             : "Return only one JSON object with string fields: description, notes."
         let context = settings.aiPreferences.privacyMode
-            ? segment.sourceText
-            : "Scene: \(scene.title)\nFull scene: \(scene.scriptText)\nTarget segment: \(segment.sourceText)"
+            ? target.selectedText
+            : "Scene: \(scene.title)\nFull scene: \(scene.scriptText)\nTarget anchor: \(target.selectedText)"
         do {
             let provider = settings.aiPreferences.provider
             let apiKey = try dependencies.providerCredentials.apiKey(for: provider)
@@ -986,16 +1033,15 @@ final class AppState {
                 let value = try JSONDecoder().decode(GeneratedBRollSuggestion.self, from: data)
                 guard !value.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GenerationError.emptyDescription }
                 let source = BRollSourceType.allCases.first { $0.rawValue.caseInsensitiveCompare(value.source) == .orderedSame } ?? .custom
-                scene.bRollItems.append(BRollItem(textAnchor: projectStore.anchor(for: segment.id, in: scene), linkedSegmentID: segment.id, templateType: "", sourceType: source, descriptionText: value.description, notes: value.notes))
+                scene.bRollItems.append(BRollItem(textAnchor: target, linkedSegmentID: nil, templateType: "", sourceType: source, descriptionText: value.description, notes: value.notes))
                 selectMode(.bRoll)
             case .editingGeneration:
                 let value = try JSONDecoder().decode(GeneratedEditingSuggestion.self, from: data)
                 guard !value.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GenerationError.emptyDescription }
-                scene.editingItems.append(EditingItem(textAnchor: projectStore.anchor(for: segment.id, in: scene), linkedSegmentID: segment.id, templateType: "", cutStyle: value.description, transition: "", subtitleStyle: "", notes: value.notes))
+                scene.editingItems.append(EditingItem(textAnchor: target, linkedSegmentID: nil, templateType: "", cutStyle: value.description, transition: "", subtitleStyle: "", notes: value.notes))
                 selectMode(.editing)
             default: return
             }
-            editorState.selectedProductionSegmentID = segment.id
             touchProject()
         } catch {
             errorCenter.present(AppError.ai(error))
@@ -1932,10 +1978,11 @@ final class ProjectStore {
         saveState = .edited
     }
 
-    func commitScriptText(_ text: String, sceneID: UUID) {
+    func commitScriptText(_ text: String, sceneID: UUID, previousText: String? = nil) {
         guard let scene = project.scenes.first(where: { $0.id == sceneID }) else { return }
+        let oldText = previousText ?? scene.scriptText
         scene.scriptText = text
-        refreshProductionAnchors(in: scene)
+        refreshProductionAnchors(in: scene, previousText: oldText)
     }
 
     func updateCurrentSceneMetrics(sceneID: UUID, wordsPerMinute: Int) {
@@ -2005,10 +2052,13 @@ final class ProjectStore {
         scene.textSegments = nextSegments
     }
 
-    private func refreshProductionAnchors(in scene: Scene) {
+    private func refreshProductionAnchors(in scene: Scene, previousText: String? = nil) {
         for item in scene.bRollItems {
             guard item.textAnchor != nil else { continue }
-            guard let repaired = TextAnchorRepair.repair(item.textAnchor, in: scene.scriptText) else {
+            let repaired = previousText == nil
+                ? TextAnchorRepair.repair(item.textAnchor, in: scene.scriptText)
+                : TextAnchorRepair.repair(item.textAnchor, from: previousText!, to: scene.scriptText)
+            guard let repaired else {
                 item.textAnchor = nil
                 item.linkedSegmentID = nil
                 continue
@@ -2017,7 +2067,10 @@ final class ProjectStore {
         }
         for item in scene.editingItems {
             guard item.textAnchor != nil else { continue }
-            guard let repaired = TextAnchorRepair.repair(item.textAnchor, in: scene.scriptText) else {
+            let repaired = previousText == nil
+                ? TextAnchorRepair.repair(item.textAnchor, in: scene.scriptText)
+                : TextAnchorRepair.repair(item.textAnchor, from: previousText!, to: scene.scriptText)
+            guard let repaired else {
                 item.textAnchor = nil
                 item.linkedSegmentID = nil
                 continue
@@ -2075,30 +2128,6 @@ final class ProjectStore {
         item.textAnchor = anchor
     }
 
-    func segmentID(forProductionItem itemID: UUID, mode: WorkspaceMode) -> UUID? {
-        for scene in project.scenes {
-            switch mode {
-            case .bRoll:
-                if let item = scene.bRollItems.first(where: { $0.id == itemID }) {
-                    return segmentID(containing: item.textAnchor, in: scene)
-                }
-            case .editing:
-                if let item = scene.editingItems.first(where: { $0.id == itemID }) {
-                    return segmentID(containing: item.textAnchor, in: scene)
-                }
-            case .script:
-                continue
-            }
-        }
-        return nil
-    }
-
-    private func segmentID(containing anchor: TextAnchor?, in scene: Scene) -> UUID? {
-        guard let anchor else { return nil }
-        return scene.textSegments.sortedByOrder.first {
-            TextAnchorRepair.isAnchor(anchor, in: $0, text: scene.scriptText)
-        }?.id
-    }
 
     private func recalculateDurations(wordsPerMinute: Int) {
         for scene in project.scenes {
@@ -2125,6 +2154,11 @@ struct ProductionAnchorRange: Hashable {
         startUTF16 = anchor.startUTF16
         lengthUTF16 = anchor.lengthUTF16
     }
+}
+
+private struct ProductionMarkerGroup {
+    var range: NSRange
+    var itemIDs: [UUID]
 }
 
 struct ProductionAnchorSection<Item: Identifiable>: Identifiable {
@@ -2193,7 +2227,6 @@ enum ProductionAnchorGrouping {
 final class EditorState {
     var selectedMode: WorkspaceMode = .script
     var selectedSceneID: UUID?
-    var selectedProductionSegmentID: UUID?
     var selectedProductionItemIDs: [UUID] = []
     var isFocusModeEnabled = false
     private var scriptEditorStates: [ScriptEditorRestorationKey: ScriptEditorRestorationState] = [:]
@@ -2269,6 +2302,41 @@ enum TextAnchorRepair {
         return self.anchor(in: text, range: repairedRange)
     }
 
+    static func repair(_ anchor: TextAnchor?, from previousText: String, to text: String) -> TextAnchor? {
+        guard let anchor,
+              let current = current(anchor, in: previousText) else { return nil }
+        guard previousText != text else { return self.anchor(in: text, range: current.nsRange) }
+        let previous = previousText as NSString
+        let updated = text as NSString
+        let edit = contiguousEdit(from: previous, to: updated)
+        let start = current.startUTF16
+        let end = start + current.lengthUTF16
+        let oldStart = edit.oldRange.location
+        let oldEnd = NSMaxRange(edit.oldRange)
+        let newEnd = NSMaxRange(edit.newRange)
+        let delta = edit.newRange.length - edit.oldRange.length
+
+        let repairedRange: NSRange?
+        if oldEnd <= start {
+            repairedRange = NSRange(location: start + delta, length: current.lengthUTF16)
+        } else if oldStart >= end {
+            repairedRange = current.nsRange
+        } else if oldStart > start, oldEnd < end {
+            repairedRange = NSRange(location: start, length: current.lengthUTF16 + delta)
+        } else if oldStart <= start, oldEnd < end {
+            repairedRange = NSRange(location: oldStart, length: end + delta - oldStart)
+        } else if oldStart > start, oldEnd >= end {
+            repairedRange = NSRange(location: start, length: newEnd - start)
+        } else {
+            repairedRange = nil
+        }
+        guard let repairedRange,
+              repairedRange.location >= 0,
+              repairedRange.length > 0,
+              NSMaxRange(repairedRange) <= updated.length else { return nil }
+        return self.anchor(in: text, range: repairedRange)
+    }
+
     static func current(_ anchor: TextAnchor?, in text: String) -> TextAnchor? {
         guard let anchor, anchor.lengthUTF16 > 0, !anchor.selectedText.isEmpty else { return nil }
         let full = text as NSString
@@ -2299,6 +2367,24 @@ enum TextAnchorRepair {
             searchStart = max(NSMaxRange(found), found.location + 1)
         }
         return matches
+    }
+
+    private static func contiguousEdit(from old: NSString, to new: NSString) -> (oldRange: NSRange, newRange: NSRange) {
+        let commonLimit = min(old.length, new.length)
+        var prefix = 0
+        while prefix < commonLimit, old.character(at: prefix) == new.character(at: prefix) {
+            prefix += 1
+        }
+        var suffix = 0
+        while suffix < old.length - prefix,
+              suffix < new.length - prefix,
+              old.character(at: old.length - suffix - 1) == new.character(at: new.length - suffix - 1) {
+            suffix += 1
+        }
+        return (
+            NSRange(location: prefix, length: old.length - prefix - suffix),
+            NSRange(location: prefix, length: new.length - prefix - suffix)
+        )
     }
 
     private static func hasAdjacentBoundary(anchor: TextAnchor, text: NSString, range: NSRange) -> Bool {
