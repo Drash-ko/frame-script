@@ -52,7 +52,7 @@ struct ScriptEditorView: View {
                 },
                 autocomplete: { context in await appState.autocompleteScript(context: context) },
                 onTeardown: { appState.flushActiveEditorBoundary(flushEditor: false) },
-                markerAction: appState.selectProductionItem,
+                markerAction: appState.selectProductionItems,
                 addMarkerAction: { mode, anchor in
                     switch mode {
                     case .bRoll:
@@ -198,12 +198,12 @@ struct ScriptEditorView: View {
     private var productionMarkers: [ProductionTextMarker] {
         var markers: [ProductionTextMarker] = []
         for item in scene.bRollItems {
-            if let anchor = item.textAnchor {
+            if let anchor = TextAnchorRepair.current(item.textAnchor, in: scene.scriptText) {
                 markers.append(ProductionTextMarker(itemID: item.id, mode: .bRoll, anchor: anchor))
             }
         }
         for item in scene.editingItems {
-            if let anchor = item.textAnchor {
+            if let anchor = TextAnchorRepair.current(item.textAnchor, in: scene.scriptText) {
                 markers.append(ProductionTextMarker(itemID: item.id, mode: .editing, anchor: anchor))
             }
         }
@@ -360,7 +360,7 @@ struct LinkedScriptTextView: NSViewRepresentable {
     let onTextCommitted: (String) -> Void
     let autocomplete: @MainActor (AutocompleteContext) async -> AutocompleteResult
     let onTeardown: () -> Void
-    let markerAction: (UUID, WorkspaceMode) -> Void
+    let markerAction: ([UUID], WorkspaceMode) -> Void
     let addMarkerAction: (WorkspaceMode, TextAnchor) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -1268,7 +1268,7 @@ final class MarkerTextContainerView: NSView {
             rect.origin.y -= visible.origin.y
             rect.origin.y = markerView.bounds.height - rect.maxY
             guard rect.intersects(markerView.bounds) else { return nil }
-            return ViewportMarkerRect(itemID: marker.itemID, mode: marker.mode, rect: rect)
+            return ViewportMarkerRect(itemIDs: marker.itemIDs, mode: marker.mode, rect: rect)
         }
     }
 }
@@ -1282,15 +1282,19 @@ private struct MarkerCacheSignature: Equatable {
 }
 
 struct DocumentMarkerRect: Equatable {
-    var itemID: UUID?
+    var itemIDs: [UUID]
     var mode: WorkspaceMode
     var documentRect: NSRect
+
+    var itemID: UUID? { itemIDs.first }
 }
 
 struct ViewportMarkerRect: Equatable {
-    var itemID: UUID?
+    var itemIDs: [UUID]
     var mode: WorkspaceMode
     var rect: NSRect
+
+    var itemID: UUID? { itemIDs.first }
 }
 
 struct MarkerGeometry: Equatable {
@@ -1308,29 +1312,21 @@ enum TextAnchorGeometry {
     static func documentMarkers(markers: [ProductionTextMarker], textView: NSTextView) -> MarkerGeometry {
         guard let layout = textView.layoutManager, let container = textView.textContainer else { return MarkerGeometry() }
         layout.ensureLayout(for: container)
-        let text = textView.string as NSString
-        let textLength = text.length
-        var hitRegions: [DocumentMarkerRect] = []
+        let text = textView.string
         let validMarkers = markers.compactMap { marker -> (marker: ProductionTextMarker, range: NSRange)? in
             guard marker.mode == .bRoll || marker.mode == .editing else { return nil }
-            let range = clamp(marker.anchor.nsRange, toLength: textLength)
-            guard range.length > 0, NSMaxRange(range) <= textLength else { return nil }
-            return (marker, range)
+            guard let anchor = TextAnchorRepair.current(marker.anchor, in: text) else { return nil }
+            return (marker, anchor.nsRange)
         }
 
-        for entry in validMarkers {
-            hitRegions += markerHitRegions(
-                for: entry.marker,
-                range: entry.range,
-                layout: layout,
-                textInset: textView.textContainerInset.height
-            )
+        let groups = [WorkspaceMode.bRoll, .editing].flatMap { mode in
+            groupedRanges(mode: mode, markers: validMarkers)
         }
-
-        let renderRuns = [WorkspaceMode.bRoll, .editing].flatMap { mode in
-            groupedRanges(mode: mode, markers: validMarkers, in: text).compactMap {
-                visualRun(for: mode, range: $0, layout: layout, textInset: textView.textContainerInset.height)
-            }
+        let hitRegions = groups.flatMap {
+            markerHitRegions(for: $0, layout: layout, textInset: textView.textContainerInset.height)
+        }
+        let renderRuns = groups.compactMap {
+            visualRun(for: $0, layout: layout, textInset: textView.textContainerInset.height)
         }
         return MarkerGeometry(hitRegions: hitRegions, renderRuns: renderRuns)
     }
@@ -1374,86 +1370,85 @@ enum TextAnchorGeometry {
     }
 
     private static func markerHitRegions(
-        for marker: ProductionTextMarker,
-        range: NSRange,
+        for group: MarkerRangeGroup,
         layout: NSLayoutManager,
         textInset: CGFloat
     ) -> [DocumentMarkerRect] {
         var actual = NSRange()
-        let glyphRange = layout.glyphRange(forCharacterRange: range, actualCharacterRange: &actual)
+        let glyphRange = layout.glyphRange(forCharacterRange: group.range, actualCharacterRange: &actual)
         guard glyphRange.length > 0 else { return [] }
         var regions: [DocumentMarkerRect] = []
         layout.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, lineGlyphRange, _ in
             guard NSIntersectionRange(glyphRange, lineGlyphRange).length > 0 else { return }
             regions.append(DocumentMarkerRect(
-                itemID: marker.itemID,
-                mode: marker.mode,
-                documentRect: markerRect(for: marker.mode, usedRect: usedRect, textInset: textInset)
+                itemIDs: group.itemIDs,
+                mode: group.mode,
+                documentRect: markerRect(for: group.mode, usedRect: usedRect, textInset: textInset)
             ))
         }
         return regions
     }
 
+    private struct MarkerRangeGroup {
+        let mode: WorkspaceMode
+        var range: NSRange
+        var itemIDs: [UUID]
+    }
+
     private static func groupedRanges(
         mode: WorkspaceMode,
-        markers: [(marker: ProductionTextMarker, range: NSRange)],
-        in text: NSString
-    ) -> [NSRange] {
-        var sortedRanges: [NSRange] = []
-        for marker in markers where marker.marker.mode == mode {
-            sortedRanges.append(marker.range)
+        markers: [(marker: ProductionTextMarker, range: NSRange)]
+    ) -> [MarkerRangeGroup] {
+        let sortedMarkers = markers.enumerated().filter { $0.element.marker.mode == mode }.sorted { lhs, rhs in
+            let lhsRange = lhs.element.range
+            let rhsRange = rhs.element.range
+            if lhsRange.location != rhsRange.location { return lhsRange.location < rhsRange.location }
+            if lhsRange.length != rhsRange.length { return lhsRange.length < rhsRange.length }
+            return lhs.offset < rhs.offset
         }
-        sortedRanges.sort { lhs, rhs in
-            lhs.location == rhs.location
-                ? lhs.length < rhs.length
-                : lhs.location < rhs.location
-        }
-        guard var group = sortedRanges.first else { return [] }
-        var groups: [NSRange] = []
+        guard let first = sortedMarkers.first else { return [] }
+        var group = MarkerRangeGroup(mode: mode, range: first.element.range, itemIDs: [first.element.marker.itemID])
+        var groups: [MarkerRangeGroup] = []
 
-        for range in sortedRanges.dropFirst() {
-            let groupEnd = NSMaxRange(group)
-            let gap = NSRange(location: groupEnd, length: max(0, range.location - groupEnd))
-            if range.location <= groupEnd || containsOnlyMarkerWhitespace(text, in: gap) {
-                group.length = max(groupEnd, NSMaxRange(range)) - group.location
+        for entry in sortedMarkers.dropFirst() {
+            let range = entry.element.range
+            let groupEnd = NSMaxRange(group.range)
+            if range.location <= groupEnd {
+                group.range.length = max(groupEnd, NSMaxRange(range)) - group.range.location
+                if !group.itemIDs.contains(entry.element.marker.itemID) {
+                    group.itemIDs.append(entry.element.marker.itemID)
+                }
             } else {
                 groups.append(group)
-                group = range
+                group = MarkerRangeGroup(mode: mode, range: range, itemIDs: [entry.element.marker.itemID])
             }
         }
         groups.append(group)
         return groups
     }
 
-    private static func containsOnlyMarkerWhitespace(_ text: NSString, in range: NSRange) -> Bool {
-        guard range.length > 0 else { return true }
-        let nonMarkerWhitespace = CharacterSet(charactersIn: " \t\r\n").inverted
-        return text.rangeOfCharacter(from: nonMarkerWhitespace, options: [], range: range).location == NSNotFound
-    }
-
     private static func visualRun(
-        for mode: WorkspaceMode,
-        range: NSRange,
+        for group: MarkerRangeGroup,
         layout: NSLayoutManager,
         textInset: CGFloat
     ) -> DocumentMarkerRect? {
         var actual = NSRange()
-        let glyphRange = layout.glyphRange(forCharacterRange: range, actualCharacterRange: &actual)
+        let glyphRange = layout.glyphRange(forCharacterRange: group.range, actualCharacterRange: &actual)
         guard glyphRange.length > 0 else { return nil }
         var minY: CGFloat?
         var maxY: CGFloat?
         layout.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, lineGlyphRange, _ in
             guard NSIntersectionRange(glyphRange, lineGlyphRange).length > 0 else { return }
-            let rect = markerRect(for: mode, usedRect: usedRect, textInset: textInset)
+            let rect = markerRect(for: group.mode, usedRect: usedRect, textInset: textInset)
             minY = min(minY ?? rect.minY, rect.minY)
             maxY = max(maxY ?? rect.maxY, rect.maxY)
         }
         guard let minY, let maxY else { return nil }
         return DocumentMarkerRect(
-            itemID: nil,
-            mode: mode,
+            itemIDs: group.itemIDs,
+            mode: group.mode,
             documentRect: NSRect(
-                x: markerLaneX(for: mode),
+                x: markerLaneX(for: group.mode),
                 y: minY,
                 width: TextMarkerStyle.stripWidth,
                 height: max(8, maxY - minY)
@@ -1482,8 +1477,8 @@ private final class TextRangeMarkerView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let container else { return }
         let point = convert(event.locationInWindow, from: nil)
-        if let marker = container.markerHitTest(at: point), let itemID = marker.itemID {
-            container.coordinator?.parent.markerAction(itemID, marker.mode)
+        if let marker = container.markerHitTest(at: point), !marker.itemIDs.isEmpty {
+            container.coordinator?.parent.markerAction(marker.itemIDs, marker.mode)
         }
     }
 

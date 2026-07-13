@@ -295,7 +295,7 @@ final class AppState {
     }
 
     func selectProductionSegment(_ segmentID: UUID, mode: WorkspaceMode) {
-        editorState.selectedProductionItemID = nil
+        editorState.selectedProductionItemIDs = []
         editorState.selectedProductionSegmentID = segmentID
         selectMode(mode)
     }
@@ -562,14 +562,24 @@ final class AppState {
     private func transitionEditorContext(
         sceneID: UUID?? = nil,
         mode: WorkspaceMode? = nil,
+        preservingProductionSelection: Bool = false,
         mutation: () -> Void = {}
     ) {
         flushActiveEditorBoundary()
         mutation()
-        setEditorContextAfterFlush(sceneID: sceneID, mode: mode)
+        setEditorContextAfterFlush(sceneID: sceneID, mode: mode, preservingProductionSelection: preservingProductionSelection)
     }
 
-    private func setEditorContextAfterFlush(sceneID: UUID?? = nil, mode: WorkspaceMode? = nil) {
+    private func setEditorContextAfterFlush(
+        sceneID: UUID?? = nil,
+        mode: WorkspaceMode? = nil,
+        preservingProductionSelection: Bool = false
+    ) {
+        let sceneChanged = sceneID.map { $0 != editorState.selectedSceneID } ?? false
+        let modeChanged = mode.map { $0 != editorState.selectedMode } ?? false
+        if (sceneChanged || modeChanged) && !preservingProductionSelection {
+            clearProductionSelection()
+        }
         if let sceneID { editorState.selectedSceneID = sceneID }
         if let mode { editorState.selectedMode = mode }
     }
@@ -598,6 +608,7 @@ final class AppState {
             projectStore.commitScriptText(text, sceneID: sceneID)
         }
         projectStore.updateCurrentSceneMetrics(sceneID: sceneID, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
+        validateProductionSelection()
         projectStore.markProjectDirty()
         scheduleSegmentRebuild(for: sceneID)
         scheduleAutosaveIfNeeded()
@@ -808,9 +819,56 @@ final class AppState {
     }
 
     func selectProductionItem(_ itemID: UUID, mode: WorkspaceMode) {
-        transitionEditorContext(mode: mode) {
-            editorState.selectedProductionItemID = itemID
+        selectProductionItems([itemID], mode: mode)
+    }
+
+    func selectProductionItems(_ itemIDs: [UUID], mode: WorkspaceMode) {
+        guard mode == .bRoll || mode == .editing,
+              let scene = selectedScene else { return }
+        let items: [(UUID, TextAnchor?)] = switch mode {
+        case .bRoll: scene.bRollItems.map { ($0.id, $0.textAnchor) }
+        case .editing: scene.editingItems.map { ($0.id, $0.textAnchor) }
+        case .script: []
+        }
+        let anchorsByID = Dictionary(uniqueKeysWithValues: items)
+        let selectedIDs = itemIDs.reduce(into: [UUID]()) { result, itemID in
+            guard !result.contains(itemID),
+                  let anchor = anchorsByID[itemID],
+                  TextAnchorRepair.current(anchor, in: scene.scriptText) != nil else { return }
+            result.append(itemID)
+        }
+        guard !selectedIDs.isEmpty else { return }
+        transitionEditorContext(mode: mode, preservingProductionSelection: true) {
+            editorState.selectedProductionItemIDs = selectedIDs
             editorState.selectedProductionSegmentID = nil
+        }
+    }
+
+    func isProductionItemSelected(_ itemID: UUID) -> Bool {
+        editorState.selectedProductionItemIDs.contains(itemID)
+    }
+
+    func clearProductionSelection(containing itemID: UUID? = nil) {
+        if let itemID, !editorState.selectedProductionItemIDs.contains(itemID) { return }
+        editorState.selectedProductionItemIDs = []
+    }
+
+    private func validateProductionSelection() {
+        guard !editorState.selectedProductionItemIDs.isEmpty,
+              let scene = selectedScene else {
+            return
+        }
+        let anchorsByID: [UUID: TextAnchor?] = switch editorState.selectedMode {
+        case .bRoll: Dictionary(uniqueKeysWithValues: scene.bRollItems.map { ($0.id, $0.textAnchor) })
+        case .editing: Dictionary(uniqueKeysWithValues: scene.editingItems.map { ($0.id, $0.textAnchor) })
+        case .script: [:]
+        }
+        guard editorState.selectedProductionItemIDs.allSatisfy({ itemID in
+            guard let anchor = anchorsByID[itemID] else { return false }
+            return TextAnchorRepair.current(anchor, in: scene.scriptText) != nil
+        }) else {
+            clearProductionSelection()
+            return
         }
     }
 
@@ -2129,7 +2187,7 @@ final class EditorState {
     var selectedMode: WorkspaceMode = .script
     var selectedSceneID: UUID?
     var selectedProductionSegmentID: UUID?
-    var selectedProductionItemID: UUID?
+    var selectedProductionItemIDs: [UUID] = []
     var isFocusModeEnabled = false
     private var scriptEditorStates: [ScriptEditorRestorationKey: ScriptEditorRestorationState] = [:]
 

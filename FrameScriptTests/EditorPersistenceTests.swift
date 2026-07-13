@@ -234,9 +234,28 @@ final class EditorPersistenceTests: XCTestCase {
         let sections = ProductionAnchorGrouping.sections(for: scene.bRollItems, in: scene.scriptText) { $0.textAnchor }
 
         XCTAssertEqual(appState.editorState.selectedMode, .bRoll)
-        XCTAssertEqual(appState.editorState.selectedProductionItemID, item.id)
+        XCTAssertEqual(appState.editorState.selectedProductionItemIDs, [item.id])
         XCTAssertNil(appState.editorState.selectedProductionSegmentID)
         XCTAssertEqual(sections.first?.items.map(\.id), [item.id])
+    }
+
+    func testMarkerGroupSelectionSelectsAllAnchoredItemsInWorkspaceOrder() throws {
+        let text = "alpha target omega"
+        let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: NSRange(location: 6, length: 6)))
+        let first = BRollItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", sourceType: .custom, descriptionText: "")
+        let second = BRollItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", sourceType: .custom, descriptionText: "")
+        let scene = Scene(order: 0, sectionType: .custom, title: "Scene", scriptText: text, bRollItems: [first, second])
+        let (appState, _, _) = makeAppState(project: FrameProject(title: "Project", scenes: [scene]), fileURL: nil)
+
+        appState.selectProductionItems([first.id, second.id], mode: .bRoll)
+
+        XCTAssertEqual(appState.editorState.selectedMode, .bRoll)
+        XCTAssertEqual(appState.editorState.selectedProductionItemIDs, [first.id, second.id])
+        XCTAssertTrue(appState.isProductionItemSelected(first.id))
+        XCTAssertTrue(appState.isProductionItemSelected(second.id))
+
+        appState.selectMode(.editing)
+        XCTAssertTrue(appState.editorState.selectedProductionItemIDs.isEmpty)
     }
 
     func testLegacySegmentLinksMigrateToAnchorsAndStaleLinksClear() throws {
@@ -1425,7 +1444,7 @@ final class EditorPersistenceTests: XCTestCase {
     func testMarkerVisualsOnLinesOneAndThreeProduceTwoRuns() {
         let text = "one\ntwo\nthree"
         let ranges = lineRanges(in: text)
-        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, range: ranges[0]), marker(.bRoll, range: ranges[2])])
+        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: ranges[0]), marker(.bRoll, in: text, range: ranges[2])])
 
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 2)
     }
@@ -1433,26 +1452,23 @@ final class EditorPersistenceTests: XCTestCase {
     func testMarkerVisualsOnLinesOneTwoAndFourMergeOnlyFirstTwo() {
         let text = "one\ntwo\nthree\nfour"
         let ranges = lineRanges(in: text)
-        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, range: ranges[0]), marker(.bRoll, range: ranges[1]), marker(.bRoll, range: ranges[3])])
+        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: ranges[0]), marker(.bRoll, in: text, range: ranges[1]), marker(.bRoll, in: text, range: ranges[3])])
         let visualRuns = runs(.bRoll, in: geometry)
 
-        XCTAssertEqual(visualRuns.count, 2)
-        XCTAssertGreaterThan(visualRuns[0].documentRect.height, visualRuns[1].documentRect.height)
+        XCTAssertEqual(visualRuns.count, 3)
     }
 
-    func testMarkerVisualsOnThreeConsecutiveLinesProduceOneRun() {
-        let text = "one\ntwo\nthree"
-        let ranges = lineRanges(in: text)
-        let geometry = markerGeometry(text: text, markers: ranges.map { marker(.bRoll, range: $0) })
+    func testMarkerOverlappingRangesProduceOneGroup() {
+        let text = "abcdef"
+        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: NSRange(location: 0, length: 4)), marker(.bRoll, in: text, range: NSRange(location: 2, length: 3))])
 
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 1)
     }
 
-    func testMarkerVisualsFromDifferentItemsOnConsecutiveLinesMerge() {
-        let text = "one\ntwo"
-        let ranges = lineRanges(in: text)
-        let first = marker(.bRoll, range: ranges[0])
-        let second = marker(.bRoll, range: ranges[1])
+    func testMarkerTouchingRangesProduceOneGroup() {
+        let text = "abcdef"
+        let first = marker(.bRoll, in: text, range: NSRange(location: 0, length: 3))
+        let second = marker(.bRoll, in: text, range: NSRange(location: 3, length: 3))
         let geometry = markerGeometry(text: text, markers: [first, second])
 
         XCTAssertNotEqual(first.itemID, second.itemID)
@@ -1464,25 +1480,26 @@ final class EditorPersistenceTests: XCTestCase {
         let range = NSRange(location: 0, length: 3)
         let geometry = markerGeometry(
             text: text,
-            markers: [marker(.bRoll, range: range), marker(.bRoll, range: range)]
+            markers: [marker(.bRoll, in: text, range: range), marker(.bRoll, in: text, range: range)]
         )
 
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 1)
-        XCTAssertEqual(geometry.hitRegions.count, 2)
+        XCTAssertEqual(geometry.hitRegions.count, 1)
+        XCTAssertEqual(geometry.renderRuns.first?.itemIDs.count, 2)
     }
 
-    func testMarkerWhitespaceOnlyGapKeepsOneVisualStrip() {
-        let text = "one\n\nthree"
-        let ranges = lineRanges(in: text)
-        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, range: ranges[0]), marker(.bRoll, range: ranges[2])])
+    func testMarkerWhitespaceGapsProduceSeparateGroups() {
+        for text in ["one three", "one\tthree", "one\nthree", "one\n\nthree"] {
+            let secondStart = (text as NSString).range(of: "three").location
+            let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: NSRange(location: 0, length: 3)), marker(.bRoll, in: text, range: NSRange(location: secondStart, length: 5))])
 
-        XCTAssertEqual(runs(.bRoll, in: geometry).count, 1)
+            XCTAssertEqual(runs(.bRoll, in: geometry).count, 2, text)
+        }
     }
 
-    func testMarkerUnmarkedOrdinaryLineBreaksVisualStrip() {
-        let text = "one\ntwo\nthree"
-        let ranges = lineRanges(in: text)
-        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, range: ranges[0]), marker(.bRoll, range: ranges[2])])
+    func testMarkerTextGapProducesSeparateGroups() {
+        let text = "oneXthree"
+        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: NSRange(location: 0, length: 3)), marker(.bRoll, in: text, range: NSRange(location: 4, length: 5))])
 
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 2)
     }
@@ -1493,7 +1510,7 @@ final class EditorPersistenceTests: XCTestCase {
         let firstSentence = string.range(of: "Всім привіт!")
         let thirdSentence = string.range(of: "Сьогодні б хотів порозмовляти про Лінукс.")
         let view = makeMarkerTestView(text: text, width: 130)
-        view.markers = [marker(.bRoll, range: firstSentence), marker(.bRoll, range: thirdSentence)]
+        view.markers = [marker(.bRoll, in: text, range: firstSentence), marker(.bRoll, in: text, range: thirdSentence)]
 
         XCTAssertEqual(runs(.bRoll, in: view.documentMarkerGeometry()).count, 2)
     }
@@ -1501,7 +1518,7 @@ final class EditorPersistenceTests: XCTestCase {
     func testMarkerWrappedSentenceProducesContinuousRun() {
         let text = "This deliberately long marked sentence wraps across several rendered TextKit lines."
         let view = makeMarkerTestView(text: text, width: 145)
-        view.markers = [marker(.bRoll, range: NSRange(location: 0, length: (text as NSString).length))]
+        view.markers = [marker(.bRoll, in: text, range: NSRange(location: 0, length: (text as NSString).length))]
         let geometry = view.documentMarkerGeometry()
 
         XCTAssertEqual(runs(.bRoll, in: geometry).count, 1)
@@ -1511,7 +1528,7 @@ final class EditorPersistenceTests: XCTestCase {
     func testMarkerVisualAndEditingUseFixedSeparateLanes() {
         let text = "one\ntwo"
         let ranges = lineRanges(in: text)
-        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, range: ranges[0]), marker(.bRoll, range: ranges[1]), marker(.editing, range: ranges[0]), marker(.editing, range: ranges[1])])
+        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: ranges[0]), marker(.bRoll, in: text, range: ranges[1]), marker(.editing, in: text, range: ranges[0]), marker(.editing, in: text, range: ranges[1])])
         let visual = try! XCTUnwrap(runs(.bRoll, in: geometry).first)
         let editing = try! XCTUnwrap(runs(.editing, in: geometry).first)
 
@@ -1523,35 +1540,32 @@ final class EditorPersistenceTests: XCTestCase {
     func testMarkerVisualAndEditingNeverMerge() {
         let text = "one\ntwo"
         let ranges = lineRanges(in: text)
-        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, range: ranges[0]), marker(.bRoll, range: ranges[1]), marker(.editing, range: ranges[0]), marker(.editing, range: ranges[1])])
+        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: ranges[0]), marker(.bRoll, in: text, range: ranges[1]), marker(.editing, in: text, range: ranges[0]), marker(.editing, in: text, range: ranges[1])])
 
-        XCTAssertEqual(geometry.renderRuns.count, 2)
-        XCTAssertEqual(runs(.bRoll, in: geometry).count, 1)
-        XCTAssertEqual(runs(.editing, in: geometry).count, 1)
+        XCTAssertEqual(geometry.renderRuns.count, 4)
+        XCTAssertEqual(runs(.bRoll, in: geometry).count, 2)
+        XCTAssertEqual(runs(.editing, in: geometry).count, 2)
     }
 
-    func testMarkerHitTestingUsesUnderlyingItemsInsideMergedRun() {
-        let text = "one\ntwo"
-        let ranges = lineRanges(in: text)
-        let first = marker(.bRoll, range: ranges[0])
-        let second = marker(.bRoll, range: ranges[1])
+    func testMarkerHitTestingUsesStableGroupItems() {
+        let text = "abcdef"
+        let first = marker(.bRoll, in: text, range: NSRange(location: 0, length: 4))
+        let second = marker(.bRoll, in: text, range: NSRange(location: 2, length: 3))
         let view = makeMarkerTestView(text: text, height: 220)
         view.markers = [first, second]
         let hitRects = view.markerHitRects()
 
-        let firstRect = try! XCTUnwrap(hitRects.first { $0.itemID == first.itemID }).rect
-        let secondRect = try! XCTUnwrap(hitRects.first { $0.itemID == second.itemID }).rect
-        let firstPoint = NSPoint(x: firstRect.midX, y: firstRect.midY)
-        let secondPoint = NSPoint(x: secondRect.midX, y: secondRect.midY)
-        XCTAssertEqual(view.markerHitTest(at: firstPoint)?.itemID, first.itemID)
-        XCTAssertEqual(view.markerHitTest(at: secondPoint)?.itemID, second.itemID)
+        let group = try! XCTUnwrap(hitRects.first)
+        let point = NSPoint(x: group.rect.midX, y: group.rect.midY)
+        XCTAssertEqual(group.itemIDs, [first.itemID, second.itemID])
+        XCTAssertEqual(view.markerHitTest(at: point)?.itemIDs, [first.itemID, second.itemID])
     }
 
     func testMarkerSameLengthTextEditWithDifferentWrappingRebuildsGeometry() {
         let original = "a a a a a a a a a a"
         let replacement = String(repeating: "W", count: (original as NSString).length)
         let view = makeMarkerTestView(text: original, width: 100)
-        view.markers = [marker(.bRoll, range: NSRange(location: 0, length: (original as NSString).length))]
+        view.markers = [marker(.bRoll, in: original, range: NSRange(location: 0, length: (original as NSString).length))]
         let before = view.documentMarkerGeometry()
 
         view.textView.string = replacement
@@ -1564,7 +1578,7 @@ final class EditorPersistenceTests: XCTestCase {
     func testMarkerTypographyAndWidthChangesRebuildGeometry() {
         let text = "one two three four five six seven eight nine ten"
         let view = makeMarkerTestView(text: text, width: 180)
-        view.markers = [marker(.bRoll, range: NSRange(location: 0, length: (text as NSString).length))]
+        view.markers = [marker(.bRoll, in: text, range: NSRange(location: 0, length: (text as NSString).length))]
         let before = view.documentMarkerGeometry()
 
         configureCaretTestTypography(view.textView, fontSize: 24, lineSpacing: 14)
@@ -1583,7 +1597,7 @@ final class EditorPersistenceTests: XCTestCase {
         let text = String(repeating: "line\n", count: 30)
         let ranges = lineRanges(in: text)
         let view = makeMarkerTestView(text: text, width: 220, height: 120)
-        view.markers = [marker(.bRoll, range: ranges[1])]
+        view.markers = [marker(.bRoll, in: text, range: ranges[1])]
         let document = view.documentMarkerGeometry()
         let before = try! XCTUnwrap(view.markerHitRects().first)
 
@@ -1598,7 +1612,20 @@ final class EditorPersistenceTests: XCTestCase {
         let text = "one"
         let geometry = markerGeometry(
             text: text,
-            markers: [marker(.bRoll, range: NSRange(location: 0, length: 0)), marker(.editing, range: NSRange(location: 100, length: 2))]
+            markers: [
+                ProductionTextMarker(itemID: UUID(), mode: .bRoll, anchor: TextAnchor(startUTF16: 0, lengthUTF16: 0, selectedText: "")),
+                ProductionTextMarker(itemID: UUID(), mode: .editing, anchor: TextAnchor(startUTF16: 100, lengthUTF16: 2, selectedText: "stale"))
+            ]
+        )
+
+        XCTAssertTrue(geometry.hitRegions.isEmpty)
+        XCTAssertTrue(geometry.renderRuns.isEmpty)
+    }
+
+    func testMarkerStaleAnchorProducesNoGeometry() {
+        let geometry = markerGeometry(
+            text: "new text",
+            markers: [ProductionTextMarker(itemID: UUID(), mode: .bRoll, anchor: TextAnchor(startUTF16: 0, lengthUTF16: 3, selectedText: "old"))]
         )
 
         XCTAssertTrue(geometry.hitRegions.isEmpty)
@@ -1607,7 +1634,7 @@ final class EditorPersistenceTests: XCTestCase {
 
     func testMarkerRunsUseNarrowRoundedStripStyle() {
         let text = "one"
-        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, range: NSRange(location: 0, length: 3))])
+        let geometry = markerGeometry(text: text, markers: [marker(.bRoll, in: text, range: NSRange(location: 0, length: 3))])
 
         XCTAssertEqual(try! XCTUnwrap(geometry.renderRuns.first).documentRect.width, 3)
         XCTAssertEqual(TextMarkerStyle.stripWidth, 3)
@@ -1645,11 +1672,11 @@ final class EditorPersistenceTests: XCTestCase {
         return view.documentMarkerGeometry()
     }
 
-    private func marker(_ mode: WorkspaceMode, range: NSRange) -> ProductionTextMarker {
+    private func marker(_ mode: WorkspaceMode, in text: String, range: NSRange) -> ProductionTextMarker {
         ProductionTextMarker(
             itemID: UUID(),
             mode: mode,
-            anchor: TextAnchor(startUTF16: range.location, lengthUTF16: range.length, selectedText: "marker")
+            anchor: TextAnchorRepair.anchor(in: text, range: range)!
         )
     }
 

@@ -31,7 +31,7 @@ struct BRollEditorView: View {
                 appState.rebuildProductionSegments(markUnsaved: false)
                 scrollToSelection(proxy)
             }
-            .onChange(of: appState.editorState.selectedProductionItemID) { _, _ in scrollToSelection(proxy) }
+            .onChange(of: appState.editorState.selectedProductionItemIDs) { _, _ in scrollToSelection(proxy) }
         }
         .background(theme.editorSurface)
         .onChange(of: scene.bRollItems.count) { _, _ in appState.touchProject() }
@@ -91,7 +91,7 @@ struct BRollEditorView: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 7).fill(theme.background.opacity(0.42)))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.divider))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(appState.isProductionItemSelected(item.id) ? theme.bRollMarker : theme.divider, lineWidth: appState.isProductionItemSelected(item.id) ? 2 : 1))
         .onChange(of: item.sourceType) { _, _ in appState.touchProject() }
         .onChange(of: item.descriptionText) { _, _ in appState.touchProject() }
         .onChange(of: item.notes) { _, _ in appState.touchProject() }
@@ -108,6 +108,7 @@ struct BRollEditorView: View {
             Divider()
             Button(appState.localized("production.unlinked")) {
                 appState.projectStore.unlink(item)
+                appState.clearProductionSelection(containing: item.id)
                 appState.touchProject()
             }
         } label: { Label(linkLabel(item), systemImage: "link").font(.system(size: 12, weight: .medium)) }
@@ -133,7 +134,11 @@ struct BRollEditorView: View {
         if let index = scene.bRollItems.firstIndex(where: { $0.id == item.id }) { scene.bRollItems.insert(copy, at: index + 1) } else { scene.bRollItems.append(copy) }
         appState.touchProject()
     }
-    private func deleteItem(_ item: BRollItem) { scene.bRollItems.removeAll { $0.id == item.id }; appState.touchProject() }
+    private func deleteItem(_ item: BRollItem) {
+        scene.bRollItems.removeAll { $0.id == item.id }
+        appState.clearProductionSelection(containing: item.id)
+        appState.touchProject()
+    }
     private func linkLabel(_ item: BRollItem) -> String {
         guard let anchor = TextAnchorRepair.current(item.textAnchor, in: scene.scriptText) else { return appState.localized("production.unlinked") }
         return String(anchor.selectedText.prefix(42))
@@ -142,7 +147,7 @@ struct BRollEditorView: View {
         let value = segment.sourceText.trimmingCharacters(in: .whitespacesAndNewlines); return "\(String(format: "%02d", index + 1)) \(value.prefix(42))"
     }
     private func scrollToSelection(_ proxy: ScrollViewProxy) {
-        guard let itemID = appState.editorState.selectedProductionItemID,
+        guard let itemID = appState.editorState.selectedProductionItemIDs.first,
               let section = anchorSections.first(where: { $0.items.contains(where: { $0.id == itemID }) }) else { return }
         DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(section.id, anchor: .center) } }
     }
