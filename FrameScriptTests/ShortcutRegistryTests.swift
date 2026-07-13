@@ -132,6 +132,24 @@ final class ShortcutRegistryTests: XCTestCase {
         XCTAssertEqual(target.executions, 2)
     }
 
+    func testPhysicalCommandOpenIgnoresCapsLockAcrossRussianAndEnglishLayouts() throws {
+        let target = TestMenuCommandTarget()
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Open Project", action: #selector(TestMenuCommandTarget.performCommand(_:)), keyEquivalent: "o")
+        item.keyEquivalentModifierMask = .command
+        item.target = target
+        menu.addItem(item)
+
+        for (characters, expectedExecutions) in [("щ", 1), ("o", 2)] {
+            XCTAssertTrue(PhysicalShortcutMenuDispatcher.dispatch(
+                try keyEvent(keyCode: 31, characters: characters, modifiers: [.command, .capsLock]),
+                settings: .defaults,
+                menu: menu
+            ))
+            XCTAssertEqual(target.executions, expectedExecutions)
+        }
+    }
+
     func testPhysicalPunctuationCommandDispatchesThroughAppKitAcrossInputLayouts() throws {
         let target = TestMenuCommandTarget()
         let menu = NSMenu()
@@ -148,6 +166,42 @@ final class ShortcutRegistryTests: XCTestCase {
             ))
         }
         XCTAssertEqual(target.executions, 2)
+    }
+
+    func testPhysicalCommandCommaIgnoresCapsLockOnRussianLayout() throws {
+        let target = TestMenuCommandTarget()
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Open Settings", action: #selector(TestMenuCommandTarget.performCommand(_:)), keyEquivalent: ",")
+        item.keyEquivalentModifierMask = .command
+        item.target = target
+        menu.addItem(item)
+
+        XCTAssertTrue(PhysicalShortcutMenuDispatcher.dispatch(
+            try keyEvent(keyCode: 43, characters: "б", modifiers: [.command, .capsLock]),
+            settings: .defaults,
+            menu: menu
+        ))
+        XCTAssertEqual(target.executions, 1)
+    }
+
+    func testPhysicalCommandOptionUpIgnoresFunctionAndNumericPadFlags() throws {
+        let target = TestMenuCommandTarget()
+        let menu = NSMenu()
+        let item = NSMenuItem(
+            title: "Move Scene Up",
+            action: #selector(TestMenuCommandTarget.performCommand(_:)),
+            keyEquivalent: String(UnicodeScalar(NSUpArrowFunctionKey)!)
+        )
+        item.keyEquivalentModifierMask = [.command, .option]
+        item.target = target
+        menu.addItem(item)
+
+        XCTAssertTrue(PhysicalShortcutMenuDispatcher.dispatch(
+            try keyEvent(keyCode: 126, characters: "", modifiers: [.command, .option, .function, .numericPad]),
+            settings: .defaults,
+            menu: menu
+        ))
+        XCTAssertEqual(target.executions, 1)
     }
 
     func testPhysicalCommandDispatcherUsesCurrentReassignedBindingAndLeavesUnassignedCommandsInactive() throws {

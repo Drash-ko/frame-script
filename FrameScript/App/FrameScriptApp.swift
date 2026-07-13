@@ -236,7 +236,7 @@ enum PhysicalShortcutMenuDispatcher {
     private static func hasEnabledMatchingMenuItem(for event: NSEvent, in menu: NSMenu) -> Bool {
         menu.items.contains { item in
             if item.keyEquivalent == event.charactersIgnoringModifiers,
-               item.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask) == event.modifierFlags {
+               canonicalModifierFlags(from: shortcutModifiers(from: item.keyEquivalentModifierMask)) == event.modifierFlags {
                 return item.isEnabled && !item.isHidden
             }
             return item.submenu.map { hasEnabledMatchingMenuItem(for: event, in: $0) } ?? false
@@ -252,12 +252,21 @@ enum PhysicalShortcutMenuDispatcher {
         return modifiers
     }
 
+    private static func canonicalModifierFlags(from modifiers: Set<ShortcutModifier>) -> NSEvent.ModifierFlags {
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers.contains(.control) { flags.insert(.control) }
+        if modifiers.contains(.option) { flags.insert(.option) }
+        if modifiers.contains(.shift) { flags.insert(.shift) }
+        if modifiers.contains(.command) { flags.insert(.command) }
+        return flags
+    }
+
     private static func canonicalEvent(from event: NSEvent, binding: ShortcutBinding) -> NSEvent? {
         guard let characters = canonicalCharacters(for: binding) else { return nil }
         return NSEvent.keyEvent(
             with: .keyDown,
             location: event.locationInWindow,
-            modifierFlags: event.modifierFlags.intersection(.deviceIndependentFlagsMask),
+            modifierFlags: canonicalModifierFlags(from: binding.modifiers),
             timestamp: event.timestamp,
             windowNumber: event.windowNumber,
             context: nil,
