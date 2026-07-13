@@ -12,6 +12,7 @@
 
 - Fixed linked production selections shifting, expanding, and shrinking through ordinary script edits, while ambiguous or unsafe repairs now clear stale relationship metadata.
 - Fixed stale anchors, whitespace-separated ranges, and cross-workspace marker interaction so they no longer produce misleading geometry or selection.
+- Fixed production anchors and Script markers to refresh immediately on committed text edits, while rejecting distant or ambiguous repair evidence and avoiding unnecessary TextKit geometry work.
 
 ## [0.3.0] - 2026-07-13
 

@@ -1935,6 +1935,7 @@ final class ProjectStore {
     func commitScriptText(_ text: String, sceneID: UUID) {
         guard let scene = project.scenes.first(where: { $0.id == sceneID }) else { return }
         scene.scriptText = text
+        refreshProductionAnchors(in: scene)
     }
 
     func updateCurrentSceneMetrics(sceneID: UUID, wordsPerMinute: Int) {
@@ -1997,26 +1998,32 @@ final class ProjectStore {
             nextSegments.append(segment)
         }
 
-        for item in scene.bRollItems {
-            migrateLegacyLink(item, segments: oldSegments, text: scene.scriptText)
-            if let repaired = TextAnchorRepair.repair(item.textAnchor, in: scene.scriptText) {
-                item.textAnchor = repaired
-            } else if item.textAnchor != nil {
-                item.textAnchor = nil
-                item.linkedSegmentID = nil
-            }
-        }
-        for item in scene.editingItems {
-            migrateLegacyLink(item, segments: oldSegments, text: scene.scriptText)
-            if let repaired = TextAnchorRepair.repair(item.textAnchor, in: scene.scriptText) {
-                item.textAnchor = repaired
-            } else if item.textAnchor != nil {
-                item.textAnchor = nil
-                item.linkedSegmentID = nil
-            }
-        }
+        for item in scene.bRollItems { migrateLegacyLink(item, segments: oldSegments, text: scene.scriptText) }
+        for item in scene.editingItems { migrateLegacyLink(item, segments: oldSegments, text: scene.scriptText) }
+        refreshProductionAnchors(in: scene)
 
         scene.textSegments = nextSegments
+    }
+
+    private func refreshProductionAnchors(in scene: Scene) {
+        for item in scene.bRollItems {
+            guard item.textAnchor != nil else { continue }
+            guard let repaired = TextAnchorRepair.repair(item.textAnchor, in: scene.scriptText) else {
+                item.textAnchor = nil
+                item.linkedSegmentID = nil
+                continue
+            }
+            item.textAnchor = repaired
+        }
+        for item in scene.editingItems {
+            guard item.textAnchor != nil else { continue }
+            guard let repaired = TextAnchorRepair.repair(item.textAnchor, in: scene.scriptText) else {
+                item.textAnchor = nil
+                item.linkedSegmentID = nil
+                continue
+            }
+            item.textAnchor = repaired
+        }
     }
 
     func anchor(for segmentID: UUID, in scene: Scene) -> TextAnchor? {
@@ -2249,17 +2256,13 @@ enum TextAnchorRepair {
         guard let anchor else { return nil }
         let full = text as NSString
         guard anchor.lengthUTF16 >= 0, anchor.startUTF16 >= 0, !anchor.selectedText.isEmpty else { return nil }
-        let stored = NSRange(location: anchor.startUTF16, length: anchor.lengthUTF16)
-        if NSMaxRange(stored) <= full.length, full.substring(with: stored) == anchor.selectedText {
-            return self.anchor(in: text, range: stored)
-        }
-
-        let exactCandidates = occurrences(of: anchor.selectedText, in: full)
-            .filter { hasBoundaryEvidence(anchor: anchor, text: full, range: $0) }
+        let matchingRanges = occurrences(of: anchor.selectedText, in: full)
+        let exactCandidates = matchingRanges
+            .filter { hasAdjacentBoundary(anchor: anchor, text: full, range: $0) }
         if exactCandidates.count == 1, let exact = exactCandidates.first {
             return self.anchor(in: text, range: exact)
         }
-        guard exactCandidates.isEmpty,
+        guard matchingRanges.isEmpty,
               let repairedRange = uniqueBoundaryRange(for: anchor, in: full) else {
             return nil
         }
@@ -2283,15 +2286,8 @@ enum TextAnchorRepair {
         return NSLocationInRange(anchor.startUTF16, segmentAnchor.nsRange)
     }
 
-    private static func nearbySearchRange(previousOffset: Int, textLength: Int) -> NSRange {
-        let radius = max(256, contextLength * 4)
-        let start = max(0, previousOffset - radius)
-        let end = min(textLength, previousOffset + radius)
-        return NSRange(location: start, length: max(0, end - start))
-    }
-
-    private static func occurrences(of value: String, in text: NSString, range: NSRange? = nil) -> [NSRange] {
-        let searchRange = range ?? NSRange(location: 0, length: text.length)
+    private static func occurrences(of value: String, in text: NSString) -> [NSRange] {
+        let searchRange = NSRange(location: 0, length: text.length)
         var matches: [NSRange] = []
         var searchStart = searchRange.location
         let searchEnd = NSMaxRange(searchRange)
@@ -2305,30 +2301,23 @@ enum TextAnchorRepair {
         return matches
     }
 
-    private static func hasBoundaryEvidence(anchor: TextAnchor, text: NSString, range: NSRange) -> Bool {
-        let nearby = nearbySearchRange(previousOffset: anchor.startUTF16, textLength: text.length)
-        guard NSLocationInRange(range.location, nearby) || NSLocationInRange(NSMaxRange(range) - 1, nearby) else { return false }
-        return hasPrefixBoundary(anchor, text: text, before: range.location)
+    private static func hasAdjacentBoundary(anchor: TextAnchor, text: NSString, range: NSRange) -> Bool {
+        hasPrefixBoundary(anchor, text: text, before: range.location)
             || hasSuffixBoundary(anchor, text: text, after: NSMaxRange(range))
     }
 
     private static func uniqueBoundaryRange(for anchor: TextAnchor, in text: NSString) -> NSRange? {
-        let nearby = nearbySearchRange(previousOffset: anchor.startUTF16, textLength: text.length)
         let prefixes: [Int]
         if anchor.prefixContext.isEmpty {
-            prefixes = anchor.startUTF16 == 0 ? [0] : []
+            prefixes = [0]
         } else {
-            prefixes = occurrences(of: anchor.prefixContext, in: text, range: NSRange(location: nearby.location, length: max(0, anchor.startUTF16 - nearby.location)))
-                .map(NSMaxRange)
+            prefixes = occurrences(of: anchor.prefixContext, in: text).map(NSMaxRange)
         }
-        let suffixStart = min(max(nearby.location, anchor.startUTF16), text.length)
         let suffixes: [Int]
         if anchor.suffixContext.isEmpty {
             suffixes = [text.length]
         } else {
-            let rangeEnd = NSMaxRange(nearby)
-            suffixes = occurrences(of: anchor.suffixContext, in: text, range: NSRange(location: suffixStart, length: max(0, rangeEnd - suffixStart)))
-                .map(\.location)
+            suffixes = occurrences(of: anchor.suffixContext, in: text).map(\.location)
         }
         let candidates: [NSRange] = prefixes.flatMap { prefixEnd in
             suffixes.compactMap { suffixStart in
@@ -2341,21 +2330,17 @@ enum TextAnchorRepair {
     }
 
     private static func hasPrefixBoundary(_ anchor: TextAnchor, text: NSString, before location: Int) -> Bool {
-        guard !anchor.prefixContext.isEmpty else { return anchor.startUTF16 == 0 && location == 0 }
-        let nearby = nearbySearchRange(previousOffset: anchor.startUTF16, textLength: text.length)
-        let searchStart = nearby.location
-        let searchEnd = min(location, NSMaxRange(nearby))
-        return occurrences(of: anchor.prefixContext, in: text, range: NSRange(location: searchStart, length: max(0, searchEnd - searchStart)))
-            .contains { NSMaxRange($0) <= location }
+        guard !anchor.prefixContext.isEmpty else { return location == 0 }
+        let length = (anchor.prefixContext as NSString).length
+        guard location >= length else { return false }
+        return text.substring(with: NSRange(location: location - length, length: length)) == anchor.prefixContext
     }
 
     private static func hasSuffixBoundary(_ anchor: TextAnchor, text: NSString, after location: Int) -> Bool {
         guard !anchor.suffixContext.isEmpty else { return location == text.length }
-        let nearby = nearbySearchRange(previousOffset: anchor.startUTF16, textLength: text.length)
-        let searchStart = max(location, nearby.location)
-        let searchEnd = NSMaxRange(nearby)
-        return occurrences(of: anchor.suffixContext, in: text, range: NSRange(location: searchStart, length: max(0, searchEnd - searchStart)))
-            .contains { $0.location >= location }
+        let length = (anchor.suffixContext as NSString).length
+        guard location + length <= text.length else { return false }
+        return text.substring(with: NSRange(location: location, length: length)) == anchor.suffixContext
     }
 
     private static func clamp(_ range: NSRange, toLength length: Int) -> NSRange {

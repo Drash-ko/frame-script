@@ -132,6 +132,53 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertNil(TextAnchorRepair.repair(anchor, in: "left target right and left target right"))
     }
 
+    func testAnchorRepairRejectsDistantContextForAnExactMatch() throws {
+        let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: "before target after", range: NSRange(location: 7, length: 6)))
+
+        XCTAssertNil(TextAnchorRepair.repair(anchor, in: "before unrelated target unrelated after"))
+    }
+
+    func testAnchorRepairRejectsRepeatedContextPairs() throws {
+        let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: "left target right", range: NSRange(location: 5, length: 6)))
+
+        XCTAssertNil(TextAnchorRepair.repair(anchor, in: "left changed right left changed right"))
+    }
+
+    func testCommittedTextImmediatelyRepairsInsertionsBeforeAndInsideAnchors() throws {
+        let (beforeState, beforeScene, beforeItem) = try makeAnchoredAppState()
+        beforeState.commitScriptTextChange(sceneID: beforeScene.id, text: "alpha INSERT target omega")
+        XCTAssertEqual(beforeItem.textAnchor?.startUTF16, 13)
+        XCTAssertEqual(beforeItem.textAnchor?.selectedText, "target")
+        XCTAssertNil(beforeItem.linkedSegmentID)
+        XCTAssertEqual(beforeScene.textSegments.first?.sourceText, "alpha target omega")
+
+        let (insideState, insideScene, insideItem) = try makeAnchoredAppState()
+        insideState.commitScriptTextChange(sceneID: insideScene.id, text: "alpha tarXget omega")
+        XCTAssertEqual(insideItem.textAnchor?.startUTF16, 6)
+        XCTAssertEqual(insideItem.textAnchor?.selectedText, "tarXget")
+    }
+
+    func testCommittedTextImmediatelyRepairsDeletionsBeforeAndInsideAnchors() throws {
+        let (beforeState, beforeScene, beforeItem) = try makeAnchoredAppState()
+        beforeState.commitScriptTextChange(sceneID: beforeScene.id, text: "target omega")
+        XCTAssertEqual(beforeItem.textAnchor?.startUTF16, 0)
+        XCTAssertEqual(beforeItem.textAnchor?.selectedText, "target")
+
+        let (insideState, insideScene, insideItem) = try makeAnchoredAppState()
+        insideState.commitScriptTextChange(sceneID: insideScene.id, text: "alpha taget omega")
+        XCTAssertEqual(insideItem.textAnchor?.startUTF16, 6)
+        XCTAssertEqual(insideItem.textAnchor?.selectedText, "taget")
+    }
+
+    func testCommittedTextClearsBothRelationshipFieldsWhenRepairFails() throws {
+        let (appState, scene, item) = try makeAnchoredAppState(linkedSegmentID: UUID())
+
+        appState.commitScriptTextChange(sceneID: scene.id, text: "entirely unrelated")
+
+        XCTAssertNil(item.textAnchor)
+        XCTAssertNil(item.linkedSegmentID)
+    }
+
     func testUnrepairableAnchorClearsAnchorAndSegmentMetadata() throws {
         let (store, scene, item) = try makeAnchorStore(linkedSegmentID: UUID())
         scene.scriptText = "entirely unrelated"
@@ -294,6 +341,18 @@ final class EditorPersistenceTests: XCTestCase {
         let item = BRollItem(textAnchor: anchor, linkedSegmentID: linkedSegmentID, templateType: "", sourceType: .custom, descriptionText: "")
         let scene = Scene(id: sceneID, order: 0, sectionType: .custom, title: "Scene", scriptText: text, textSegments: [segment], bRollItems: [item])
         return (ProjectStore(project: FrameProject(title: "Project", scenes: [scene])), scene, item)
+    }
+
+    private func makeAnchoredAppState(linkedSegmentID: UUID? = nil) throws -> (AppState, FrameScript.Scene, BRollItem) {
+        let text = "alpha target omega"
+        let sceneID = UUID()
+        let segmentID = linkedSegmentID ?? UUID()
+        let segment = TextSegment(id: segmentID, sceneID: sceneID, order: 0, sourceText: text, segmentType: .scene)
+        let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: NSRange(location: 6, length: 6)))
+        let item = BRollItem(textAnchor: anchor, linkedSegmentID: linkedSegmentID, templateType: "", sourceType: .custom, descriptionText: "")
+        let scene = Scene(id: sceneID, order: 0, sectionType: .custom, title: "Scene", scriptText: text, textSegments: [segment], bRollItems: [item])
+        let (appState, _, _) = makeAppState(project: FrameProject(title: "Project", scenes: [scene]), fileURL: nil)
+        return (appState, scene, item)
     }
 
     private func repositoryText(_ relativePath: String) throws -> String {
@@ -1599,13 +1658,74 @@ final class EditorPersistenceTests: XCTestCase {
         let view = makeMarkerTestView(text: text, width: 220, height: 120)
         view.markers = [marker(.bRoll, in: text, range: ranges[1])]
         let document = view.documentMarkerGeometry()
+        let rebuilds = view.markerGeometryRebuildCount
         let before = try! XCTUnwrap(view.markerHitRects().first)
 
         view.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 12))
         let after = try! XCTUnwrap(view.markerHitRects().first)
 
         XCTAssertEqual(view.documentMarkerGeometry(), document)
+        XCTAssertEqual(view.markerGeometryRebuildCount, rebuilds)
         XCTAssertEqual(after.rect.minY, before.rect.minY + 12, accuracy: 0.5)
+    }
+
+    func testMarkerGeometryCacheRebuildsOnlyForGeometryInputs() {
+        let text = "one target two"
+        let view = makeMarkerTestView(text: text, width: 220)
+        let targetRange = (text as NSString).range(of: "target")
+        let first = marker(.bRoll, in: text, range: targetRange)
+        view.markers = [first]
+
+        _ = view.documentMarkerGeometry()
+        XCTAssertEqual(view.markerGeometryRebuildCount, 1)
+        _ = view.markerHitRects()
+        view.textView.setSelectedRange(NSRange(location: 0, length: 0))
+        view.bRollColor = .systemRed
+        view.editingColor = .systemOrange
+        view.addBRollLabel = "Add"
+        view.addEditingLabel = "Edit"
+        view.markerNeedsDisplay()
+        _ = view.documentMarkerGeometry()
+        XCTAssertEqual(view.markerGeometryRebuildCount, 1)
+
+        let sameRangeWithChangedMetadata = ProductionTextMarker(
+            itemID: first.itemID,
+            mode: first.mode,
+            anchor: TextAnchor(startUTF16: targetRange.location, lengthUTF16: targetRange.length, selectedText: "target", prefixContext: "changed", suffixContext: "metadata")
+        )
+        view.markers = [sameRangeWithChangedMetadata]
+        _ = view.documentMarkerGeometry()
+        XCTAssertEqual(view.markerGeometryRebuildCount, 1)
+
+        view.markerTextRevision += 1
+        _ = view.documentMarkerGeometry()
+        XCTAssertEqual(view.markerGeometryRebuildCount, 2)
+
+        view.textView.string = "two target two"
+        _ = view.documentMarkerGeometry()
+        XCTAssertEqual(view.markerGeometryRebuildCount, 3)
+
+        view.frame.size.width = 180
+        view.layoutSubtreeIfNeeded()
+        _ = view.documentMarkerGeometry()
+        XCTAssertEqual(view.markerGeometryRebuildCount, 4)
+
+        view.cachedFontSize = 17
+        _ = view.documentMarkerGeometry()
+        XCTAssertEqual(view.markerGeometryRebuildCount, 5)
+
+        view.cachedLineSpacing = 5
+        _ = view.documentMarkerGeometry()
+        XCTAssertEqual(view.markerGeometryRebuildCount, 6)
+
+        view.markers = [marker(.bRoll, in: view.textView.string, range: NSRange(location: 0, length: 3))]
+        _ = view.documentMarkerGeometry()
+        XCTAssertEqual(view.markerGeometryRebuildCount, 7)
+
+        let duplicateRange = marker(.bRoll, in: view.textView.string, range: NSRange(location: 0, length: 3))
+        view.markers.append(duplicateRange)
+        _ = view.documentMarkerGeometry()
+        XCTAssertEqual(view.markerGeometryRebuildCount, 8)
     }
 
     func testMarkerInvalidAndZeroLengthAnchorsDrawNothing() {

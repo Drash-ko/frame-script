@@ -1148,7 +1148,7 @@ final class MarkerTextContainerView: NSView {
     var markers: [ProductionTextMarker] = [] {
         didSet {
             guard markers != oldValue else { return }
-            invalidateMarkerGeometry()
+            markerView.needsDisplay = true
         }
     }
     var bRollColor = NSColor.systemBlue
@@ -1160,11 +1160,12 @@ final class MarkerTextContainerView: NSView {
     var markerTextRevision = 0 {
         didSet {
             guard markerTextRevision != oldValue else { return }
-            invalidateMarkerGeometry()
+            markerView.needsDisplay = true
         }
     }
     private var cachedMarkerGeometry = MarkerGeometry()
     private var markerCacheSignature: MarkerCacheSignature?
+    private(set) var markerGeometryRebuildCount = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1207,11 +1208,6 @@ final class MarkerTextContainerView: NSView {
         coordinator?.captureRestorationState()
     }
 
-    func invalidateMarkerGeometry() {
-        markerCacheSignature = nil
-        markerView.needsDisplay = true
-    }
-
     func markerNeedsDisplay() {
         markerView.needsDisplay = true
     }
@@ -1249,16 +1245,20 @@ final class MarkerTextContainerView: NSView {
     }
 
     private func rebuildMarkerGeometryIfNeeded() {
+        let text = textView.string
+        let groups = TextAnchorGeometry.markerGroups(markers: markers, in: text)
         let signature = MarkerCacheSignature(
             textRevision: markerTextRevision,
+            text: text,
             containerWidth: textView.textContainer?.containerSize.width ?? 0,
             fontSize: cachedFontSize ?? 0,
             lineSpacing: cachedLineSpacing ?? 0,
-            markers: markers
+            groups: groups
         )
         guard markerCacheSignature != signature else { return }
         markerCacheSignature = signature
-        cachedMarkerGeometry = TextAnchorGeometry.documentMarkers(markers: markers, textView: textView)
+        markerGeometryRebuildCount += 1
+        cachedMarkerGeometry = TextAnchorGeometry.documentMarkers(groups: groups, textView: textView)
     }
 
     private func viewportMarkerRects(from documentMarkers: [DocumentMarkerRect]) -> [ViewportMarkerRect] {
@@ -1275,10 +1275,17 @@ final class MarkerTextContainerView: NSView {
 
 private struct MarkerCacheSignature: Equatable {
     var textRevision: Int
+    var text: String
     var containerWidth: CGFloat
     var fontSize: Double
     var lineSpacing: Double
-    var markers: [ProductionTextMarker]
+    var groups: [MarkerRangeGroup]
+}
+
+fileprivate struct MarkerRangeGroup: Equatable {
+    let mode: WorkspaceMode
+    var range: NSRange
+    var itemIDs: [UUID]
 }
 
 struct DocumentMarkerRect: Equatable {
@@ -1309,19 +1316,9 @@ enum TextMarkerStyle {
 
 enum TextAnchorGeometry {
     @MainActor
-    static func documentMarkers(markers: [ProductionTextMarker], textView: NSTextView) -> MarkerGeometry {
+    fileprivate static func documentMarkers(groups: [MarkerRangeGroup], textView: NSTextView) -> MarkerGeometry {
         guard let layout = textView.layoutManager, let container = textView.textContainer else { return MarkerGeometry() }
         layout.ensureLayout(for: container)
-        let text = textView.string
-        let validMarkers = markers.compactMap { marker -> (marker: ProductionTextMarker, range: NSRange)? in
-            guard marker.mode == .bRoll || marker.mode == .editing else { return nil }
-            guard let anchor = TextAnchorRepair.current(marker.anchor, in: text) else { return nil }
-            return (marker, anchor.nsRange)
-        }
-
-        let groups = [WorkspaceMode.bRoll, .editing].flatMap { mode in
-            groupedRanges(mode: mode, markers: validMarkers)
-        }
         let hitRegions = groups.flatMap {
             markerHitRegions(for: $0, layout: layout, textInset: textView.textContainerInset.height)
         }
@@ -1329,6 +1326,19 @@ enum TextAnchorGeometry {
             visualRun(for: $0, layout: layout, textInset: textView.textContainerInset.height)
         }
         return MarkerGeometry(hitRegions: hitRegions, renderRuns: renderRuns)
+    }
+
+    fileprivate static func markerGroups(markers: [ProductionTextMarker], in text: String) -> [MarkerRangeGroup] {
+        let validMarkers = markers.compactMap { marker -> (marker: ProductionTextMarker, range: NSRange)? in
+            guard marker.mode == .bRoll || marker.mode == .editing,
+                  let anchor = TextAnchorRepair.current(marker.anchor, in: text) else {
+                return nil
+            }
+            return (marker, anchor.nsRange)
+        }
+        return [WorkspaceMode.bRoll, .editing].flatMap { mode in
+            groupedRanges(mode: mode, markers: validMarkers)
+        }
     }
 
     static func clamp(_ range: NSRange, toLength length: Int) -> NSRange {
@@ -1387,12 +1397,6 @@ enum TextAnchorGeometry {
             ))
         }
         return regions
-    }
-
-    private struct MarkerRangeGroup {
-        let mode: WorkspaceMode
-        var range: NSRange
-        var itemIDs: [UUID]
     }
 
     private static func groupedRanges(
