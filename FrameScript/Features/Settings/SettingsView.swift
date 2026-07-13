@@ -1020,33 +1020,50 @@ private struct SettingsSection<Content: View>: View {
                 }
             }
 
-            VStack(spacing: 0) {
+            SettingsCard {
                 content
-            }
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(theme.cardBackground)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(theme.divider, lineWidth: 1)
-                    )
             }
         }
     }
 }
 
-private struct SettingsRow<Content: View>: View {
+struct SettingsCard<Content: View>: View {
+    @Environment(\.frameTheme) private var theme
+    @ViewBuilder var content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(theme.cardBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(theme.divider, lineWidth: 1)
+                )
+        }
+    }
+}
+
+struct SettingsRow<Content: View>: View {
     @Environment(AppState.self) private var appState
     @Environment(\.frameTheme) private var theme
     let title: String
     let help: String?
     let highlightKey: String?
+    let isHighlighted: Bool
     @ViewBuilder var content: Content
 
-    init(_ title: String, help: String? = nil, highlightKey: String? = nil, @ViewBuilder content: () -> Content) {
+    init(_ title: String, help: String? = nil, highlightKey: String? = nil, isHighlighted: Bool = false, @ViewBuilder content: () -> Content) {
         self.title = title
         self.help = help
         self.highlightKey = highlightKey
+        self.isHighlighted = isHighlighted
         self.content = content()
     }
 
@@ -1058,7 +1075,7 @@ private struct SettingsRow<Content: View>: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background {
-            if let highlightKey, appState.windowState.requestedSettingsHighlightKey == highlightKey {
+            if isHighlighted || (highlightKey != nil && appState.windowState.requestedSettingsHighlightKey == highlightKey) {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(theme.accentSoft.opacity(0.72))
                     .padding(.horizontal, 3)

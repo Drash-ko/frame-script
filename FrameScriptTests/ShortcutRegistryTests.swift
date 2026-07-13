@@ -63,4 +63,42 @@ final class ShortcutRegistryTests: XCTestCase {
         XCTAssertEqual(settings.shortcut(for: .commandPalette).display, "⌥⌘P")
         XCTAssertNotEqual(settings.shortcut(for: .commandPalette), ShortcutRegistry.definition(for: .commandPalette).factoryDefault)
     }
+
+    func testShortcutSettingsLayoutUsesOneOrderedCardForEveryCategory() {
+        let cards = ShortcutSettingsLayout.categoryCards
+
+        XCTAssertEqual(cards.map(\.category), ShortcutCategory.allCases)
+        for card in cards {
+            XCTAssertEqual(
+                card.definitions.map(\.command),
+                ShortcutRegistry.definitions
+                    .filter { $0.category == card.category }
+                    .sorted { $0.order < $1.order }
+                    .map(\.command)
+            )
+        }
+    }
+
+    func testShortcutSettingsRowStateOnlyShowsResetForCustomizedCommands() {
+        let definition = ShortcutRegistry.definition(for: .commandPalette)
+
+        XCTAssertFalse(
+            ShortcutSettingsLayout.rowState(for: definition, customizedCommands: [], recording: nil).showsReset
+        )
+        XCTAssertTrue(
+            ShortcutSettingsLayout.rowState(for: definition, customizedCommands: [.commandPalette], recording: nil).showsReset
+        )
+    }
+
+    func testShortcutSettingsRecordingStateOnlyHighlightsTheActiveRow() {
+        let active = ShortcutRegistry.definition(for: .commandPalette)
+        let inactive = ShortcutRegistry.definition(for: .save)
+
+        XCTAssertTrue(
+            ShortcutSettingsLayout.rowState(for: active, customizedCommands: [], recording: active.command).isRecording
+        )
+        XCTAssertFalse(
+            ShortcutSettingsLayout.rowState(for: inactive, customizedCommands: [], recording: active.command).isRecording
+        )
+    }
 }
