@@ -78,6 +78,117 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(legacyProject.scenes.first?.bRollItems.first?.descriptionText, project.scenes.first?.bRollItems.first?.descriptionText)
     }
 
+    func testSynchronizeShiftsAnchorForInsertionBeforeIt() throws {
+        let (store, scene, item) = try makeAnchorStore()
+        scene.scriptText = "alpha INSERT target omega"
+
+        store.synchronizeTextSegments(splitMode: .scene, wordsPerMinute: 150)
+
+        let anchor = try XCTUnwrap(item.textAnchor)
+        XCTAssertEqual(anchor.startUTF16, 13)
+        XCTAssertEqual(anchor.selectedText, "target")
+        XCTAssertEqual(anchor.prefixContext, "alpha INSERT ")
+    }
+
+    func testSynchronizeExpandsAnchorForInsertionInsideIt() throws {
+        let (store, scene, item) = try makeAnchorStore()
+        scene.scriptText = "alpha tarXget omega"
+
+        store.synchronizeTextSegments(splitMode: .scene, wordsPerMinute: 150)
+
+        let anchor = try XCTUnwrap(item.textAnchor)
+        XCTAssertEqual(anchor.startUTF16, 6)
+        XCTAssertEqual(anchor.selectedText, "tarXget")
+        XCTAssertEqual(anchor.lengthUTF16, 7)
+    }
+
+    func testSynchronizeShiftsAnchorForDeletionBeforeIt() throws {
+        let (store, scene, item) = try makeAnchorStore()
+        scene.scriptText = "target omega"
+
+        store.synchronizeTextSegments(splitMode: .scene, wordsPerMinute: 150)
+
+        let anchor = try XCTUnwrap(item.textAnchor)
+        XCTAssertEqual(anchor.startUTF16, 0)
+        XCTAssertEqual(anchor.selectedText, "target")
+    }
+
+    func testSynchronizeShrinksAnchorForDeletionInsideIt() throws {
+        let (store, scene, item) = try makeAnchorStore()
+        scene.scriptText = "alpha taget omega"
+
+        store.synchronizeTextSegments(splitMode: .scene, wordsPerMinute: 150)
+
+        let anchor = try XCTUnwrap(item.textAnchor)
+        XCTAssertEqual(anchor.startUTF16, 6)
+        XCTAssertEqual(anchor.selectedText, "taget")
+        XCTAssertEqual(anchor.lengthUTF16, 5)
+        XCTAssertEqual(anchor.suffixContext, " omega")
+    }
+
+    func testAmbiguousAnchorRepairFails() throws {
+        let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: "left target right", range: NSRange(location: 5, length: 6)))
+
+        XCTAssertNil(TextAnchorRepair.repair(anchor, in: "left target right and left target right"))
+    }
+
+    func testUnrepairableAnchorClearsAnchorAndSegmentMetadata() throws {
+        let (store, scene, item) = try makeAnchorStore(linkedSegmentID: UUID())
+        scene.scriptText = "entirely unrelated"
+
+        store.synchronizeTextSegments(splitMode: .scene, wordsPerMinute: 150)
+
+        XCTAssertNil(item.textAnchor)
+        XCTAssertNil(item.linkedSegmentID)
+    }
+
+    func testAnchorOnlyRelationshipRemainsLinked() throws {
+        let (store, _, item) = try makeAnchorStore(linkedSegmentID: nil)
+
+        store.synchronizeTextSegments(splitMode: .scene, wordsPerMinute: 150)
+
+        XCTAssertEqual(item.textAnchor?.selectedText, "target")
+        XCTAssertNil(item.linkedSegmentID)
+    }
+
+    func testLegacySegmentLinksMigrateToAnchorsAndStaleLinksClear() throws {
+        let sceneID = UUID()
+        let segmentID = UUID()
+        let segment = TextSegment(id: segmentID, sceneID: sceneID, order: 0, sourceText: "alpha target omega", segmentType: .scene)
+        let scene = Scene(
+            id: sceneID,
+            order: 0,
+            sectionType: .custom,
+            title: "Scene",
+            scriptText: "alpha target omega",
+            textSegments: [segment],
+            bRollItems: [BRollItem(linkedSegmentID: segmentID, templateType: "", sourceType: .custom, descriptionText: "")],
+            editingItems: [EditingItem(linkedSegmentID: UUID(), templateType: "", cutStyle: "", transition: "", subtitleStyle: "")]
+        )
+        let project = FrameProject(title: "Project", scenes: [scene])
+
+        for version in 1...3 {
+            var file = FrameScriptFile(project: project)
+            file.fileVersion = version
+            let loaded = try file.makeProject()
+            let loadedScene = try XCTUnwrap(loaded.scenes.first)
+            XCTAssertEqual(loadedScene.bRollItems.first?.textAnchor?.selectedText, "alpha target omega")
+            XCTAssertEqual(loadedScene.bRollItems.first?.linkedSegmentID, segmentID)
+            XCTAssertNil(loadedScene.editingItems.first?.textAnchor)
+            XCTAssertNil(loadedScene.editingItems.first?.linkedSegmentID)
+        }
+    }
+
+    private func makeAnchorStore(linkedSegmentID: UUID? = nil) throws -> (ProjectStore, Scene, BRollItem) {
+        let text = "alpha target omega"
+        let sceneID = UUID()
+        let segment = TextSegment(id: linkedSegmentID ?? UUID(), sceneID: sceneID, order: 0, sourceText: text, segmentType: .scene)
+        let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: NSRange(location: 6, length: 6)))
+        let item = BRollItem(textAnchor: anchor, linkedSegmentID: linkedSegmentID, templateType: "", sourceType: .custom, descriptionText: "")
+        let scene = Scene(id: sceneID, order: 0, sectionType: .custom, title: "Scene", scriptText: text, textSegments: [segment], bRollItems: [item])
+        return (ProjectStore(project: FrameProject(title: "Project", scenes: [scene])), scene, item)
+    }
+
     private func repositoryText(_ relativePath: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         return try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)

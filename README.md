@@ -28,6 +28,7 @@ Then select the `FrameScript` scheme, choose `My Mac`, and press `Cmd+R`.
 - Scene-based script editor with English and Russian UI strings.
 - Live word counts and scene, sidebar, and project duration estimates update from each edit, independently of saving; saved projects still coalesce rapid edits into a single autosave.
 - Script, Visuals, and Editing workspaces over the same scene structure.
+- Visuals and Editing links persist exact text anchors, so ordinary insertions and deletions keep the linked selection aligned; legacy segment-only links are migrated when a project is loaded.
 - Built-in templates for blank, standard YouTube, educational, storytelling, product review, commentary/essay, and tutorial projects.
 - Project save/open using `.fscr` files. FrameScript writes project format version 3, reads versions 1–3, and continues to import legacy `.framescript` files.
 - Export as plain text, Markdown, CSV, or production outline.
@@ -76,7 +77,7 @@ See `SECURITY.md` for reporting guidance.
 ## Known Limitations
 
 - Inline review markers are not yet exposed in the editor.
-- Production markers use AppKit text-range geometry; their anchors are not guaranteed to remain stable after arbitrary edits that substantially rewrite linked text.
+- Production links are cleared when a substantially rewritten selection cannot be repaired unambiguously.
 - AI capabilities require network access, a compatible provider account, and access to the configured model.
 
 ## License

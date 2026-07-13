@@ -117,9 +117,14 @@ struct BRollEditorView: View {
         .menuStyle(.borderlessButton).fixedSize()
     }
 
-    private func items(for segment: TextSegment) -> [BRollItem] { scene.bRollItems.filter { $0.linkedSegmentID == segment.id } }
+    private func items(for segment: TextSegment) -> [BRollItem] {
+        scene.bRollItems.filter {
+            guard let anchor = $0.textAnchor else { return false }
+            return TextAnchorRepair.isAnchor(anchor, in: segment, text: scene.scriptText)
+        }
+    }
     private var unlinkedItems: [BRollItem] {
-        let ids = Set(scene.textSegments.map(\.id)); return scene.bRollItems.filter { $0.linkedSegmentID.map { !ids.contains($0) } ?? true }
+        scene.bRollItems.filter { $0.textAnchor == nil }
     }
     private func addEmptyItem(linkedTo id: UUID) {
         scene.bRollItems.append(BRollItem(textAnchor: appState.projectStore.anchor(for: id, in: scene), linkedSegmentID: id, templateType: "", sourceType: .custom, descriptionText: "")); appState.touchProject()
@@ -134,7 +139,10 @@ struct BRollEditorView: View {
     }
     private func deleteItem(_ item: BRollItem) { scene.bRollItems.removeAll { $0.id == item.id }; appState.touchProject() }
     private func linkLabel(_ item: BRollItem) -> String {
-        guard let id = item.linkedSegmentID, let index = scene.textSegments.sortedByOrder.firstIndex(where: { $0.id == id }) else { return appState.localized("production.unlinked") }
+        guard let anchor = item.textAnchor else { return appState.localized("production.unlinked") }
+        guard let index = scene.textSegments.sortedByOrder.firstIndex(where: { TextAnchorRepair.isAnchor(anchor, in: $0, text: scene.scriptText) }) else {
+            return String(anchor.selectedText.prefix(42))
+        }
         return String(format: "%02d", index + 1)
     }
     private func segmentTitle(_ index: Int, _ segment: TextSegment) -> String {

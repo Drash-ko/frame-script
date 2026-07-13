@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Made persisted Visuals and Editing relationships authoritative through exact text anchors; legacy segment-only links now migrate to anchors during loading and synchronization.
+
+### Fixed
+
+- Fixed linked production selections shifting, expanding, and shrinking through ordinary script edits, while ambiguous or unsafe repairs now clear stale relationship metadata.
+
 ## [0.3.0] - 2026-07-13
 
 ### Added

@@ -83,18 +83,58 @@ struct ProjectDTO: Codable {
         for scene in project.scenes {
             let textLength = (scene.scriptText as NSString).length
             for item in scene.bRollItems {
-                if item.textAnchor == nil, let linkedID = item.linkedSegmentID, let segment = scene.textSegments.first(where: { $0.id == linkedID }) {
-                    item.textAnchor = TextAnchorRepair.anchor(for: segment, in: scene.scriptText)
-                }
+                migrateLegacyLink(item, scene: scene)
+                repairAnchor(item, text: scene.scriptText)
                 try validate(item.textAnchor, textLength: textLength)
             }
             for item in scene.editingItems {
-                if item.textAnchor == nil, let linkedID = item.linkedSegmentID, let segment = scene.textSegments.first(where: { $0.id == linkedID }) {
-                    item.textAnchor = TextAnchorRepair.anchor(for: segment, in: scene.scriptText)
-                }
+                migrateLegacyLink(item, scene: scene)
+                repairAnchor(item, text: scene.scriptText)
                 try validate(item.textAnchor, textLength: textLength)
             }
         }
+    }
+
+    private func migrateLegacyLink(_ item: BRollItem, scene: Scene) {
+        guard item.textAnchor == nil else { return }
+        guard let linkedID = item.linkedSegmentID,
+              let segment = scene.textSegments.first(where: { $0.id == linkedID }),
+              let anchor = TextAnchorRepair.anchor(for: segment, in: scene.scriptText) else {
+            item.linkedSegmentID = nil
+            return
+        }
+        item.textAnchor = anchor
+    }
+
+    private func repairAnchor(_ item: BRollItem, text: String) {
+        guard item.textAnchor != nil else { return }
+        guard let repaired = TextAnchorRepair.repair(item.textAnchor, in: text) else {
+            item.textAnchor = nil
+            item.linkedSegmentID = nil
+            return
+        }
+        item.textAnchor = repaired
+    }
+
+    private func repairAnchor(_ item: EditingItem, text: String) {
+        guard item.textAnchor != nil else { return }
+        guard let repaired = TextAnchorRepair.repair(item.textAnchor, in: text) else {
+            item.textAnchor = nil
+            item.linkedSegmentID = nil
+            return
+        }
+        item.textAnchor = repaired
+    }
+
+    private func migrateLegacyLink(_ item: EditingItem, scene: Scene) {
+        guard item.textAnchor == nil else { return }
+        guard let linkedID = item.linkedSegmentID,
+              let segment = scene.textSegments.first(where: { $0.id == linkedID }),
+              let anchor = TextAnchorRepair.anchor(for: segment, in: scene.scriptText) else {
+            item.linkedSegmentID = nil
+            return
+        }
+        item.textAnchor = anchor
     }
 
     private func validate(_ anchor: TextAnchor?, textLength: Int) throws {

@@ -200,16 +200,10 @@ struct ScriptEditorView: View {
         for item in scene.bRollItems {
             if let anchor = item.textAnchor {
                 markers.append(ProductionTextMarker(itemID: item.id, mode: .bRoll, anchor: anchor))
-            } else if let segmentID = item.linkedSegmentID,
-                      let anchor = appState.projectStore.anchor(for: segmentID, in: scene) {
-                markers.append(ProductionTextMarker(itemID: item.id, mode: .bRoll, anchor: anchor))
             }
         }
         for item in scene.editingItems {
             if let anchor = item.textAnchor {
-                markers.append(ProductionTextMarker(itemID: item.id, mode: .editing, anchor: anchor))
-            } else if let segmentID = item.linkedSegmentID,
-                      let anchor = appState.projectStore.anchor(for: segmentID, in: scene) {
                 markers.append(ProductionTextMarker(itemID: item.id, mode: .editing, anchor: anchor))
             }
         }

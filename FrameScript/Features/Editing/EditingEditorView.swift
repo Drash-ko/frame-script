@@ -88,9 +88,14 @@ struct EditingEditorView: View {
         .menuStyle(.borderlessButton).fixedSize()
     }
 
-    private func items(for segment: TextSegment) -> [EditingItem] { scene.editingItems.filter { $0.linkedSegmentID == segment.id } }
+    private func items(for segment: TextSegment) -> [EditingItem] {
+        scene.editingItems.filter {
+            guard let anchor = $0.textAnchor else { return false }
+            return TextAnchorRepair.isAnchor(anchor, in: segment, text: scene.scriptText)
+        }
+    }
     private var unlinkedItems: [EditingItem] {
-        let ids = Set(scene.textSegments.map(\.id)); return scene.editingItems.filter { $0.linkedSegmentID.map { !ids.contains($0) } ?? true }
+        scene.editingItems.filter { $0.textAnchor == nil }
     }
     private func addEmptyItem(linkedTo id: UUID) { scene.editingItems.append(EditingItem(textAnchor: appState.projectStore.anchor(for: id, in: scene), linkedSegmentID: id, templateType: "", cutStyle: "", transition: "", subtitleStyle: "")); appState.touchProject() }
     private func addItem(from preset: EditingPreset, linkedTo id: UUID) { scene.editingItems.append(EditingItem(textAnchor: appState.projectStore.anchor(for: id, in: scene), linkedSegmentID: id, templateType: "", cutStyle: preset.description(appState), transition: "", subtitleStyle: "", notes: preset.notes(appState))); appState.touchProject() }
@@ -100,7 +105,11 @@ struct EditingEditorView: View {
     }
     private func deleteItem(_ item: EditingItem) { scene.editingItems.removeAll { $0.id == item.id }; appState.touchProject() }
     private func linkLabel(_ item: EditingItem) -> String {
-        guard let id = item.linkedSegmentID, let index = scene.textSegments.sortedByOrder.firstIndex(where: { $0.id == id }) else { return appState.localized("production.unlinked") }; return String(format: "%02d", index + 1)
+        guard let anchor = item.textAnchor else { return appState.localized("production.unlinked") }
+        guard let index = scene.textSegments.sortedByOrder.firstIndex(where: { TextAnchorRepair.isAnchor(anchor, in: $0, text: scene.scriptText) }) else {
+            return String(anchor.selectedText.prefix(42))
+        }
+        return String(format: "%02d", index + 1)
     }
     private func segmentTitle(_ index: Int, _ segment: TextSegment) -> String { "\(String(format: "%02d", index + 1)) \(segment.sourceText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(42))" }
     private func scrollToSelection(_ proxy: ScrollViewProxy) { guard let id = appState.editorState.selectedProductionSegmentID else { return }; DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) } } }

@@ -122,26 +122,25 @@ struct ExportService: ExportServicing {
         var rows = [headers.map(csvEscape).joined(separator: ",")]
         for scene in project.scenes.sortedByOrder {
             let segments = scene.textSegments.sortedByOrder
-            let valid = Set(segments.map(\.id))
             for segment in segments {
                 if preferences.includeBRoll {
-                    for item in scene.bRollItems where item.linkedSegmentID == segment.id {
+                    for item in scene.bRollItems where isLinked(item.textAnchor, to: segment, in: scene) {
                         rows.append(csvRow(scene: scene, segment: segment, type: label("export.label.broll", language: language), source: label("brollSource.\(item.sourceType.rawValue)", language: language), description: item.descriptionText, notes: item.notes))
                     }
                 }
                 if preferences.includeEditingNotes {
-                    for item in scene.editingItems where item.linkedSegmentID == segment.id {
+                    for item in scene.editingItems where isLinked(item.textAnchor, to: segment, in: scene) {
                         rows.append(csvRow(scene: scene, segment: segment, type: label("export.label.editing", language: language), source: "", description: item.cutStyle, notes: item.notes))
                     }
                 }
             }
             if preferences.includeBRoll {
-                for item in scene.bRollItems where item.linkedSegmentID.map({ !valid.contains($0) }) ?? true {
+                for item in scene.bRollItems where item.textAnchor == nil {
                     rows.append(csvRow(scene: scene, segment: nil, type: label("export.label.broll", language: language), source: label("brollSource.\(item.sourceType.rawValue)", language: language), description: item.descriptionText, notes: item.notes))
                 }
             }
             if preferences.includeEditingNotes {
-                for item in scene.editingItems where item.linkedSegmentID.map({ !valid.contains($0) }) ?? true {
+                for item in scene.editingItems where item.textAnchor == nil {
                     rows.append(csvRow(scene: scene, segment: nil, type: label("export.label.editing", language: language), source: "", description: item.cutStyle, notes: item.notes))
                 }
             }
@@ -151,24 +150,28 @@ struct ExportService: ExportServicing {
 
     private func renderSegmentProduction(scene: Scene, preferences: ExportPreferences, language: AppLanguage, headingPrefix: String) -> String {
         let segments = scene.textSegments.sortedByOrder
-        let valid = Set(segments.map(\.id))
         var output = ""
         for segment in segments {
-            let bRoll = preferences.includeBRoll ? scene.bRollItems.filter { $0.linkedSegmentID == segment.id } : []
-            let editing = preferences.includeEditingNotes ? scene.editingItems.filter { $0.linkedSegmentID == segment.id } : []
+            let bRoll = preferences.includeBRoll ? scene.bRollItems.filter { isLinked($0.textAnchor, to: segment, in: scene) } : []
+            let editing = preferences.includeEditingNotes ? scene.editingItems.filter { isLinked($0.textAnchor, to: segment, in: scene) } : []
             guard !bRoll.isEmpty || !editing.isEmpty else { continue }
             output += "\(headingPrefix)\(label("export.csv.segmentText", language: language)): \(segmentPreview(segment.sourceText))\n"
             appendProductionItems(&output, bRoll: bRoll, editing: editing, language: language)
             output += "\n"
         }
-        let unlinkedBRoll = preferences.includeBRoll ? scene.bRollItems.filter { $0.linkedSegmentID.map { !valid.contains($0) } ?? true } : []
-        let unlinkedEditing = preferences.includeEditingNotes ? scene.editingItems.filter { $0.linkedSegmentID.map { !valid.contains($0) } ?? true } : []
+        let unlinkedBRoll = preferences.includeBRoll ? scene.bRollItems.filter { $0.textAnchor == nil } : []
+        let unlinkedEditing = preferences.includeEditingNotes ? scene.editingItems.filter { $0.textAnchor == nil } : []
         if !unlinkedBRoll.isEmpty || !unlinkedEditing.isEmpty {
             output += "\(headingPrefix)\(label("production.unlinked", language: language))\n"
             appendProductionItems(&output, bRoll: unlinkedBRoll, editing: unlinkedEditing, language: language)
             output += "\n"
         }
         return output
+    }
+
+    private func isLinked(_ anchor: TextAnchor?, to segment: TextSegment, in scene: Scene) -> Bool {
+        guard let anchor else { return false }
+        return TextAnchorRepair.isAnchor(anchor, in: segment, text: scene.scriptText)
     }
 
     private func appendProductionItems(_ output: inout String, bRoll: [BRollItem], editing: [EditingItem], language: AppLanguage) {
