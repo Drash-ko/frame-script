@@ -1,0 +1,335 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-and-release:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: Print toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcode-select -p
+          xcodebuild -version
+          xcrun swift --version
+
+      - name: Resolve and validate release metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build_settings="$(xcodebuild \
+            -project FrameScript.xcodeproj \
+            -target FrameScript \
+            -configuration Release \
+            -showBuildSettings)"
+          marketing_version="$(awk -F ' = ' '/^[[:space:]]*MARKETING_VERSION = / { print $2; exit }' <<< "$build_settings")"
+          build_number="$(awk -F ' = ' '/^[[:space:]]*CURRENT_PROJECT_VERSION = / { print $2; exit }' <<< "$build_settings")"
+
+          [[ -n "$marketing_version" && -n "$build_number" ]] || {
+            echo "Could not resolve version metadata from Xcode." >&2
+            exit 1
+          }
+
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            [[ "$GITHUB_REF" == refs/tags/* ]] || {
+              echo "Release pushes must use a tag ref." >&2
+              exit 1
+            }
+            tag_name="$GITHUB_REF_NAME"
+            [[ "$tag_name" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
+              echo "Tag must use vMAJOR.MINOR.PATCH." >&2
+              exit 1
+            }
+            expected_version="${BASH_REMATCH[1]}"
+          else
+            expected_version="$marketing_version"
+          fi
+
+          [[ "$marketing_version" == "$expected_version" ]] || {
+            echo "Tag version $expected_version does not match MARKETING_VERSION $marketing_version." >&2
+            exit 1
+          }
+          [[ "$marketing_version" == "0.4.0" ]] || {
+            echo "This release workflow expects FrameScript 0.4.0." >&2
+            exit 1
+          }
+          [[ "$build_number" == "4" ]] || {
+            echo "This release workflow expects build number 4." >&2
+            exit 1
+          }
+          grep -Fxq '# FrameScript v0.4.0' RELEASE_NOTES.md
+          grep -Fq '## [0.4.0] - 2026-07-13' CHANGELOG.md
+
+          echo "version=$marketing_version" >> "$GITHUB_OUTPUT"
+          echo "build=$build_number" >> "$GITHUB_OUTPUT"
+
+      - name: Run FrameScript unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project FrameScript.xcodeproj \
+            -scheme FrameScript \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/FrameScript-ReleaseTests" \
+            -only-testing:FrameScriptTests \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Build universal Release app
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          derived_data="$RUNNER_TEMP/FrameScript-UniversalRelease"
+
+          xcodebuild \
+            -project FrameScript.xcodeproj \
+            -scheme FrameScript \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$derived_data" \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+          build_settings="$(xcodebuild \
+            -project FrameScript.xcodeproj \
+            -scheme FrameScript \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$derived_data" \
+            ARCHS="arm64 x86_64" \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            -showBuildSettings)"
+          target_build_dir="$(awk -F ' = ' '/^[[:space:]]*TARGET_BUILD_DIR = / { print $2; exit }' <<< "$build_settings")"
+          wrapper_name="$(awk -F ' = ' '/^[[:space:]]*WRAPPER_NAME = / { print $2; exit }' <<< "$build_settings")"
+          app_path="$target_build_dir/$wrapper_name"
+
+          [[ -d "$app_path" ]] || {
+            echo "Built app was not found at $app_path." >&2
+            exit 1
+          }
+          matches="$(find "$derived_data/Build/Products" -type d -name 'FrameScript.app' -prune -print)"
+          match_count="$(sed '/^$/d' <<< "$matches" | wc -l | tr -d ' ')"
+          [[ "$match_count" == "1" && "$matches" == "$app_path" ]] || {
+            echo "Expected exactly one built FrameScript.app; found: $matches" >&2
+            exit 1
+          }
+
+          echo "app_path=$app_path" >> "$GITHUB_OUTPUT"
+
+      - name: Sign Release app
+        id: signing
+        shell: bash
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          app_path="${{ steps.build.outputs.app_path }}"
+          keychain_path="$RUNNER_TEMP/framescript-release.keychain-db"
+          certificate_path="$RUNNER_TEMP/framescript-release.p12"
+
+          cleanup() {
+            security delete-keychain "$keychain_path" >/dev/null 2>&1 || true
+            rm -f -- "$certificate_path" "$keychain_path"
+          }
+          trap cleanup EXIT INT TERM
+
+          if [[ -n "$MACOS_CERTIFICATE_P12_BASE64" \
+             && -n "$MACOS_CERTIFICATE_PASSWORD" \
+             && -n "$MACOS_KEYCHAIN_PASSWORD" \
+             && -n "$APPLE_ID" \
+             && -n "$APPLE_APP_SPECIFIC_PASSWORD" \
+             && -n "$APPLE_TEAM_ID" ]]; then
+            printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 -D > "$certificate_path"
+            security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain_path"
+            security set-keychain-settings -lut 21600 "$keychain_path"
+            security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain_path"
+            security import "$certificate_path" \
+              -k "$keychain_path" \
+              -P "$MACOS_CERTIFICATE_PASSWORD" \
+              -T /usr/bin/codesign \
+              -T /usr/bin/security
+            security set-key-partition-list \
+              -S apple-tool:,apple: \
+              -s \
+              -k "$MACOS_KEYCHAIN_PASSWORD" \
+              "$keychain_path"
+
+            identity="$(security find-identity -v -p codesigning "$keychain_path" | awk -F '"' '/Developer ID Application/ { print $2; exit }')"
+            [[ -n "$identity" && "$identity" == Developer\ ID\ Application:* ]] || {
+              echo "No Developer ID Application identity was found." >&2
+              exit 1
+            }
+
+            codesign \
+              --force \
+              --deep \
+              --options runtime \
+              --timestamp \
+              --entitlements FrameScript/FrameScript.entitlements \
+              --keychain "$keychain_path" \
+              --sign "$identity" \
+              "$app_path"
+            echo "notarize=true" >> "$GITHUB_OUTPUT"
+            echo "Signing path: Developer ID Application with notarization"
+          else
+            codesign \
+              --force \
+              --deep \
+              --options runtime \
+              --entitlements FrameScript/FrameScript.entitlements \
+              --sign - \
+              "$app_path"
+            echo "notarize=false" >> "$GITHUB_OUTPUT"
+            echo "Signing path: ad-hoc; notarization credentials are incomplete"
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+
+      - name: Package DMG and ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/package-release.sh \
+            --version '${{ steps.metadata.outputs.version }}' \
+            --build '${{ steps.metadata.outputs.build }}' \
+            --app '${{ steps.build.outputs.app_path }}' \
+            --output "$RUNNER_TEMP/FrameScript-ReleaseArtifacts"
+
+      - name: Notarize and staple DMG
+        if: steps.signing.outputs.notarize == 'true'
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          artifacts="$RUNNER_TEMP/FrameScript-ReleaseArtifacts"
+          dmg="$artifacts/FrameScript.dmg"
+
+          xcrun notarytool submit "$dmg" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
+
+          cd "$artifacts"
+          shasum -a 256 FrameScript.dmg FrameScript.zip > SHA256SUMS.txt
+          shasum -a 256 -c SHA256SUMS.txt
+
+      - name: Upload release workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: FrameScript-0.4.0-release
+          path: |
+            ${{ runner.temp }}/FrameScript-ReleaseArtifacts/FrameScript.dmg
+            ${{ runner.temp }}/FrameScript-ReleaseArtifacts/FrameScript.zip
+            ${{ runner.temp }}/FrameScript-ReleaseArtifacts/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create, verify, and publish GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          artifacts="$RUNNER_TEMP/FrameScript-ReleaseArtifacts"
+
+          git show-ref --verify --quiet "refs/tags/$tag" || {
+            echo "Tag $tag is missing from the checkout." >&2
+            exit 1
+          }
+          tag_commit="$(git rev-list -n 1 "$tag")"
+          [[ "$tag_commit" == "$GITHUB_SHA" ]] || {
+            echo "Tag $tag points to $tag_commit, not checked-out commit $GITHUB_SHA." >&2
+            exit 1
+          }
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub Release $tag already exists; refusing to overwrite it." >&2
+            exit 1
+          fi
+
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --title 'FrameScript v0.4.0' \
+            --notes-file RELEASE_NOTES.md
+
+          gh release upload "$tag" \
+            "$artifacts/FrameScript.dmg" \
+            "$artifacts/FrameScript.zip" \
+            "$artifacts/SHA256SUMS.txt" \
+            --repo "$GITHUB_REPOSITORY"
+
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+          jq -e '.draft == true and .prerelease == false and .name == "FrameScript v0.4.0"' <<< "$release_json" >/dev/null
+          for asset in FrameScript.dmg FrameScript.zip SHA256SUMS.txt; do
+            jq -e --arg asset "$asset" '[.assets[] | select(.name == $asset and .size > 0)] | length == 1' <<< "$release_json" >/dev/null
+          done
+          expected_body="$(cat RELEASE_NOTES.md)"
+          actual_body="$(jq -r '.body' <<< "$release_json")"
+          [[ "$actual_body" == "$expected_body" ]] || {
+            echo "Draft release body does not match RELEASE_NOTES.md." >&2
+            exit 1
+          }
+
+          gh release edit "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --prerelease=false \
+            --title 'FrameScript v0.4.0' \
+            --notes-file RELEASE_NOTES.md
+
+          published_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+          jq -e '.draft == false and .prerelease == false and .name == "FrameScript v0.4.0"' <<< "$published_json" >/dev/null
+          for asset in FrameScript.dmg FrameScript.zip SHA256SUMS.txt; do
+            jq -e --arg asset "$asset" '[.assets[] | select(.name == $asset and .size > 0)] | length == 1' <<< "$published_json" >/dev/null
+          done
+          published_body="$(jq -r '.body' <<< "$published_json")"
+          [[ "$published_body" == "$expected_body" ]] || {
+            echo "Published release body does not match RELEASE_NOTES.md." >&2
+            exit 1
+          }

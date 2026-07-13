@@ -1,4 +1,4 @@
-name: Build
+name: CI
 
 on:
   push:
@@ -6,20 +6,66 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  verify:
     runs-on: macos-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Build FrameScript
+      - name: Print toolchain versions
+        shell: bash
         run: |
+          set -euo pipefail
+          xcode-select -p
+          xcodebuild -version
+          xcrun swift --version
+
+      - name: Run FrameScript unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
           xcodebuild \
             -project FrameScript.xcodeproj \
             -scheme FrameScript \
             -configuration Debug \
             -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/FrameScript-UnitTests" \
+            -only-testing:FrameScriptTests \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Build Debug
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project FrameScript.xcodeproj \
+            -scheme FrameScript \
+            -configuration Debug \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/FrameScript-Debug" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Build Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project FrameScript.xcodeproj \
+            -scheme FrameScript \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/FrameScript-Release" \
             CODE_SIGNING_ALLOWED=NO \
             build

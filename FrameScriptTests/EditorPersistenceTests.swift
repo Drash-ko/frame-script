@@ -48,10 +48,19 @@ final class EditorPersistenceTests: XCTestCase {
         }
     }
 
-    func testCurrentDocsDemoAndBannerContainNoVisibleBRoll() throws {
-        for path in ["README.md", "RELEASE_NOTES.md", "docs/banner.svg", "FrameScript/Models/SampleData.swift"] {
+    func testCurrentDocsAndDemoContainNoVisibleBRollAndUseWebPBanner() throws {
+        for path in ["README.md", "RELEASE_NOTES.md", "FrameScript/Models/SampleData.swift"] {
             try assertNoVisibleBRoll(in: repositoryText(path), file: path)
         }
+
+        let readme = try repositoryText("README.md")
+        XCTAssertTrue(readme.contains("](docs/banner.webp)"))
+        XCTAssertFalse(readme.contains("docs/banner.svg"))
+
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let banner = try Data(contentsOf: root.appendingPathComponent("docs/banner.webp"))
+        XCTAssertEqual(Array(banner.prefix(4)), Array("RIFF".utf8))
+        XCTAssertEqual(Array(banner.dropFirst(8).prefix(4)), Array("WEBP".utf8))
 
         let changelog = try repositoryText("CHANGELOG.md")
         let unreleased = try XCTUnwrap(changelog.components(separatedBy: "## [0.2.0]").first)

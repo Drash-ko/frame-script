@@ -2,38 +2,29 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-13
+
 ### Added
 
-- Added a centralized configurable keyboard-shortcut registry, recorder, conflict validation, and localized Settings tab; menu commands, keycaps, palette, and overlay now update immediately from persisted app-level bindings.
+- Added configurable keyboard shortcuts with recording, conflict reassignment, explicit unassignment, reserved-shortcut protection, persisted app-level bindings, immediate menu and visible-keycap updates, and layout-independent execution based on physical key positions.
+- Added downloadable universal Apple Silicon and Intel DMG and ZIP builds with published SHA-256 checksums.
 
 ### Changed
 
-- Polished Keyboard Shortcuts Settings to use the shared Settings cards, rows, themed keycaps, and focused recording state.
-- Unified every configurable menu key equivalent and visible shortcut hint behind the active shortcut state, including explicit localized unassigned labels, and consolidated project exit into Back to Project List.
 - Replaced the built-in English and Russian demos with five-scene, anchor-first product showcases containing production plans, editing direction, and prepared local AI review notes; demo sessions now discard edits without prompts or autosave until explicitly saved as a project file.
-- Simplified Settings controls and help affordances, consolidated launch behavior, removed the footer-shortcuts preference, and added persisted inline-autocomplete control.
-- Enabled the AI review panel and inline autocomplete by default for new and reset settings while preserving saved preferences.
-- Made persisted Visuals and Editing relationships authoritative through exact text anchors; legacy segment-only links now migrate to anchors during loading and synchronization.
-- Made Visuals and Editing sections, labels, selection, and marker navigation anchor-first: identical anchored ranges group together in stable script order, while invalid or missing anchors appear under Unlinked.
-- Changed Script production markers to group only overlapping or touching current UTF-16 anchor ranges per Visuals or Editing lane; marker clicks now select the complete anchored group.
-- Kept Visuals and Editing hit regions in separate fixed lanes, and assign separated same-line groups distinct deterministic regions in script order.
-
-### Removed
-
-- Removed adjustable script-column width and line spacing in favor of a consistent responsive 900 pt editor layout and fixed default typography.
+- Made persisted Visuals and Editing relationships, grouping, selection, and marker navigation anchor-first; legacy segment-only links migrate when projects load, and invalid relationships appear as unlinked instead of pointing at stale script text.
+- Simplified Settings and launch behavior, added a persisted inline-autocomplete control, and enabled AI review and inline autocomplete by default for new or reset settings while preserving existing saved preferences.
+- Consolidated project exit and project-browser navigation into Back to Project List.
 
 ### Fixed
 
-- Fixed configurable shortcut capture and runtime command execution to use physical ANSI-US key positions independently of the active keyboard input language.
-- Fixed Keyboard Shortcuts recording so its AppKit capture session and window-close cleanup are scoped to the active Settings window, while conflicting assignments can be safely reassigned with explicit unassigned commands persisted in app settings.
-- Fixed configurable shortcut capture to stop before pending confirmation or conflict alerts, preserve native alert keyboard handling, order overlay categories deterministically, and refresh project-menu hints from active bindings.
-- Fixed the autosave interval row’s obsolete help affordance and made inline autocomplete ghost wrapping honor TextKit’s usable width, whitespace, and paragraph spacing.
-- Fixed inline autocomplete ghost text so a first word that cannot fit at the script caret begins intact on the next TextKit line.
-- Fixed linked production selections shifting, expanding, and shrinking through ordinary script edits, while ambiguous or unsafe repairs now clear stale relationship metadata.
-- Fixed stale anchors, whitespace-separated ranges, and cross-workspace marker interaction so they no longer produce misleading geometry or selection.
-- Fixed production anchors and Script markers to refresh immediately on committed text edits, while rejecting distant or ambiguous repair evidence and avoiding unnecessary TextKit geometry work.
-- Fixed live anchor repair to use the pre-edit script text for deterministic boundary-preserving edits, refresh anchor context, and normalize selection after groups change.
-- Fixed current duplicate-context anchors during synchronization and loading, wrapped marker lanes that shared a first or last rendered line, and selection continuity after unlinking or relinking grouped production items.
+- Fixed v0.3.0 production-anchor repair, grouping, selection, and marker geometry so ordinary script edits keep unambiguous links aligned and stale or ambiguous relationships are cleared safely.
+- Fixed v0.3.0 inline-autocomplete wrapping and editor geometry so ghost text respects TextKit layout, whitespace, paragraph spacing, and narrow-line boundaries.
+
+### Removed
+
+- Removed adjustable script-column width and line spacing in favor of a responsive 900 pt maximum text column and fixed typography.
+- Removed the footer-shortcuts preference and footer shortcut bar; active shortcuts remain available in menus, controls, the command palette, and the shortcuts overlay.
 
 ## [0.3.0] - 2026-07-13
 
