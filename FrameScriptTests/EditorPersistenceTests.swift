@@ -951,6 +951,33 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(metrics.firstWordLineIndex, 0)
     }
 
+    func testGhostTextMovesFirstWordWhenOnlyRightPaddingWouldMakeItFit() throws {
+        let textView = makeGhostLayoutTestView(text: "A", width: 300, lineFragmentPadding: 12)
+        textView.ghostText = "cat continues"
+        let prefixWidth = try XCTUnwrap(textView.ghostTextLayoutMetrics()?.firstWordPrefixWidth)
+        textView.frame.size.width = ceil(prefixWidth + 38)
+        textView.layoutManager?.ensureLayout(for: try XCTUnwrap(textView.textContainer))
+
+        let metrics = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        XCTAssertTrue(metrics.startsOnNextLine)
+        XCTAssertGreaterThan(prefixWidth, metrics.usableCaretLineWidth)
+        XCTAssertLessThanOrEqual(prefixWidth, metrics.usableCaretLineWidth + metrics.lineFragmentPadding)
+    }
+
+    func testGhostTextMovesLeadingSpacesAndWordTogetherWhenTheirPrefixDoesNotFit() throws {
+        let textView = makeGhostLayoutTestView(text: "A", width: 300)
+        textView.ghostText = "word continues"
+        let wordWidth = try XCTUnwrap(textView.ghostTextLayoutMetrics()?.firstWordPrefixWidth)
+        textView.ghostText = "   word continues"
+        textView.frame.size.width = ceil(wordWidth + 16)
+        textView.layoutManager?.ensureLayout(for: try XCTUnwrap(textView.textContainer))
+
+        let metrics = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        XCTAssertTrue(metrics.startsOnNextLine)
+        XCTAssertEqual(metrics.visualLineRanges.first?.location, 0)
+        XCTAssertEqual(metrics.firstWordRange?.location, 3)
+    }
+
     func testGhostTextKeepsAWordWiderThanTheEditorLineRenderable() throws {
         let textView = makeGhostLayoutTestView(text: "End", width: 120)
         textView.ghostText = String(repeating: "W", count: 96)
@@ -970,6 +997,62 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertFalse(metrics.startsOnNextLine)
         XCTAssertEqual(metrics.visualLineRanges.count, 2)
         XCTAssertEqual(metrics.visualLineRanges.firstIndex { NSIntersectionRange($0, secondWord).length == secondWord.length }, 1)
+    }
+
+    func testGhostTextExplicitLeadingNewlineDoesNotGainAnArtificialBlankLine() throws {
+        let textView = makeGhostLayoutTestView(text: "A", width: 300)
+        textView.ghostText = "\nSecond line"
+
+        let metrics = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        XCTAssertFalse(metrics.startsOnNextLine)
+        XCTAssertEqual(metrics.plannedLineOrigins.count, 2)
+        let ordinary = textLayoutMetrics(for: makeGhostLayoutTestView(text: "A\nSecond line", width: 300))
+        XCTAssertEqual(metrics.plannedBaselines[1] - metrics.plannedBaselines[0], ordinary.baselines[1] - ordinary.baselines[0], accuracy: 0.001)
+    }
+
+    func testMovedGhostLineMatchesRealTextKitBaselineAdvanceAndParagraphSpacing() throws {
+        let source = "Narrator:"
+        let completion = "longword continues onto another ghost line"
+        let textView = makeGhostLayoutTestView(text: source, width: 100)
+        textView.ghostText = completion
+        let ghost = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        XCTAssertTrue(ghost.startsOnNextLine)
+
+        let realTextView = makeGhostLayoutTestView(text: source + completion, width: 100)
+        let sourceTextView = makeGhostLayoutTestView(text: source, width: 100)
+        let real = textLayoutMetrics(for: realTextView)
+        let sourceOnly = textLayoutMetrics(for: sourceTextView)
+        XCTAssertGreaterThanOrEqual(real.baselines.count, 3)
+        XCTAssertEqual(ghost.plannedBaselines[0] - sourceOnly.baselines[0], real.baselines[1] - real.baselines[0], accuracy: 0.001)
+        XCTAssertEqual(ghost.plannedBaselines[1] - ghost.plannedBaselines[0], real.baselines[2] - real.baselines[1], accuracy: 0.001)
+        XCTAssertEqual(ghost.paragraphLineSpacing, 5, accuracy: 0.001)
+    }
+
+    func testMovedGhostLayoutRecalculatesWhenLineHeightChangesWhileActive() throws {
+        let textView = makeGhostLayoutTestView(text: "Narrator:", width: 100)
+        textView.ghostText = "longword continues onto another line"
+        let initial = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        configureCaretTestTypography(textView, fontSize: 16, lineSpacing: 12)
+
+        let updated = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        XCTAssertTrue(updated.startsOnNextLine)
+        XCTAssertGreaterThan(updated.plannedLineOrigins[0], initial.plannedLineOrigins[0])
+        XCTAssertEqual(updated.paragraphLineSpacing, 12, accuracy: 0.001)
+    }
+
+    func testExplicitGhostNewlineUsesConfiguredSpacingExactlyOnce() throws {
+        let textView = makeGhostLayoutTestView(text: "A", width: 300)
+        configureCaretTestTypography(textView, fontSize: 16, lineSpacing: 12)
+        textView.ghostText = "\nSecond line\nThird line"
+
+        let metrics = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        XCTAssertEqual(metrics.plannedBaselines.count, 3)
+        let ordinaryTextView = makeGhostLayoutTestView(text: "A\nSecond line\nThird line", width: 300)
+        configureCaretTestTypography(ordinaryTextView, fontSize: 16, lineSpacing: 12)
+        let ordinary = textLayoutMetrics(for: ordinaryTextView)
+        XCTAssertEqual(metrics.plannedBaselines[1] - metrics.plannedBaselines[0], ordinary.baselines[1] - ordinary.baselines[0], accuracy: 0.001)
+        XCTAssertEqual(metrics.plannedBaselines[2] - metrics.plannedBaselines[1], ordinary.baselines[2] - ordinary.baselines[1], accuracy: 0.001)
+        XCTAssertEqual(metrics.paragraphLineSpacing, 12, accuracy: 0.001)
     }
 
     func testGhostTextLeavesCaretSelectionAndSourceUnchangedUntilAccepted() throws {
@@ -2050,12 +2133,28 @@ final class EditorPersistenceTests: XCTestCase {
         return view
     }
 
-    private func makeGhostLayoutTestView(text: String, width: CGFloat) -> PlaceholderTextView {
+    private func makeGhostLayoutTestView(text: String, width: CGFloat, lineFragmentPadding: CGFloat = 0) -> PlaceholderTextView {
         let view = makeCaretTestView(text: text, fontSize: 16, lineSpacing: 5, width: width, height: 120)
         let textView = view.textView
+        textView.textContainer?.lineFragmentPadding = lineFragmentPadding
         textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
         textView.layoutManager?.ensureLayout(for: textView.textContainer!)
         return textView
+    }
+
+    private func textLayoutMetrics(for textView: PlaceholderTextView) -> (origins: [CGFloat], baselines: [CGFloat]) {
+        let layout = textView.layoutManager!
+        let container = textView.textContainer!
+        layout.ensureLayout(for: container)
+        let glyphs = layout.glyphRange(for: container)
+        var origins: [CGFloat] = []
+        var baselines: [CGFloat] = []
+        layout.enumerateLineFragments(forGlyphRange: glyphs) { lineRect, _, _, lineGlyphRange, _ in
+            guard lineGlyphRange.length > 0 else { return }
+            origins.append(textView.textContainerOrigin.y + lineRect.minY)
+            baselines.append(textView.textContainerOrigin.y + layout.location(forGlyphAt: lineGlyphRange.location).y)
+        }
+        return (origins, baselines)
     }
 
     private func makeMarkerTestView(

@@ -169,7 +169,7 @@ private struct GeneralSettings: View {
                     .labelsHidden()
             }
 
-            SettingsRow(appState.localized("settings.autosaveInterval"), help: appState.localized("help.autosaveInterval")) {
+            SettingsRow(appState.localized("settings.autosaveInterval")) {
                 Stepper("\(settings.generalPreferences.autosaveIntervalSeconds)s", value: $settings.generalPreferences.autosaveIntervalSeconds, in: 5...120, step: 5)
                     .disabled(!settings.generalPreferences.autosaveEnabled)
             }
