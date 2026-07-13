@@ -920,6 +920,88 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertTrue(view.textView.ghostLineFragmentWidths().isEmpty)
     }
 
+    func testGhostTextMovesAnUnfittingFirstWordToTheNextFullLine() throws {
+        let textView = makeGhostLayoutTestView(text: "Narrator:", width: 160)
+        textView.ghostText = "Supercalifragilisticexpialidocious continues."
+
+        let metrics = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        XCTAssertTrue(metrics.startsOnNextLine)
+        XCTAssertFalse(metrics.firstWordFitsAtCaret)
+        XCTAssertEqual(metrics.firstWordLineIndex, 0)
+        XCTAssertEqual(metrics.firstWordRange.map { (textView.ghostText as NSString).substring(with: $0) }, "Supercalifragilisticexpialidocious")
+    }
+
+    func testGhostTextStartsAtCaretWhenItsFirstWordFits() throws {
+        let textView = makeGhostLayoutTestView(text: "A", width: 300)
+        textView.ghostText = "fits and can continue onto later rendered lines if needed."
+
+        let metrics = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        XCTAssertFalse(metrics.startsOnNextLine)
+        XCTAssertTrue(metrics.firstWordFitsAtCaret)
+        XCTAssertEqual(metrics.firstWordLineIndex, 0)
+    }
+
+    func testGhostTextLeadingWhitespaceCannotLeavePartOfItsFirstWordOnTheCaretLine() throws {
+        let textView = makeGhostLayoutTestView(text: "Narrator:", width: 160)
+        textView.ghostText = "   consequence continues."
+
+        let metrics = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        XCTAssertTrue(metrics.startsOnNextLine)
+        XCTAssertEqual(metrics.firstWordRange?.location, 3)
+        XCTAssertEqual(metrics.firstWordLineIndex, 0)
+    }
+
+    func testGhostTextKeepsAWordWiderThanTheEditorLineRenderable() throws {
+        let textView = makeGhostLayoutTestView(text: "End", width: 120)
+        textView.ghostText = String(repeating: "W", count: 96)
+
+        let metrics = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        XCTAssertTrue(metrics.startsOnNextLine)
+        XCTAssertGreaterThan(metrics.visualLineRanges.count, 1)
+        XCTAssertEqual(metrics.firstWordLineIndex, 0)
+    }
+
+    func testGhostTextPreservesExplicitCompletionNewlinesInTextKitLayout() throws {
+        let textView = makeGhostLayoutTestView(text: "A", width: 300)
+        textView.ghostText = "fits\nSecond line"
+
+        let metrics = try XCTUnwrap(textView.ghostTextLayoutMetrics())
+        let secondWord = (textView.ghostText as NSString).range(of: "Second")
+        XCTAssertFalse(metrics.startsOnNextLine)
+        XCTAssertEqual(metrics.visualLineRanges.count, 2)
+        XCTAssertEqual(metrics.visualLineRanges.firstIndex { NSIntersectionRange($0, secondWord).length == secondWord.length }, 1)
+    }
+
+    func testGhostTextLeavesCaretSelectionAndSourceUnchangedUntilAccepted() throws {
+        let source = "Narrator:"
+        let textView = makeGhostLayoutTestView(text: source, width: 160)
+        let selection = textView.selectedRange()
+        textView.ghostText = "Supercalifragilisticexpialidocious continues."
+
+        XCTAssertNotNil(textView.ghostTextLayoutMetrics())
+        XCTAssertEqual(textView.string, source)
+        XCTAssertEqual(textView.selectedRange(), selection)
+    }
+
+    func testTabAcceptsTheSameCompletionAfterGhostTextMovesToTheNextLine() async throws {
+        let source = "This is enough editor context Narrator:"
+        let completion = "Supercalifragilisticexpialidocious continues."
+        let recorder = AutocompleteRequestRecorder()
+        let (coordinator, view) = makeAutocompleteCoordinator(text: source, recorder: recorder)
+        view.frame = NSRect(x: 0, y: 0, width: 160, height: 120)
+        view.layoutSubtreeIfNeeded()
+        view.textView.setSelectedRange(NSRange(location: (source as NSString).length, length: 0))
+        coordinator.textDidChange(Notification(name: NSText.didChangeNotification, object: view.textView))
+        try await waitUntil({ recorder.requestCount == 1 }, message: "autocomplete request")
+        recorder.respond(with: .suggestion(completion))
+        try await waitUntil({ view.textView.ghostText == completion }, message: "ghost completion")
+
+        XCTAssertTrue(try XCTUnwrap(view.textView.ghostTextLayoutMetrics()).startsOnNextLine)
+        view.textView.keyDown(with: try keyEvent(keyCode: 48, characters: "\t"))
+
+        XCTAssertEqual(view.textView.string, source + completion)
+    }
+
     func testAutocompleteRegeneratesForRepeatedEndOfDocumentContextsInOneEditor() async throws {
         let recorder = AutocompleteRequestRecorder()
         let (coordinator, view) = makeAutocompleteCoordinator(
@@ -1966,6 +2048,14 @@ final class EditorPersistenceTests: XCTestCase {
         view.textView.textStorage?.setAttributes(attributes, range: NSRange(location: 0, length: (text as NSString).length))
         view.textView.layoutManager?.ensureLayout(for: view.textView.textContainer!)
         return view
+    }
+
+    private func makeGhostLayoutTestView(text: String, width: CGFloat) -> PlaceholderTextView {
+        let view = makeCaretTestView(text: text, fontSize: 16, lineSpacing: 5, width: width, height: 120)
+        let textView = view.textView
+        textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+        textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+        return textView
     }
 
     private func makeMarkerTestView(

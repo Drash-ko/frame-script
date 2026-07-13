@@ -963,6 +963,37 @@ final class ActiveScriptEditorSession {
 
 final class PlaceholderTextView: NSTextView {
     enum GhostAction { case accept, dismiss, replace }
+
+    struct GhostTextLayoutMetrics {
+        let startsOnNextLine: Bool
+        let firstWordFitsAtCaret: Bool
+        let firstWordRange: NSRange?
+        let firstWordLineIndex: Int?
+        let visualLineRanges: [NSRange]
+    }
+
+    private struct GhostTextLayoutPlan {
+        let startsOnNextLine: Bool
+        let firstWordFitsAtCaret: Bool
+        let firstWordRange: NSRange?
+        let visualLineRanges: [NSRange]
+        let primaryStorage: NSTextStorage
+        let primaryLayout: NSLayoutManager
+        let primaryGlyphRange: NSRange
+        let primaryOrigin: NSPoint
+        let continuationStorage: NSTextStorage?
+        let continuationLayout: NSLayoutManager?
+        let continuationGlyphRange: NSRange?
+        let continuationOrigin: NSPoint?
+
+        func draw() {
+            primaryLayout.drawGlyphs(forGlyphRange: primaryGlyphRange, at: primaryOrigin)
+            if let continuationLayout, let continuationGlyphRange, let continuationOrigin {
+                continuationLayout.drawGlyphs(forGlyphRange: continuationGlyphRange, at: continuationOrigin)
+            }
+        }
+    }
+
     var placeholder = "" { didSet { needsDisplay = true } }
     var placeholderColor = NSColor.secondaryLabelColor { didSet { needsDisplay = true } }
     var ghostText = "" { didSet { needsDisplay = true } }
@@ -1011,40 +1042,180 @@ final class PlaceholderTextView: NSTextView {
     }
 
     private func drawGhostText() {
+        guard let layout = ghostTextLayoutPlan() else { return }
+        layout.draw()
+    }
+
+    func ghostTextLayoutMetrics() -> GhostTextLayoutMetrics? {
+        guard let layout = ghostTextLayoutPlan() else { return nil }
+        let firstWordLineIndex = layout.firstWordRange.flatMap { wordRange in
+            layout.visualLineRanges.firstIndex {
+                $0.location <= wordRange.location && wordRange.location < NSMaxRange($0)
+            }
+        }
+        return GhostTextLayoutMetrics(
+            startsOnNextLine: layout.startsOnNextLine,
+            firstWordFitsAtCaret: layout.firstWordFitsAtCaret,
+            firstWordRange: layout.firstWordRange,
+            firstWordLineIndex: firstWordLineIndex,
+            visualLineRanges: layout.visualLineRanges
+        )
+    }
+
+    private func ghostTextLayoutPlan() -> GhostTextLayoutPlan? {
         guard !ghostText.isEmpty, isAutocompleteEligible(in: self),
-              let layoutManager, let textContainer else { return }
+              let layoutManager, let textContainer else { return nil }
         let length = (string as NSString).length
         let index = min(selectedRange().location, length)
+        layoutManager.ensureLayout(for: textContainer)
         let insertion = insertionPoint(at: index, layoutManager: layoutManager, textContainer: textContainer)
         let attributes = ghostAttributes()
+        let padding = textContainer.lineFragmentPadding
+        let currentLine = insertionLineFragment(at: index, layoutManager: layoutManager)
+        let insertionX = insertion.x - textContainerOrigin.x
+        let remainingWidth = max(0, currentLine.maxX - insertionX)
+        let fullWidth = max(1, textContainer.size.width)
+        let firstWordRange = firstNonWhitespaceWordRange(in: ghostText as NSString)
+        let firstWordFitsAtCaret = firstWordRange.map {
+            firstWordFits(in: $0, attributes: attributes, padding: padding, containerWidth: fullWidth, remainingWidth: remainingWidth)
+        } ?? true
+        let startsOnNextLine = firstWordRange != nil && !firstWordFitsAtCaret
+
+        if startsOnNextLine {
+            let storage = NSTextStorage(string: ghostText, attributes: attributes)
+            let ghostLayout = NSLayoutManager()
+            storage.addLayoutManager(ghostLayout)
+            let container = NSTextContainer(size: NSSize(width: fullWidth, height: .greatestFiniteMagnitude))
+            container.lineFragmentPadding = padding
+            ghostLayout.addTextContainer(container)
+            let glyphRange = NSRange(location: 0, length: ghostLayout.numberOfGlyphs)
+            return GhostTextLayoutPlan(
+                startsOnNextLine: true,
+                firstWordFitsAtCaret: false,
+                firstWordRange: firstWordRange,
+                visualLineRanges: lineCharacterRanges(in: ghostLayout, glyphRange: glyphRange),
+                primaryStorage: storage,
+                primaryLayout: ghostLayout,
+                primaryGlyphRange: glyphRange,
+                primaryOrigin: NSPoint(x: textContainerOrigin.x, y: insertion.y + currentLine.height),
+                continuationStorage: nil,
+                continuationLayout: nil,
+                continuationGlyphRange: nil,
+                continuationOrigin: nil
+            )
+        }
+
         let storage = NSTextStorage(string: ghostText, attributes: attributes)
         let firstLayout = NSLayoutManager()
         storage.addLayoutManager(firstLayout)
-        let firstWidth = max(1, textContainer.size.width - insertion.x)
-        let lineHeight = firstLayout.defaultLineHeight(for: font ?? NSFont.systemFont(ofSize: 14))
-            + (defaultParagraphStyle?.lineSpacing ?? 0)
-        let firstContainer = NSTextContainer(size: NSSize(width: firstWidth, height: lineHeight))
-        firstContainer.lineFragmentPadding = textContainer.lineFragmentPadding
+        let firstContainer = NSTextContainer(size: NSSize(width: max(1, remainingWidth + 2 * padding), height: .greatestFiniteMagnitude))
+        firstContainer.lineFragmentPadding = padding
         firstLayout.addTextContainer(firstContainer)
-        let firstRange = firstLayout.glyphRange(forBoundingRect: NSRect(origin: .zero, size: firstContainer.size), in: firstContainer)
-        guard firstRange.length > 0 else { return }
-        firstLayout.drawGlyphs(forGlyphRange: firstRange, at: NSPoint(x: insertion.x, y: insertion.y))
+        let allGlyphs = NSRange(location: 0, length: firstLayout.numberOfGlyphs)
+        guard let firstRange = firstLineGlyphRange(in: firstLayout, glyphRange: allGlyphs) else { return nil }
+        let firstLine = firstLayout.lineFragmentRect(forGlyphAt: firstRange.location, effectiveRange: nil)
+        let firstCharacterRange = firstLayout.characterRange(forGlyphRange: firstRange, actualGlyphRange: nil)
+        let remainingLocation = NSMaxRange(firstCharacterRange)
 
-        let remainingGlyph = NSMaxRange(firstRange)
-        guard remainingGlyph < firstLayout.numberOfGlyphs else { return }
-        let remainingLocation = firstLayout.characterIndexForGlyph(at: remainingGlyph)
+        guard remainingLocation < (ghostText as NSString).length else {
+            return GhostTextLayoutPlan(
+                startsOnNextLine: false,
+                firstWordFitsAtCaret: true,
+                firstWordRange: firstWordRange,
+                visualLineRanges: [firstCharacterRange],
+                primaryStorage: storage,
+                primaryLayout: firstLayout,
+                primaryGlyphRange: firstRange,
+                primaryOrigin: NSPoint(x: insertion.x - padding, y: insertion.y),
+                continuationStorage: nil,
+                continuationLayout: nil,
+                continuationGlyphRange: nil,
+                continuationOrigin: nil
+            )
+        }
+
         let remaining = (ghostText as NSString).substring(from: remainingLocation)
         let continuationStorage = NSTextStorage(string: remaining, attributes: attributes)
         let continuationLayout = NSLayoutManager()
         continuationStorage.addLayoutManager(continuationLayout)
-        let continuationContainer = NSTextContainer(size: NSSize(width: textContainer.size.width, height: .greatestFiniteMagnitude))
-        continuationContainer.lineFragmentPadding = textContainer.lineFragmentPadding
+        let continuationContainer = NSTextContainer(size: NSSize(width: fullWidth, height: .greatestFiniteMagnitude))
+        continuationContainer.lineFragmentPadding = padding
         continuationLayout.addTextContainer(continuationContainer)
         let continuationRange = NSRange(location: 0, length: continuationLayout.numberOfGlyphs)
-        continuationLayout.drawGlyphs(
-            forGlyphRange: continuationRange,
-            at: NSPoint(x: textContainerOrigin.x, y: insertion.y + lineHeight)
+        let continuationLines = lineCharacterRanges(in: continuationLayout, glyphRange: continuationRange)
+            .map { NSRange(location: $0.location + remainingLocation, length: $0.length) }
+        return GhostTextLayoutPlan(
+            startsOnNextLine: false,
+            firstWordFitsAtCaret: true,
+            firstWordRange: firstWordRange,
+            visualLineRanges: [firstCharacterRange] + continuationLines,
+            primaryStorage: storage,
+            primaryLayout: firstLayout,
+            primaryGlyphRange: firstRange,
+            primaryOrigin: NSPoint(x: insertion.x - padding, y: insertion.y),
+            continuationStorage: continuationStorage,
+            continuationLayout: continuationLayout,
+            continuationGlyphRange: continuationRange,
+            continuationOrigin: NSPoint(x: textContainerOrigin.x, y: insertion.y + firstLine.height)
         )
+    }
+
+    private func insertionLineFragment(at index: Int, layoutManager: NSLayoutManager) -> NSRect {
+        let length = (string as NSString).length
+        if index == length, !layoutManager.extraLineFragmentRect.isEmpty {
+            return layoutManager.extraLineFragmentRect
+        }
+        guard length > 0 else { return .zero }
+        let glyph = layoutManager.glyphIndexForCharacter(at: min(index, length - 1))
+        return layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+    }
+
+    private func firstNonWhitespaceWordRange(in text: NSString) -> NSRange? {
+        let nonWhitespace = text.rangeOfCharacter(from: .whitespacesAndNewlines.inverted)
+        guard nonWhitespace.location != NSNotFound else { return nil }
+        let trailingRange = NSRange(location: nonWhitespace.location, length: text.length - nonWhitespace.location)
+        let whitespace = text.rangeOfCharacter(from: .whitespacesAndNewlines, options: [], range: trailingRange)
+        let end = whitespace.location == NSNotFound ? text.length : whitespace.location
+        return NSRange(location: nonWhitespace.location, length: end - nonWhitespace.location)
+    }
+
+    private func firstWordFits(
+        in range: NSRange,
+        attributes: [NSAttributedString.Key: Any],
+        padding: CGFloat,
+        containerWidth: CGFloat,
+        remainingWidth: CGFloat
+    ) -> Bool {
+        let word = (ghostText as NSString).substring(with: range)
+        let storage = NSTextStorage(string: word, attributes: attributes)
+        let layout = NSLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: NSSize(width: containerWidth, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = padding
+        layout.addTextContainer(container)
+        let glyphRange = NSRange(location: 0, length: layout.numberOfGlyphs)
+        guard glyphRange.length > 0,
+              let wordGlyphRange = firstLineGlyphRange(in: layout, glyphRange: glyphRange),
+              NSMaxRange(wordGlyphRange) == layout.numberOfGlyphs else { return false }
+        return layout.boundingRect(forGlyphRange: wordGlyphRange, in: container).width <= remainingWidth
+    }
+
+    private func firstLineGlyphRange(in layout: NSLayoutManager, glyphRange: NSRange) -> NSRange? {
+        var firstRange: NSRange?
+        layout.enumerateLineFragments(forGlyphRange: glyphRange) { _, _, _, lineGlyphRange, stop in
+            firstRange = lineGlyphRange
+            stop.pointee = true
+        }
+        return firstRange
+    }
+
+    private func lineCharacterRanges(in layout: NSLayoutManager, glyphRange: NSRange) -> [NSRange] {
+        var ranges: [NSRange] = []
+        layout.enumerateLineFragments(forGlyphRange: glyphRange) { _, _, _, lineGlyphRange, _ in
+            let range = layout.characterRange(forGlyphRange: lineGlyphRange, actualGlyphRange: nil)
+            if range.length > 0 { ranges.append(range) }
+        }
+        return ranges
     }
 
     func ghostLineFragmentWidths() -> [CGFloat] {
@@ -1063,10 +1234,24 @@ final class PlaceholderTextView: NSTextView {
 
     private func ghostAttributes() -> [NSAttributedString.Key: Any] {
         var attributes = typingAttributes
-        attributes[.font] = font ?? NSFont.systemFont(ofSize: 14)
+        attributes[.font] = activeCaretFont() ?? font ?? NSFont.systemFont(ofSize: 14)
         attributes[.foregroundColor] = NSColor.secondaryLabelColor.withAlphaComponent(0.55)
-        attributes[.paragraphStyle] = defaultParagraphStyle ?? NSParagraphStyle.default
+        attributes[.paragraphStyle] = activeCaretParagraphStyle()
         return attributes
+    }
+
+    private func activeCaretParagraphStyle() -> NSParagraphStyle {
+        let length = (string as NSString).length
+        let insertion = min(max(0, selectedRange().location), length)
+        if let textStorage, length > 0 {
+            let indices = insertion < length ? [insertion, max(0, insertion - 1)] : [length - 1]
+            for index in indices {
+                if let style = textStorage.attribute(.paragraphStyle, at: index, effectiveRange: nil) as? NSParagraphStyle {
+                    return style
+                }
+            }
+        }
+        return typingAttributes[.paragraphStyle] as? NSParagraphStyle ?? defaultParagraphStyle ?? NSParagraphStyle.default
     }
 
     func insertionPoint(at index: Int, layoutManager: NSLayoutManager, textContainer: NSTextContainer) -> NSPoint {
