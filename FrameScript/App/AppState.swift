@@ -342,9 +342,16 @@ final class AppState {
     func openDemoProject() {
         guard prepareForProjectReplacement() else { return }
         let project = SampleData.demoProject(language: currentLanguage)
-        projectStore.openProject(project, fileURL: nil, wordsPerMinute: settings.editorPreferences.wordsPerMinute, markUnsaved: true)
+        projectStore.openProject(
+            project,
+            fileURL: nil,
+            wordsPerMinute: settings.editorPreferences.wordsPerMinute,
+            markUnsaved: false,
+            origin: .builtInDemo
+        )
         projectStore.synchronizeTextSegments(splitMode: settings.generalPreferences.defaultSplitMode, wordsPerMinute: settings.editorPreferences.wordsPerMinute)
-        setEditorContextAfterFlush(sceneID: .some(project.scenes.sortedByOrder.first?.id))
+        projectStore.clearDemoDirtyState()
+        setEditorContextAfterFlush(sceneID: .some(project.scenes.sortedByOrder.first?.id), mode: .script)
     }
 
     func openProject() {
@@ -1294,6 +1301,7 @@ final class AppState {
     private func scheduleAutosaveIfNeeded() {
         autosaveTask?.cancel()
         guard settings.generalPreferences.autosaveEnabled,
+              !projectStore.isBuiltInDemo,
               projectStore.currentFileURL != nil,
               projectStore.hasUnsavedFileChanges else {
             return
@@ -1341,6 +1349,7 @@ final class AppState {
 
     private func performAutosave() {
         guard settings.generalPreferences.autosaveEnabled,
+              !projectStore.isBuiltInDemo,
               let url = projectStore.currentFileURL,
               projectStore.hasUnsavedFileChanges else {
             return
@@ -1670,6 +1679,11 @@ final class AppState {
     }
 }
 
+enum ProjectStoreOrigin: Equatable {
+    case normal
+    case builtInDemo
+}
+
 @MainActor
 @Observable
 final class ProjectStore {
@@ -1683,6 +1697,7 @@ final class ProjectStore {
     private(set) var currentFileURL: URL?
     private(set) var saveState: SaveState = .saved
     private(set) var hasUnsavedFileChanges = false
+    private(set) var origin: ProjectStoreOrigin = .normal
     private var segmentSplitMode: SegmentType = AppSettings.defaults.generalPreferences.defaultSplitMode
     private let projectWriter: (FrameProject, URL) throws -> Void
 
@@ -1704,12 +1719,21 @@ final class ProjectStore {
         recalculateDurations(wordsPerMinute: wordsPerMinute)
     }
 
-    func openProject(_ project: FrameProject, fileURL: URL?, wordsPerMinute: Int, markUnsaved: Bool) {
+    var isBuiltInDemo: Bool { origin == .builtInDemo }
+
+    func openProject(
+        _ project: FrameProject,
+        fileURL: URL?,
+        wordsPerMinute: Int,
+        markUnsaved: Bool,
+        origin: ProjectStoreOrigin = .normal
+    ) {
         self.project = project
         currentFileURL = fileURL
+        self.origin = origin
         hasOpenProject = true
         recalculateDurations(wordsPerMinute: wordsPerMinute)
-        hasUnsavedFileChanges = markUnsaved || fileURL == nil
+        hasUnsavedFileChanges = origin == .builtInDemo ? false : markUnsaved || fileURL == nil
         saveState = hasUnsavedFileChanges ? .edited : .saved
     }
 
@@ -1718,10 +1742,17 @@ final class ProjectStore {
         currentFileURL = nil
         hasUnsavedFileChanges = false
         saveState = .saved
+        origin = .normal
     }
 
     var needsCloseConfirmation: Bool {
-        hasOpenProject && (hasUnsavedFileChanges || currentFileURL == nil)
+        hasOpenProject && !isBuiltInDemo && (hasUnsavedFileChanges || currentFileURL == nil)
+    }
+
+    func clearDemoDirtyState() {
+        guard isBuiltInDemo else { return }
+        hasUnsavedFileChanges = false
+        saveState = .saved
     }
 
     func saveCurrentProject(wordsPerMinute: Int) throws {
@@ -1739,6 +1770,7 @@ final class ProjectStore {
             throw error
         }
         currentFileURL = url
+        origin = .normal
         hasUnsavedFileChanges = false
         saveState = .saved
     }

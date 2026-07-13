@@ -69,7 +69,7 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertTrue(json.contains("\"descriptionText\""))
 
         let roundTripped = try FrameScriptFileStore.decoder.decode(FrameScriptFile.self, from: data).makeProject()
-        XCTAssertEqual(roundTripped.scenes.first?.bRollItems.count, 1)
+        XCTAssertEqual(roundTripped.scenes.first?.bRollItems.count, project.scenes.first?.bRollItems.count)
 
         var legacyFile = FrameScriptFile(project: project)
         legacyFile.fileVersion = 1
