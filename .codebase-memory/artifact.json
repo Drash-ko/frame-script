@@ -1,11 +1,11 @@
 {
     "schema_version": 2,
-    "commit": "c8f8906e21ab6b019821459a67f161d7b5eebcd6",
-    "indexed_at": "2026-07-13T18:22:43Z",
+    "commit": "637a39c38ff9bcca5300aa120bc81820edca481b",
+    "indexed_at": "2026-07-13T19:02:56Z",
     "project": "Users-drashko-Documents-Coding-frame_script",
-    "nodes": 2246,
-    "edges": 9124,
-    "original_size": 10289152,
-    "compressed_size": 1532457,
+    "nodes": 2291,
+    "edges": 9373,
+    "original_size": 10420224,
+    "compressed_size": 1561691,
     "compression_level": 3
 }
