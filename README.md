@@ -28,7 +28,7 @@ Then select the `FrameScript` scheme, choose `My Mac`, and press `Cmd+R`.
 - Scene-based script editor with English and Russian UI strings.
 - Live word counts and scene, sidebar, and project duration estimates update from each edit, independently of saving; saved projects still coalesce rapid edits into a single autosave.
 - Script, Visuals, and Editing workspaces over the same scene structure.
-- Visuals and Editing links persist exact text anchors, so ordinary insertions and deletions keep the linked selection aligned; legacy segment-only links are migrated when a project is loaded.
+- Visuals and Editing links persist exact text anchors, so ordinary insertions and deletions keep the linked selection aligned. Linked items are grouped by their exact anchored excerpt, anchor-only items remain linked, and legacy segment-only links are migrated when a project is loaded.
 - Built-in templates for blank, standard YouTube, educational, storytelling, product review, commentary/essay, and tutorial projects.
 - Project save/open using `.fscr` files. FrameScript writes project format version 3, reads versions 1–3, and continues to import legacy `.framescript` files.
 - Export as plain text, Markdown, CSV, or production outline.

@@ -5,6 +5,7 @@
 ### Changed
 
 - Made persisted Visuals and Editing relationships authoritative through exact text anchors; legacy segment-only links now migrate to anchors during loading and synchronization.
+- Made Visuals and Editing sections, labels, selection, and marker navigation anchor-first: identical anchored ranges group together in stable script order, while invalid or missing anchors appear under Unlinked.
 
 ### Fixed
 

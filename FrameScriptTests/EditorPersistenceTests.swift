@@ -151,6 +151,94 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertNil(item.linkedSegmentID)
     }
 
+    func testProductionGroupingTreatsAnchorOnlyAndStaleSegmentMetadataAsLinked() throws {
+        let text = "alpha target omega"
+        let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: NSRange(location: 6, length: 6)))
+        let anchorOnly = BRollItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", sourceType: .custom, descriptionText: "")
+        let staleSegment = BRollItem(textAnchor: anchor, linkedSegmentID: UUID(), templateType: "", sourceType: .custom, descriptionText: "")
+        let invalidAnchor = BRollItem(
+            textAnchor: TextAnchor(startUTF16: 0, lengthUTF16: 5, selectedText: "wrong"),
+            linkedSegmentID: UUID(),
+            templateType: "",
+            sourceType: .custom,
+            descriptionText: ""
+        )
+        let segmentOnly = BRollItem(linkedSegmentID: UUID(), templateType: "", sourceType: .custom, descriptionText: "")
+        let items = [anchorOnly, staleSegment, invalidAnchor, segmentOnly]
+
+        let sections = ProductionAnchorGrouping.sections(for: items, in: text) { $0.textAnchor }
+        let unlinked = ProductionAnchorGrouping.unlinkedItems(from: items, in: text) { $0.textAnchor }
+
+        XCTAssertEqual(sections.count, 1)
+        XCTAssertEqual(sections[0].excerpt, "target")
+        XCTAssertEqual(sections[0].items.map(\.id), [anchorOnly.id, staleSegment.id])
+        XCTAssertEqual(unlinked.map(\.id), [invalidAnchor.id, segmentOnly.id])
+    }
+
+    func testProductionAnchorSectionsGroupExactRangesAndSortStably() throws {
+        let text = "abcdef"
+        let short = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: NSRange(location: 0, length: 2)))
+        let long = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: NSRange(location: 0, length: 3)))
+        let late = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: NSRange(location: 4, length: 2)))
+        let lateItem = BRollItem(textAnchor: late, templateType: "", sourceType: .custom, descriptionText: "")
+        let longItem = BRollItem(textAnchor: long, templateType: "", sourceType: .custom, descriptionText: "")
+        let firstShortItem = BRollItem(textAnchor: short, templateType: "", sourceType: .custom, descriptionText: "")
+        let secondShortItem = BRollItem(textAnchor: short, templateType: "", sourceType: .custom, descriptionText: "")
+
+        let sections = ProductionAnchorGrouping.sections(
+            for: [lateItem, longItem, firstShortItem, secondShortItem],
+            in: text
+        ) { $0.textAnchor }
+
+        XCTAssertEqual(sections.map(\.excerpt), ["ab", "abc", "ef"])
+        XCTAssertEqual(sections[0].items.map(\.id), [firstShortItem.id, secondShortItem.id])
+        XCTAssertEqual(sections[1].items.map(\.id), [longItem.id])
+        XCTAssertEqual(sections[2].items.map(\.id), [lateItem.id])
+    }
+
+    func testLinkingCreatesAnExactAnchorAndUnlinkingClearsAllRelationshipMetadata() throws {
+        let text = "alpha target omega"
+        let sceneID = UUID()
+        let segment = TextSegment(id: UUID(), sceneID: sceneID, order: 0, sourceText: text, segmentType: .scene)
+        let bRoll = BRollItem(linkedSegmentID: UUID(), templateType: "", sourceType: .custom, descriptionText: "")
+        let editing = EditingItem(linkedSegmentID: UUID(), templateType: "", cutStyle: "", transition: "", subtitleStyle: "")
+        let scene = Scene(id: sceneID, order: 0, sectionType: .custom, title: "Scene", scriptText: text, textSegments: [segment], bRollItems: [bRoll], editingItems: [editing])
+        let store = ProjectStore(project: FrameProject(title: "Project", scenes: [scene]))
+
+        store.link(bRoll, to: segment, in: scene)
+        store.link(editing, to: segment, in: scene)
+
+        XCTAssertEqual(bRoll.textAnchor?.selectedText, text)
+        XCTAssertEqual(editing.textAnchor?.selectedText, text)
+        XCTAssertEqual(bRoll.linkedSegmentID, segment.id)
+        XCTAssertEqual(editing.linkedSegmentID, segment.id)
+
+        store.unlink(bRoll)
+        store.unlink(editing)
+
+        XCTAssertNil(bRoll.textAnchor)
+        XCTAssertNil(bRoll.linkedSegmentID)
+        XCTAssertNil(editing.textAnchor)
+        XCTAssertNil(editing.linkedSegmentID)
+    }
+
+    func testMarkerSelectionNavigatesByItemToItsAnchoredSection() throws {
+        let text = "alpha target omega"
+        let sceneID = UUID()
+        let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: NSRange(location: 6, length: 6)))
+        let item = BRollItem(textAnchor: anchor, linkedSegmentID: UUID(), templateType: "", sourceType: .custom, descriptionText: "")
+        let scene = Scene(id: sceneID, order: 0, sectionType: .custom, title: "Scene", scriptText: text, bRollItems: [item])
+        let (appState, _, _) = makeAppState(project: FrameProject(title: "Project", scenes: [scene]), fileURL: nil)
+
+        appState.selectProductionItem(item.id, mode: .bRoll)
+        let sections = ProductionAnchorGrouping.sections(for: scene.bRollItems, in: scene.scriptText) { $0.textAnchor }
+
+        XCTAssertEqual(appState.editorState.selectedMode, .bRoll)
+        XCTAssertEqual(appState.editorState.selectedProductionItemID, item.id)
+        XCTAssertNil(appState.editorState.selectedProductionSegmentID)
+        XCTAssertEqual(sections.first?.items.map(\.id), [item.id])
+    }
+
     func testLegacySegmentLinksMigrateToAnchorsAndStaleLinksClear() throws {
         let sceneID = UUID()
         let segmentID = UUID()
@@ -179,7 +267,7 @@ final class EditorPersistenceTests: XCTestCase {
         }
     }
 
-    private func makeAnchorStore(linkedSegmentID: UUID? = nil) throws -> (ProjectStore, Scene, BRollItem) {
+    private func makeAnchorStore(linkedSegmentID: UUID? = nil) throws -> (ProjectStore, FrameScript.Scene, BRollItem) {
         let text = "alpha target omega"
         let sceneID = UUID()
         let segment = TextSegment(id: linkedSegmentID ?? UUID(), sceneID: sceneID, order: 0, sourceText: text, segmentType: .scene)

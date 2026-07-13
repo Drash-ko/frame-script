@@ -13,8 +13,8 @@ struct BRollEditorView: View {
                     if scene.scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && scene.bRollItems.isEmpty {
                         EmptyProductionState(message: appState.localized("broll.writeScriptFirst"))
                     } else {
-                        ForEach(scene.textSegments.sortedByOrder) { segment in
-                            segmentSection(segment).id(segment.id)
+                        ForEach(anchorSections) { section in
+                            anchorSection(section).id(section.id)
                         }
                         if !unlinkedItems.isEmpty {
                             ProductionUnlinkedBlock(title: appState.localized("production.unlinked")) {
@@ -31,31 +31,30 @@ struct BRollEditorView: View {
                 appState.rebuildProductionSegments(markUnsaved: false)
                 scrollToSelection(proxy)
             }
-            .onChange(of: appState.editorState.selectedProductionSegmentID) { _, _ in scrollToSelection(proxy) }
+            .onChange(of: appState.editorState.selectedProductionItemID) { _, _ in scrollToSelection(proxy) }
         }
         .background(theme.editorSurface)
         .onChange(of: scene.bRollItems.count) { _, _ in appState.touchProject() }
     }
 
-    private func segmentSection(_ segment: TextSegment) -> some View {
+    private func anchorSection(_ section: ProductionAnchorSection<BRollItem>) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(segment.sourceText)
+            Text(section.excerpt)
                 .font(.system(size: 13))
                 .foregroundStyle(theme.secondaryText)
-                .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 9)
                 .overlay(alignment: .leading) { Capsule().fill(theme.bRollMarker).frame(width: 3) }
 
-            ForEach(items(for: segment)) { item in itemEditor(item) }
+            ForEach(section.items) { item in itemEditor(item) }
 
             HStack(spacing: 10) {
-                Button { addEmptyItem(linkedTo: segment.id) } label: {
+                Button { addEmptyItem(anchoredTo: section.anchor) } label: {
                     Label(appState.localized("broll.addEmpty"), systemImage: "plus")
                 }
                 Menu(appState.localized("production.usePreset")) {
                     ForEach(BRollPreset.allCases) { preset in
-                        Button(preset.title(appState)) { addItem(from: preset, linkedTo: segment.id) }
+                        Button(preset.title(appState)) { addItem(from: preset, anchoredTo: section.anchor) }
                     }
                 }
                 .menuStyle(.borderlessButton)
@@ -102,35 +101,32 @@ struct BRollEditorView: View {
         Menu {
             ForEach(Array(scene.textSegments.sortedByOrder.enumerated()), id: \.element.id) { index, segment in
                 Button(segmentTitle(index, segment)) {
-                    item.linkedSegmentID = segment.id
-                    item.textAnchor = appState.projectStore.anchor(for: segment.id, in: scene)
+                    appState.projectStore.link(item, to: segment, in: scene)
                     appState.touchProject()
                 }
             }
             Divider()
             Button(appState.localized("production.unlinked")) {
-                item.linkedSegmentID = nil
-                item.textAnchor = nil
+                appState.projectStore.unlink(item)
                 appState.touchProject()
             }
         } label: { Label(linkLabel(item), systemImage: "link").font(.system(size: 12, weight: .medium)) }
         .menuStyle(.borderlessButton).fixedSize()
     }
 
-    private func items(for segment: TextSegment) -> [BRollItem] {
-        scene.bRollItems.filter {
-            guard let anchor = $0.textAnchor else { return false }
-            return TextAnchorRepair.isAnchor(anchor, in: segment, text: scene.scriptText)
-        }
+    private var anchorSections: [ProductionAnchorSection<BRollItem>] {
+        ProductionAnchorGrouping.sections(for: scene.bRollItems, in: scene.scriptText) { $0.textAnchor }
     }
+
     private var unlinkedItems: [BRollItem] {
-        scene.bRollItems.filter { $0.textAnchor == nil }
+        ProductionAnchorGrouping.unlinkedItems(from: scene.bRollItems, in: scene.scriptText) { $0.textAnchor }
     }
-    private func addEmptyItem(linkedTo id: UUID) {
-        scene.bRollItems.append(BRollItem(textAnchor: appState.projectStore.anchor(for: id, in: scene), linkedSegmentID: id, templateType: "", sourceType: .custom, descriptionText: "")); appState.touchProject()
+
+    private func addEmptyItem(anchoredTo anchor: TextAnchor) {
+        scene.bRollItems.append(BRollItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", sourceType: .custom, descriptionText: "")); appState.touchProject()
     }
-    private func addItem(from preset: BRollPreset, linkedTo id: UUID) {
-        scene.bRollItems.append(BRollItem(textAnchor: appState.projectStore.anchor(for: id, in: scene), linkedSegmentID: id, templateType: "", sourceType: preset.source, descriptionText: preset.description(appState), notes: preset.notes(appState))); appState.touchProject()
+    private func addItem(from preset: BRollPreset, anchoredTo anchor: TextAnchor) {
+        scene.bRollItems.append(BRollItem(textAnchor: anchor, linkedSegmentID: nil, templateType: "", sourceType: preset.source, descriptionText: preset.description(appState), notes: preset.notes(appState))); appState.touchProject()
     }
     private func duplicateItem(_ item: BRollItem) {
         let copy = BRollItem(textAnchor: item.textAnchor, linkedSegmentID: item.linkedSegmentID, templateType: "", sourceType: item.sourceType, descriptionText: item.descriptionText, notes: item.notes)
@@ -139,18 +135,16 @@ struct BRollEditorView: View {
     }
     private func deleteItem(_ item: BRollItem) { scene.bRollItems.removeAll { $0.id == item.id }; appState.touchProject() }
     private func linkLabel(_ item: BRollItem) -> String {
-        guard let anchor = item.textAnchor else { return appState.localized("production.unlinked") }
-        guard let index = scene.textSegments.sortedByOrder.firstIndex(where: { TextAnchorRepair.isAnchor(anchor, in: $0, text: scene.scriptText) }) else {
-            return String(anchor.selectedText.prefix(42))
-        }
-        return String(format: "%02d", index + 1)
+        guard let anchor = TextAnchorRepair.current(item.textAnchor, in: scene.scriptText) else { return appState.localized("production.unlinked") }
+        return String(anchor.selectedText.prefix(42))
     }
     private func segmentTitle(_ index: Int, _ segment: TextSegment) -> String {
         let value = segment.sourceText.trimmingCharacters(in: .whitespacesAndNewlines); return "\(String(format: "%02d", index + 1)) \(value.prefix(42))"
     }
     private func scrollToSelection(_ proxy: ScrollViewProxy) {
-        guard let id = appState.editorState.selectedProductionSegmentID else { return }
-        DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) } }
+        guard let itemID = appState.editorState.selectedProductionItemID,
+              let section = anchorSections.first(where: { $0.items.contains(where: { $0.id == itemID }) }) else { return }
+        DispatchQueue.main.async { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(section.id, anchor: .center) } }
     }
 }
 

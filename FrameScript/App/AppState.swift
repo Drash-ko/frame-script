@@ -295,6 +295,7 @@ final class AppState {
     }
 
     func selectProductionSegment(_ segmentID: UUID, mode: WorkspaceMode) {
+        editorState.selectedProductionItemID = nil
         editorState.selectedProductionSegmentID = segmentID
         selectMode(mode)
     }
@@ -809,7 +810,7 @@ final class AppState {
     func selectProductionItem(_ itemID: UUID, mode: WorkspaceMode) {
         transitionEditorContext(mode: mode) {
             editorState.selectedProductionItemID = itemID
-            editorState.selectedProductionSegmentID = projectStore.segmentID(forProductionItem: itemID, mode: mode)
+            editorState.selectedProductionSegmentID = nil
         }
     }
 
@@ -1965,6 +1966,28 @@ final class ProjectStore {
         return TextAnchorRepair.anchor(for: segment, in: scene.scriptText)
     }
 
+    func link(_ item: BRollItem, to segment: TextSegment, in scene: Scene) {
+        guard let anchor = TextAnchorRepair.anchor(for: segment, in: scene.scriptText) else { return }
+        item.textAnchor = anchor
+        item.linkedSegmentID = segment.id
+    }
+
+    func link(_ item: EditingItem, to segment: TextSegment, in scene: Scene) {
+        guard let anchor = TextAnchorRepair.anchor(for: segment, in: scene.scriptText) else { return }
+        item.textAnchor = anchor
+        item.linkedSegmentID = segment.id
+    }
+
+    func unlink(_ item: BRollItem) {
+        item.textAnchor = nil
+        item.linkedSegmentID = nil
+    }
+
+    func unlink(_ item: EditingItem) {
+        item.textAnchor = nil
+        item.linkedSegmentID = nil
+    }
+
     private func migrateLegacyLink(_ item: BRollItem, segments: [TextSegment], text: String) {
         guard item.textAnchor == nil else { return }
         guard let linkedID = item.linkedSegmentID,
@@ -1992,11 +2015,11 @@ final class ProjectStore {
             switch mode {
             case .bRoll:
                 if let item = scene.bRollItems.first(where: { $0.id == itemID }) {
-                    return segmentID(containing: item.textAnchor, in: scene) ?? item.linkedSegmentID
+                    return segmentID(containing: item.textAnchor, in: scene)
                 }
             case .editing:
                 if let item = scene.editingItems.first(where: { $0.id == itemID }) {
-                    return segmentID(containing: item.textAnchor, in: scene) ?? item.linkedSegmentID
+                    return segmentID(containing: item.textAnchor, in: scene)
                 }
             case .script:
                 continue
@@ -2027,6 +2050,78 @@ final class ProjectStore {
         }
     }
 
+}
+
+struct ProductionAnchorRange: Hashable {
+    let startUTF16: Int
+    let lengthUTF16: Int
+
+    init(_ anchor: TextAnchor) {
+        startUTF16 = anchor.startUTF16
+        lengthUTF16 = anchor.lengthUTF16
+    }
+}
+
+struct ProductionAnchorSection<Item: Identifiable>: Identifiable {
+    let anchor: TextAnchor
+    let items: [Item]
+    let firstItemOrder: Int
+
+    var id: ProductionAnchorRange { ProductionAnchorRange(anchor) }
+    var excerpt: String { anchor.selectedText }
+}
+
+private struct ProductionAnchorSectionAccumulator<Item: Identifiable> {
+    let anchor: TextAnchor
+    let firstItemOrder: Int
+    var items: [Item]
+}
+
+enum ProductionAnchorGrouping {
+    static func sections<Item: Identifiable>(
+        for items: [Item],
+        in text: String,
+        anchor: (Item) -> TextAnchor?
+    ) -> [ProductionAnchorSection<Item>] {
+        var groups: [ProductionAnchorRange: ProductionAnchorSectionAccumulator<Item>] = [:]
+
+        for (index, item) in items.enumerated() {
+            guard let currentAnchor = TextAnchorRepair.current(anchor(item), in: text) else { continue }
+            let range = ProductionAnchorRange(currentAnchor)
+            if var group = groups[range] {
+                group.items.append(item)
+                groups[range] = group
+            } else {
+                groups[range] = ProductionAnchorSectionAccumulator(
+                    anchor: currentAnchor,
+                    firstItemOrder: index,
+                    items: [item]
+                )
+            }
+        }
+
+        return groups.values
+            .map { ProductionAnchorSection(anchor: $0.anchor, items: $0.items, firstItemOrder: $0.firstItemOrder) }
+            .sorted {
+                let lhsRange = $0.id
+                let rhsRange = $1.id
+                if lhsRange.startUTF16 != rhsRange.startUTF16 {
+                    return lhsRange.startUTF16 < rhsRange.startUTF16
+                }
+                if lhsRange.lengthUTF16 != rhsRange.lengthUTF16 {
+                    return lhsRange.lengthUTF16 < rhsRange.lengthUTF16
+                }
+                return $0.firstItemOrder < $1.firstItemOrder
+            }
+    }
+
+    static func unlinkedItems<Item>(
+        from items: [Item],
+        in text: String,
+        anchor: (Item) -> TextAnchor?
+    ) -> [Item] {
+        items.filter { TextAnchorRepair.current(anchor($0), in: text) == nil }
+    }
 }
 
 @Observable
@@ -2113,8 +2208,20 @@ enum TextAnchorRepair {
         return self.anchor(in: text, range: repairedRange)
     }
 
+    static func current(_ anchor: TextAnchor?, in text: String) -> TextAnchor? {
+        guard let anchor, anchor.lengthUTF16 > 0, !anchor.selectedText.isEmpty else { return nil }
+        let full = text as NSString
+        let range = anchor.nsRange
+        guard range.location >= 0,
+              NSMaxRange(range) <= full.length,
+              full.substring(with: range) == anchor.selectedText else {
+            return nil
+        }
+        return anchor
+    }
+
     static func isAnchor(_ anchor: TextAnchor, in segment: TextSegment, text: String) -> Bool {
-        guard let segmentAnchor = anchor(for: segment, in: text) else { return false }
+        guard let segmentAnchor = self.anchor(for: segment, in: text) else { return false }
         return NSLocationInRange(anchor.startUTF16, segmentAnchor.nsRange)
     }
 
@@ -2165,7 +2272,7 @@ enum TextAnchorRepair {
             suffixes = occurrences(of: anchor.suffixContext, in: text, range: NSRange(location: suffixStart, length: max(0, rangeEnd - suffixStart)))
                 .map(\.location)
         }
-        let candidates = prefixes.flatMap { prefixEnd in
+        let candidates: [NSRange] = prefixes.flatMap { prefixEnd in
             suffixes.compactMap { suffixStart in
                 guard prefixEnd < suffixStart else { return nil }
                 return NSRange(location: prefixEnd, length: suffixStart - prefixEnd)
