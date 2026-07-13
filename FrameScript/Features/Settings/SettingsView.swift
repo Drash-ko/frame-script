@@ -287,8 +287,6 @@ private struct EditorSettings: View {
             let defaults = AppSettings.defaults.editorPreferences
             settings.editorPreferences.wordsPerMinute = defaults.wordsPerMinute
             settings.editorPreferences.fontSize = defaults.fontSize
-            settings.editorPreferences.editorWidth = defaults.editorWidth
-            settings.editorPreferences.lineHeight = defaults.lineHeight
             settings.editorPreferences.spellcheck = defaults.spellcheck
             settings.editorPreferences.smartQuotes = defaults.smartQuotes
             settings.editorPreferences.showWordCount = defaults.showWordCount
@@ -303,14 +301,6 @@ private struct EditorSettings: View {
 
             SettingsRow(appState.localized("settings.fontSize"), highlightKey: "editor.fontSize") {
                 ValueSlider(value: $settings.editorPreferences.fontSize, range: 16...30, suffix: " pt", precision: 0)
-            }
-
-            SettingsRow(appState.localized("settings.editorWidth"), highlightKey: "editor.editorWidth") {
-                ValueSlider(value: $settings.editorPreferences.editorWidth, range: 560...980, suffix: " pt", precision: 0)
-            }
-
-            SettingsRow(appState.localized("settings.lineHeight")) {
-                ValueSlider(value: $settings.editorPreferences.lineHeight, range: 1.2...1.8, suffix: "x", precision: 2)
             }
 
             SettingsRow(appState.localized("settings.spellcheck")) {

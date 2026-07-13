@@ -91,6 +91,35 @@ final class SettingsPreferencesTests: XCTestCase {
         XCTAssertNil(editor["showFooterShortcuts"])
     }
 
+    func testLegacyEditorGeometrySettingsDecodeWithoutAffectingCuratedLayout() throws {
+        var expected = AppSettings.defaults
+        expected.generalPreferences.language = .russian
+        expected.editorPreferences.wordsPerMinute = 177
+        expected.editorPreferences.fontSize = 28
+        expected.editorPreferences.spellcheck = false
+        expected.editorPreferences.defaultNotesVisibility = .expanded
+        expected.aiPreferences.enableInlineAutocomplete = false
+        let legacyData = try legacySettingsData(from: expected, editorGeometry: (width: 560, lineHeight: 1.2))
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: legacyData)
+
+        XCTAssertEqual(decoded, expected)
+        XCTAssertEqual(ScriptEditorLayout.maximumTextColumnWidth, 900)
+        XCTAssertEqual(ScriptEditorLayout.textKitLineSpacing, 1.48 * 4, accuracy: 0.001)
+    }
+
+    func testEncodedSettingsOmitLegacyEditorGeometryFields() throws {
+        let legacyData = try legacySettingsData(from: .defaults, editorGeometry: (width: 980, lineHeight: 1.8))
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: legacyData)
+        let encoded = try JSONEncoder().encode(decoded)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let editor = try XCTUnwrap(root["editorPreferences"] as? [String: Any])
+
+        XCTAssertNil(editor["editorWidth"])
+        XCTAssertNil(editor["lineHeight"])
+        XCTAssertEqual(try JSONDecoder().decode(AppSettings.self, from: encoded), decoded)
+    }
+
     private func legacyGeneralPreferencesData(
         showProjectBrowserOnLaunch: Bool,
         restoreLastProjectOnLaunch: Bool
@@ -108,5 +137,18 @@ final class SettingsPreferencesTests: XCTestCase {
           "confirmBeforeDeleting": true
         }
         """.utf8)
+    }
+
+    private func legacySettingsData(
+        from settings: AppSettings,
+        editorGeometry: (width: Double, lineHeight: Double)
+    ) throws -> Data {
+        let encoded = try JSONEncoder().encode(settings)
+        var root = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var editor = try XCTUnwrap(root["editorPreferences"] as? [String: Any])
+        editor["editorWidth"] = editorGeometry.width
+        editor["lineHeight"] = editorGeometry.lineHeight
+        root["editorPreferences"] = editor
+        return try JSONSerialization.data(withJSONObject: root)
     }
 }

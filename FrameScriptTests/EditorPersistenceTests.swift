@@ -1014,45 +1014,48 @@ final class EditorPersistenceTests: XCTestCase {
         let source = "Narrator:"
         let completion = "longword continues onto another ghost line"
         let textView = makeGhostLayoutTestView(text: source, width: 100)
+        configureCaretTestTypography(textView, fontSize: 16, lineSpacing: ScriptEditorLayout.textKitLineSpacing)
         textView.ghostText = completion
         let ghost = try XCTUnwrap(textView.ghostTextLayoutMetrics())
         XCTAssertTrue(ghost.startsOnNextLine)
 
         let realTextView = makeGhostLayoutTestView(text: source + completion, width: 100)
         let sourceTextView = makeGhostLayoutTestView(text: source, width: 100)
+        configureCaretTestTypography(realTextView, fontSize: 16, lineSpacing: ScriptEditorLayout.textKitLineSpacing)
+        configureCaretTestTypography(sourceTextView, fontSize: 16, lineSpacing: ScriptEditorLayout.textKitLineSpacing)
         let real = textLayoutMetrics(for: realTextView)
         let sourceOnly = textLayoutMetrics(for: sourceTextView)
         XCTAssertGreaterThanOrEqual(real.baselines.count, 3)
         XCTAssertEqual(ghost.plannedBaselines[0] - sourceOnly.baselines[0], real.baselines[1] - real.baselines[0], accuracy: 0.001)
         XCTAssertEqual(ghost.plannedBaselines[1] - ghost.plannedBaselines[0], real.baselines[2] - real.baselines[1], accuracy: 0.001)
-        XCTAssertEqual(ghost.paragraphLineSpacing, 5, accuracy: 0.001)
+        XCTAssertEqual(ghost.paragraphLineSpacing, ScriptEditorLayout.textKitLineSpacing, accuracy: 0.001)
     }
 
-    func testMovedGhostLayoutRecalculatesWhenLineHeightChangesWhileActive() throws {
-        let textView = makeGhostLayoutTestView(text: "Narrator:", width: 100)
-        textView.ghostText = "longword continues onto another line"
-        let initial = try XCTUnwrap(textView.ghostTextLayoutMetrics())
-        configureCaretTestTypography(textView, fontSize: 16, lineSpacing: 12)
-
-        let updated = try XCTUnwrap(textView.ghostTextLayoutMetrics())
-        XCTAssertTrue(updated.startsOnNextLine)
-        XCTAssertGreaterThan(updated.plannedLineOrigins[0], initial.plannedLineOrigins[0])
-        XCTAssertEqual(updated.paragraphLineSpacing, 12, accuracy: 0.001)
-    }
-
-    func testExplicitGhostNewlineUsesConfiguredSpacingExactlyOnce() throws {
+    func testExplicitGhostNewlineUsesFixedSpacingExactlyOnce() throws {
         let textView = makeGhostLayoutTestView(text: "A", width: 300)
-        configureCaretTestTypography(textView, fontSize: 16, lineSpacing: 12)
+        configureCaretTestTypography(textView, fontSize: 16, lineSpacing: ScriptEditorLayout.textKitLineSpacing)
         textView.ghostText = "\nSecond line\nThird line"
 
         let metrics = try XCTUnwrap(textView.ghostTextLayoutMetrics())
         XCTAssertEqual(metrics.plannedBaselines.count, 3)
         let ordinaryTextView = makeGhostLayoutTestView(text: "A\nSecond line\nThird line", width: 300)
-        configureCaretTestTypography(ordinaryTextView, fontSize: 16, lineSpacing: 12)
+        configureCaretTestTypography(ordinaryTextView, fontSize: 16, lineSpacing: ScriptEditorLayout.textKitLineSpacing)
         let ordinary = textLayoutMetrics(for: ordinaryTextView)
         XCTAssertEqual(metrics.plannedBaselines[1] - metrics.plannedBaselines[0], ordinary.baselines[1] - ordinary.baselines[0], accuracy: 0.001)
         XCTAssertEqual(metrics.plannedBaselines[2] - metrics.plannedBaselines[1], ordinary.baselines[2] - ordinary.baselines[1], accuracy: 0.001)
-        XCTAssertEqual(metrics.paragraphLineSpacing, 12, accuracy: 0.001)
+        XCTAssertEqual(metrics.paragraphLineSpacing, ScriptEditorLayout.textKitLineSpacing, accuracy: 0.001)
+    }
+
+    func testCuratedTextColumnWidthShrinksWithoutExceedingMaximum() {
+        XCTAssertEqual(ScriptEditorLayout.textColumnWidth(for: 1_200), ScriptEditorLayout.maximumTextColumnWidth)
+        XCTAssertEqual(ScriptEditorLayout.textColumnWidth(for: 640), 640)
+        XCTAssertEqual(ScriptEditorLayout.textColumnWidth(for: -10), 0)
+    }
+
+    func testCuratedLineSpacingMatchesTheFormerDefaultMultiplier() {
+        XCTAssertEqual(ScriptEditorLayout.visualLineHeightMultiplier, 1.48, accuracy: 0.001)
+        XCTAssertEqual(ScriptEditorLayout.textKitLineSpacing, 5.92, accuracy: 0.001)
+        XCTAssertEqual(ScriptEditorLayout.paragraphStyle().lineSpacing, ScriptEditorLayout.textKitLineSpacing, accuracy: 0.001)
     }
 
     func testGhostTextLeavesCaretSelectionAndSourceUnchangedUntilAccepted() throws {
@@ -1989,15 +1992,14 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertNotEqual(before, after)
     }
 
-    func testMarkerTypographyAndWidthChangesRebuildGeometry() {
+    func testMarkerFixedTypographyAndWidthChangesRebuildGeometry() {
         let text = "one two three four five six seven eight nine ten"
         let view = makeMarkerTestView(text: text, width: 180)
         view.markers = [marker(.bRoll, in: text, range: NSRange(location: 0, length: (text as NSString).length))]
         let before = view.documentMarkerGeometry()
 
-        configureCaretTestTypography(view.textView, fontSize: 24, lineSpacing: 14)
+        configureCaretTestTypography(view.textView, fontSize: 24, lineSpacing: ScriptEditorLayout.textKitLineSpacing)
         view.cachedFontSize = 24
-        view.cachedLineSpacing = 14
         let typography = view.documentMarkerGeometry()
         view.frame.size.width = 120
         view.layoutSubtreeIfNeeded()
@@ -2069,18 +2071,14 @@ final class EditorPersistenceTests: XCTestCase {
         _ = view.documentMarkerGeometry()
         XCTAssertEqual(view.markerGeometryRebuildCount, 5)
 
-        view.cachedLineSpacing = 5
-        _ = view.documentMarkerGeometry()
-        XCTAssertEqual(view.markerGeometryRebuildCount, 6)
-
         view.markers = [marker(.bRoll, in: view.textView.string, range: NSRange(location: 0, length: 3))]
         _ = view.documentMarkerGeometry()
-        XCTAssertEqual(view.markerGeometryRebuildCount, 7)
+        XCTAssertEqual(view.markerGeometryRebuildCount, 6)
 
         let duplicateRange = marker(.bRoll, in: view.textView.string, range: NSRange(location: 0, length: 3))
         view.markers.append(duplicateRange)
         _ = view.documentMarkerGeometry()
-        XCTAssertEqual(view.markerGeometryRebuildCount, 8)
+        XCTAssertEqual(view.markerGeometryRebuildCount, 7)
     }
 
     func testMarkerInvalidAndZeroLengthAnchorsDrawNothing() {
@@ -2342,7 +2340,6 @@ final class EditorPersistenceTests: XCTestCase {
             saveRestorationState: saveState,
             markers: [],
             fontSize: 16,
-            lineSpacing: 4,
             spellcheck: false,
             smartQuotes: false,
             placeholder: "Placeholder",

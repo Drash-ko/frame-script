@@ -60,7 +60,6 @@ struct CommandPaletteView: View {
             settingResult(tab: .appearance, key: "appearance.theme", titleKey: "settings.theme"),
             settingResult(tab: .appearance, key: "appearance.focusBehavior", titleKey: "settings.focusBehavior"),
             settingResult(tab: .editor, key: "editor.fontSize", titleKey: "settings.fontSize"),
-            settingResult(tab: .editor, key: "editor.editorWidth", titleKey: "settings.editorWidth"),
             settingResult(tab: .ai, key: "ai.privacyMode", titleKey: "settings.privacyMode"),
             settingResult(tab: .export, key: "export.defaultFormat", titleKey: "settings.defaultFormat"),
             settingResult(tab: .templates, key: nil, title: appState.localized("settings.templates")),

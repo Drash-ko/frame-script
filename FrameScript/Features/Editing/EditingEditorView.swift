@@ -21,7 +21,7 @@ struct EditingEditorView: View {
                         }
                     }
                 }
-                .frame(maxWidth: appState.settings.editorPreferences.editorWidth, alignment: .leading)
+                .frame(maxWidth: ScriptEditorLayout.maximumTextColumnWidth, alignment: .leading)
                 .padding(WorkspaceLayout.contentInset(isFocusModeEnabled: appState.isFocusModeEnabled))
                 .frame(maxWidth: .infinity)
             }

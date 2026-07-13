@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Removed adjustable script-column width and line spacing in favor of a consistent responsive 900 pt editor layout and fixed default typography.
 - Polished Keyboard Shortcuts Settings to use the shared Settings cards, rows, themed keycaps, and focused recording state.
 - Added a centralized configurable keyboard-shortcut registry, recorder, conflict validation, and localized Settings tab; menu commands, keycaps, palette, and overlay now update immediately from persisted app-level bindings.
 - Unified every configurable menu key equivalent and visible shortcut hint behind the active shortcut state, including explicit localized unassigned labels, and consolidated project exit into Back to Project List.

@@ -506,8 +506,6 @@ struct ProjectSettingsOverride: Codable, Hashable {
 struct EditorPreferences: Codable, Hashable {
     var wordsPerMinute: Int
     var fontSize: Double
-    var editorWidth: Double
-    var lineHeight: Double
     var spellcheck: Bool
     var smartQuotes: Bool
     var showWordCount: Bool
@@ -518,8 +516,6 @@ struct EditorPreferences: Codable, Hashable {
     init(
         wordsPerMinute: Int,
         fontSize: Double,
-        editorWidth: Double,
-        lineHeight: Double,
         spellcheck: Bool,
         smartQuotes: Bool,
         showWordCount: Bool,
@@ -529,8 +525,6 @@ struct EditorPreferences: Codable, Hashable {
     ) {
         self.wordsPerMinute = wordsPerMinute
         self.fontSize = fontSize
-        self.editorWidth = editorWidth
-        self.lineHeight = lineHeight
         self.spellcheck = spellcheck
         self.smartQuotes = smartQuotes
         self.showWordCount = showWordCount
@@ -542,8 +536,6 @@ struct EditorPreferences: Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case wordsPerMinute
         case fontSize
-        case editorWidth
-        case lineHeight
         case spellcheck
         case smartQuotes
         case showWordCount
@@ -556,8 +548,6 @@ struct EditorPreferences: Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         wordsPerMinute = try container.decode(Int.self, forKey: .wordsPerMinute)
         fontSize = try container.decode(Double.self, forKey: .fontSize)
-        editorWidth = try container.decode(Double.self, forKey: .editorWidth)
-        lineHeight = try container.decode(Double.self, forKey: .lineHeight)
         spellcheck = try container.decode(Bool.self, forKey: .spellcheck)
         smartQuotes = try container.decode(Bool.self, forKey: .smartQuotes)
         showWordCount = try container.decode(Bool.self, forKey: .showWordCount)
@@ -718,8 +708,6 @@ extension AppSettings {
         editorPreferences: EditorPreferences(
             wordsPerMinute: 150,
             fontSize: 22,
-            editorWidth: 900,
-            lineHeight: 1.48,
             spellcheck: true,
             smartQuotes: true,
             showWordCount: true,

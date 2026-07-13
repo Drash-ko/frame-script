@@ -36,7 +36,6 @@ struct ScriptEditorView: View {
                 },
                 markers: productionMarkers,
                 fontSize: appState.settings.editorPreferences.fontSize,
-                lineSpacing: appState.settings.editorPreferences.lineHeight * 4,
                 spellcheck: appState.settings.editorPreferences.spellcheck,
                 smartQuotes: appState.settings.editorPreferences.smartQuotes,
                 placeholder: appState.localized("script.placeholder"),
@@ -88,7 +87,7 @@ struct ScriptEditorView: View {
             .font(.system(size: 13))
             .tint(theme.secondaryText)
         }
-        .frame(maxWidth: appState.settings.editorPreferences.editorWidth, alignment: .leading)
+        .frame(maxWidth: ScriptEditorLayout.maximumTextColumnWidth, alignment: .leading)
         .padding(WorkspaceLayout.contentInset(isFocusModeEnabled: appState.isFocusModeEnabled))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(theme.editorSurface)
@@ -347,7 +346,6 @@ struct LinkedScriptTextView: NSViewRepresentable {
     let saveRestorationState: (ScriptEditorRestorationState) -> Void
     let markers: [ProductionTextMarker]
     let fontSize: Double
-    let lineSpacing: Double
     let spellcheck: Bool
     let smartQuotes: Bool
     let placeholder: String
@@ -399,22 +397,20 @@ struct LinkedScriptTextView: NSViewRepresentable {
 
     private func configureAppearance(_ view: MarkerTextContainerView) {
         let font = NSFont.systemFont(ofSize: fontSize)
-        let typographyChanged = view.cachedFontSize != fontSize || view.cachedLineSpacing != lineSpacing
+        let typographyChanged = view.cachedFontSize != fontSize
         if view.textView.font != font { view.textView.font = font }
         view.textView.textColor = textColor
         view.textView.backgroundColor = backgroundColor
         view.scrollView.backgroundColor = backgroundColor
         view.textView.isContinuousSpellCheckingEnabled = spellcheck
         view.textView.isAutomaticQuoteSubstitutionEnabled = smartQuotes
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = lineSpacing
+        let paragraph = ScriptEditorLayout.paragraphStyle()
         view.textView.defaultParagraphStyle = paragraph
         view.textView.typingAttributes[.paragraphStyle] = paragraph
         if typographyChanged, let storage = view.textView.textStorage, storage.length > 0 {
             storage.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: storage.length))
         }
         view.cachedFontSize = fontSize
-        view.cachedLineSpacing = lineSpacing
         view.textView.placeholder = placeholder
         view.textView.placeholderColor = placeholderColor
         view.markers = markers
@@ -1397,7 +1393,6 @@ final class MarkerTextContainerView: NSView {
     var addBRollLabel = ""
     var addEditingLabel = ""
     var cachedFontSize: Double?
-    var cachedLineSpacing: Double?
     var markerTextRevision = 0 {
         didSet {
             guard markerTextRevision != oldValue else { return }
@@ -1493,7 +1488,6 @@ final class MarkerTextContainerView: NSView {
             text: text,
             containerWidth: textView.textContainer?.containerSize.width ?? 0,
             fontSize: cachedFontSize ?? 0,
-            lineSpacing: cachedLineSpacing ?? 0,
             groups: groups
         )
         guard markerCacheSignature != signature else { return }
@@ -1519,7 +1513,6 @@ private struct MarkerCacheSignature: Equatable {
     var text: String
     var containerWidth: CGFloat
     var fontSize: Double
-    var lineSpacing: Double
     var groups: [MarkerRangeGroup]
 }
 
