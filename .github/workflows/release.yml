@@ -304,7 +304,14 @@ jobs:
             "$artifacts/SHA256SUMS.txt" \
             --repo "$GITHUB_REPOSITORY"
 
-          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+          releases_json="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100")"
+          draft_count="$(jq --arg tag "$tag" '[.[] | select(.draft == true and .tag_name == $tag)] | length' <<< "$releases_json")"
+          [[ "$draft_count" == "1" ]] || {
+            echo "Expected exactly one draft release for $tag, found $draft_count." >&2
+            exit 1
+          }
+          release_id="$(jq -r --arg tag "$tag" '.[] | select(.draft == true and .tag_name == $tag) | .id' <<< "$releases_json")"
+          release_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id")"
           jq -e '.draft == true and .prerelease == false and .name == "FrameScript v0.4.0"' <<< "$release_json" >/dev/null
           for asset in FrameScript.dmg FrameScript.zip SHA256SUMS.txt; do
             jq -e --arg asset "$asset" '[.assets[] | select(.name == $asset and .size > 0)] | length == 1' <<< "$release_json" >/dev/null
@@ -316,14 +323,12 @@ jobs:
             exit 1
           }
 
-          gh release edit "$tag" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft=false \
-            --prerelease=false \
-            --title 'FrameScript v0.4.0' \
-            --notes-file RELEASE_NOTES.md
-
-          published_json="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+          published_json="$(gh api --method PATCH \
+            "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+            -F draft=false \
+            -F prerelease=false \
+            -f name='FrameScript v0.4.0' \
+            -f body="$expected_body")"
           jq -e '.draft == false and .prerelease == false and .name == "FrameScript v0.4.0"' <<< "$published_json" >/dev/null
           for asset in FrameScript.dmg FrameScript.zip SHA256SUMS.txt; do
             jq -e --arg asset "$asset" '[.assets[] | select(.name == $asset and .size > 0)] | length == 1' <<< "$published_json" >/dev/null
@@ -333,3 +338,5 @@ jobs:
             echo "Published release body does not match RELEASE_NOTES.md." >&2
             exit 1
           }
+          published_by_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")"
+          jq -e --argjson release_id "$release_id" '.id == $release_id' <<< "$published_by_tag" >/dev/null
