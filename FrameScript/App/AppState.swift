@@ -848,18 +848,22 @@ final class AppState {
         editorState.selectedProductionItemIDs = []
     }
 
-    func normalizeProductionSelection() {
-        validateProductionSelection()
+    func normalizeProductionSelection(preferredItemID: UUID? = nil) {
+        validateProductionSelection(preferredItemID: preferredItemID)
     }
 
-    private func validateProductionSelection() {
+    private func validateProductionSelection(preferredItemID: UUID? = nil) {
         guard !editorState.selectedProductionItemIDs.isEmpty,
               let scene = selectedScene else {
             return
         }
-        guard let selectedID = editorState.selectedProductionItemIDs.first(where: { selected in
-            productionMarkerGroups(in: scene, mode: editorState.selectedMode).contains { $0.itemIDs.contains(selected) }
-        }), let group = productionMarkerGroups(in: scene, mode: editorState.selectedMode).first(where: { $0.itemIDs.contains(selectedID) }) else {
+        let groups = productionMarkerGroups(in: scene, mode: editorState.selectedMode)
+        let preferredGroup = preferredItemID.flatMap { preferredID in
+            groups.first { $0.itemIDs.contains(preferredID) }
+        }
+        guard let group = preferredGroup ?? groups.first(where: { group in
+            editorState.selectedProductionItemIDs.contains { group.itemIDs.contains($0) }
+        }) else {
             clearProductionSelection()
             return
         }
@@ -2289,6 +2293,9 @@ enum TextAnchorRepair {
         guard let anchor else { return nil }
         let full = text as NSString
         guard anchor.lengthUTF16 >= 0, anchor.startUTF16 >= 0, !anchor.selectedText.isEmpty else { return nil }
+        if let current = current(anchor, in: text) {
+            return self.anchor(in: text, range: current.nsRange)
+        }
         let matchingRanges = occurrences(of: anchor.selectedText, in: full)
         let exactCandidates = matchingRanges
             .filter { hasAdjacentBoundary(anchor: anchor, text: full, range: $0) }

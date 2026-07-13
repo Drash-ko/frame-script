@@ -126,10 +126,48 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(anchor.suffixContext, " omega")
     }
 
-    func testAmbiguousAnchorRepairFails() throws {
+    func testCurrentAnchorRepairPreservesStoredRangeWithDuplicateIdenticalContext() throws {
         let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: "left target right", range: NSRange(location: 5, length: 6)))
+        let text = "left target right and left target right"
+        let secondRange = (text as NSString).range(of: "target", options: [], range: NSRange(location: 18, length: (text as NSString).length - 18))
+        let secondAnchor = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: secondRange))
 
-        XCTAssertNil(TextAnchorRepair.repair(anchor, in: "left target right and left target right"))
+        XCTAssertEqual(TextAnchorRepair.repair(anchor, in: "left other right and left target right and left target right"), nil)
+        XCTAssertEqual(TextAnchorRepair.repair(secondAnchor, in: text)?.nsRange, secondRange)
+    }
+
+    func testDelayedSegmentSynchronizationPreservesCurrentAnchorWithDuplicateIdenticalContext() throws {
+        let text = "left target right and left target right"
+        let secondRange = (text as NSString).range(of: "target", options: [], range: NSRange(location: 18, length: (text as NSString).length - 18))
+        let item = BRollItem(
+            textAnchor: try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: secondRange)),
+            templateType: "",
+            sourceType: .custom,
+            descriptionText: ""
+        )
+        let scene = Scene(order: 0, sectionType: .custom, title: "Scene", scriptText: text, bRollItems: [item])
+        let store = ProjectStore(project: FrameProject(title: "Project", scenes: [scene]))
+
+        store.synchronizeTextSegments(splitMode: .scene, wordsPerMinute: 150)
+
+        XCTAssertEqual(item.textAnchor?.nsRange, secondRange)
+    }
+
+    func testProjectFileLoadingPreservesCurrentAnchorWithDuplicateIdenticalContext() throws {
+        let text = "left target right and left target right"
+        let secondRange = (text as NSString).range(of: "target", options: [], range: NSRange(location: 18, length: (text as NSString).length - 18))
+        let item = BRollItem(
+            textAnchor: try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: secondRange)),
+            templateType: "",
+            sourceType: .custom,
+            descriptionText: ""
+        )
+        let project = FrameProject(title: "Project", scenes: [Scene(order: 0, sectionType: .custom, title: "Scene", scriptText: text, bRollItems: [item])])
+        let data = try FrameScriptFileStore.encoder.encode(FrameScriptFile(project: project))
+        let loaded = try FrameScriptFileStore.decoder.decode(FrameScriptFile.self, from: data).makeProject()
+        let loadedItem = try XCTUnwrap(loaded.scenes.first?.bRollItems.first)
+
+        XCTAssertEqual(loadedItem.textAnchor?.nsRange, secondRange)
     }
 
     func testAnchorRepairRejectsDistantContextForAnExactMatch() throws {
@@ -338,6 +376,39 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertEqual(appState.editorState.selectedProductionItemIDs, [first.id])
         XCTAssertEqual(first.textAnchor?.selectedText, "abc")
         XCTAssertEqual(second.textAnchor?.selectedText, "def")
+    }
+
+    func testUnlinkingSelectedDuplicateGroupPreservesRemainingItemSelection() throws {
+        let text = "First target. Second target."
+        let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: (text as NSString).range(of: "First target.")))
+        let first = BRollItem(textAnchor: anchor, templateType: "", sourceType: .custom, descriptionText: "")
+        let second = BRollItem(textAnchor: anchor, templateType: "", sourceType: .custom, descriptionText: "")
+        let scene = Scene(order: 0, sectionType: .custom, title: "Scene", scriptText: text, bRollItems: [first, second])
+        let (appState, _, _) = makeAppState(project: FrameProject(title: "Project", scenes: [scene]), fileURL: nil)
+        appState.selectProductionItems([first.id, second.id], mode: .bRoll)
+
+        appState.projectStore.unlink(second)
+        appState.normalizeProductionSelection()
+
+        XCTAssertEqual(appState.editorState.selectedProductionItemIDs, [first.id])
+    }
+
+    func testRelinkingSecondSelectedDuplicateGroupItemSelectsItsNewGroup() throws {
+        let text = "First target. Second target."
+        let firstSegment = TextSegment(sceneID: UUID(), order: 0, sourceText: "First target.", segmentType: .sentence)
+        let secondSegment = TextSegment(sceneID: firstSegment.sceneID, order: 1, sourceText: "Second target.", segmentType: .sentence)
+        let anchor = try XCTUnwrap(TextAnchorRepair.anchor(in: text, range: (text as NSString).range(of: "First target.")))
+        let first = BRollItem(textAnchor: anchor, templateType: "", sourceType: .custom, descriptionText: "")
+        let second = BRollItem(textAnchor: anchor, templateType: "", sourceType: .custom, descriptionText: "")
+        let scene = Scene(id: firstSegment.sceneID, order: 0, sectionType: .custom, title: "Scene", scriptText: text, textSegments: [firstSegment, secondSegment], bRollItems: [first, second])
+        let (appState, _, _) = makeAppState(project: FrameProject(title: "Project", scenes: [scene]), fileURL: nil)
+        appState.selectProductionItems([first.id, second.id], mode: .bRoll)
+
+        appState.projectStore.link(second, to: secondSegment, in: scene)
+        appState.normalizeProductionSelection(preferredItemID: second.id)
+
+        XCTAssertEqual(appState.editorState.selectedProductionItemIDs, [second.id])
+        XCTAssertEqual(second.textAnchor?.selectedText, "Second target.")
     }
 
     func testLegacySegmentLinksMigrateToAnchorsAndStaleLinksClear() throws {
@@ -1625,6 +1696,52 @@ final class EditorPersistenceTests: XCTestCase {
         XCTAssertGreaterThan(geometry.hitRegions.count, 1)
     }
 
+    func testMarkerSharingFirstRenderedLineKeepsWrappedRenderAndHitRegionsSeparate() {
+        let text = String(repeating: "word ", count: 60)
+        let view = makeMarkerTestView(text: text, width: 145)
+        let lineRanges = renderedLineRanges(in: view.textView)
+        let neighboringRange = NSRange(location: lineRanges[0].location, length: 4)
+        let wrappedStart = NSMaxRange(neighboringRange) + 1
+        let wrappedEnd = NSMaxRange(lineRanges[3])
+        let neighbor = marker(.bRoll, in: text, range: neighboringRange)
+        let wrapped = marker(.bRoll, in: text, range: NSRange(location: wrappedStart, length: wrappedEnd - wrappedStart))
+        view.markers = [neighbor, wrapped]
+        let geometry = view.documentMarkerGeometry()
+        let neighborRuns = geometry.renderRuns.filter { $0.itemIDs == [neighbor.itemID] }
+        let wrappedRuns = geometry.renderRuns.filter { $0.itemIDs == [wrapped.itemID] }
+        let neighborHits = geometry.hitRegions.filter { $0.itemIDs == [neighbor.itemID] }
+        let wrappedHits = geometry.hitRegions.filter { $0.itemIDs == [wrapped.itemID] }
+
+        XCTAssertEqual(neighborRuns.count, 1)
+        XCTAssertEqual(wrappedRuns.count, 2)
+        XCTAssertEqual(neighborHits.count, 1)
+        XCTAssertGreaterThan(wrappedHits.count, 1)
+        XCTAssertFalse(wrappedRuns.contains { wrappedRun in neighborRuns.contains { $0.documentRect.intersects(wrappedRun.documentRect) } })
+        XCTAssertFalse(wrappedHits.contains { wrappedHit in neighborHits.contains { $0.documentRect.intersects(wrappedHit.documentRect) } })
+    }
+
+    func testMarkerSharingLastRenderedLineKeepsWrappedRenderAndHitRegionsSeparate() {
+        let text = String(repeating: "word ", count: 60)
+        let view = makeMarkerTestView(text: text, width: 145)
+        let lineRanges = renderedLineRanges(in: view.textView)
+        let sharedLastLine = lineRanges[3]
+        let neighbor = marker(.bRoll, in: text, range: NSRange(location: NSMaxRange(sharedLastLine) - 4, length: 4))
+        let wrapped = marker(.bRoll, in: text, range: NSRange(location: 0, length: neighbor.anchor.startUTF16 - 1))
+        view.markers = [wrapped, neighbor]
+        let geometry = view.documentMarkerGeometry()
+        let neighborRuns = geometry.renderRuns.filter { $0.itemIDs == [neighbor.itemID] }
+        let wrappedRuns = geometry.renderRuns.filter { $0.itemIDs == [wrapped.itemID] }
+        let neighborHits = geometry.hitRegions.filter { $0.itemIDs == [neighbor.itemID] }
+        let wrappedHits = geometry.hitRegions.filter { $0.itemIDs == [wrapped.itemID] }
+
+        XCTAssertEqual(neighborRuns.count, 1)
+        XCTAssertEqual(wrappedRuns.count, 2)
+        XCTAssertEqual(neighborHits.count, 1)
+        XCTAssertGreaterThan(wrappedHits.count, 1)
+        XCTAssertFalse(wrappedRuns.contains { wrappedRun in neighborRuns.contains { $0.documentRect.intersects(wrappedRun.documentRect) } })
+        XCTAssertFalse(wrappedHits.contains { wrappedHit in neighborHits.contains { $0.documentRect.intersects(wrappedHit.documentRect) } })
+    }
+
     func testMarkerVisualAndEditingUseFixedSeparateLanes() {
         let text = "one\ntwo"
         let ranges = lineRanges(in: text)
@@ -1863,6 +1980,23 @@ final class EditorPersistenceTests: XCTestCase {
         let view = makeMarkerTestView(text: text)
         view.markers = markers
         return view.documentMarkerGeometry()
+    }
+
+    private func renderedLineRanges(in textView: NSTextView) -> [NSRange] {
+        guard let layout = textView.layoutManager,
+              let container = textView.textContainer else {
+            return []
+        }
+        layout.ensureLayout(for: container)
+        let glyphRange = layout.glyphRange(for: container)
+        var ranges: [NSRange] = []
+        layout.enumerateLineFragments(forGlyphRange: glyphRange) { _, _, _, lineGlyphRange, _ in
+            let range = layout.characterRange(forGlyphRange: lineGlyphRange, actualGlyphRange: nil)
+            if range.length > 0 {
+                ranges.append(range)
+            }
+        }
+        return ranges
     }
 
     private func marker(_ mode: WorkspaceMode, in text: String, range: NSRange) -> ProductionTextMarker {

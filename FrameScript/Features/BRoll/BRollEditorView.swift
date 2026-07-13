@@ -102,14 +102,14 @@ struct BRollEditorView: View {
             ForEach(Array(scene.textSegments.sortedByOrder.enumerated()), id: \.element.id) { index, segment in
                 Button(segmentTitle(index, segment)) {
                     appState.projectStore.link(item, to: segment, in: scene)
-                    appState.normalizeProductionSelection()
+                    appState.normalizeProductionSelection(preferredItemID: item.id)
                     appState.touchProject()
                 }
             }
             Divider()
             Button(appState.localized("production.unlinked")) {
                 appState.projectStore.unlink(item)
-                appState.clearProductionSelection(containing: item.id)
+                appState.normalizeProductionSelection()
                 appState.touchProject()
             }
         } label: { Label(linkLabel(item), systemImage: "link").font(.system(size: 12, weight: .medium)) }

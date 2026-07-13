@@ -1494,15 +1494,19 @@ enum TextAnchorGeometry {
         return byGroup.values.flatMap { groupFragments in
             let ordered = groupFragments.sorted { $0.marker.documentRect.minY < $1.marker.documentRect.minY }
             var runs: [DocumentMarkerRect] = []
+            var previousFragmentWasFullLane = false
             for fragment in ordered {
                 guard let last = runs.indices.last,
+                      previousFragmentWasFullLane,
                       !fragment.sharesLine,
                       runs[last].documentRect.minX == fragment.marker.documentRect.minX,
                       runs[last].documentRect.width == fragment.marker.documentRect.width else {
                     runs.append(fragment.marker)
+                    previousFragmentWasFullLane = !fragment.sharesLine
                     continue
                 }
                 runs[last].documentRect.size.height = fragment.marker.documentRect.maxY - runs[last].documentRect.minY
+                previousFragmentWasFullLane = true
             }
             return runs
         }

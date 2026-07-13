@@ -15,6 +15,7 @@
 - Fixed stale anchors, whitespace-separated ranges, and cross-workspace marker interaction so they no longer produce misleading geometry or selection.
 - Fixed production anchors and Script markers to refresh immediately on committed text edits, while rejecting distant or ambiguous repair evidence and avoiding unnecessary TextKit geometry work.
 - Fixed live anchor repair to use the pre-edit script text for deterministic boundary-preserving edits, refresh anchor context, and normalize selection after groups change.
+- Fixed current duplicate-context anchors during synchronization and loading, wrapped marker lanes that shared a first or last rendered line, and selection continuity after unlinking or relinking grouped production items.
 
 ## [0.3.0] - 2026-07-13
 
