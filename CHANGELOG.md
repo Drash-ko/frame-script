@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Fixed Keyboard Shortcuts recording so a scoped AppKit capture session consumes application commands, and conflicting assignments can be safely reassigned with explicit unassigned commands persisted in app settings.
 - Fixed the autosave interval row’s obsolete help affordance and made inline autocomplete ghost wrapping honor TextKit’s usable width, whitespace, and paragraph spacing.
 - Fixed inline autocomplete ghost text so a first word that cannot fit at the script caret begins intact on the next TextKit line.
 - Fixed linked production selections shifting, expanding, and shrinking through ordinary script edits, while ambiguous or unsafe repairs now clear stale relationship metadata.

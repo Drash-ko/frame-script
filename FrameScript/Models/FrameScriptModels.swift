@@ -345,7 +345,7 @@ struct AppSettings: Codable, Hashable {
     var exportPreferences: ExportPreferences
     var windowPreferences: WindowPreferences
     /// User bindings are application preferences and never belong in project files.
-    var shortcutOverrides: [ShortcutCommand: ShortcutBinding] = [:]
+    var shortcutOverrides: [ShortcutCommand: ShortcutOverride] = [:]
 
     enum CodingKeys: String, CodingKey {
         case generalPreferences, theme, accentColor, editorPreferences, aiPreferences
@@ -361,7 +361,7 @@ struct AppSettings: Codable, Hashable {
         voicePreferences: VoicePreferences,
         exportPreferences: ExportPreferences,
         windowPreferences: WindowPreferences,
-        shortcutOverrides: [ShortcutCommand: ShortcutBinding] = [:]
+        shortcutOverrides: [ShortcutCommand: ShortcutOverride] = [:]
     ) {
         self.generalPreferences = generalPreferences
         self.theme = theme
@@ -385,7 +385,7 @@ struct AppSettings: Codable, Hashable {
         exportPreferences = try container.decode(ExportPreferences.self, forKey: .exportPreferences)
         windowPreferences = try container.decode(WindowPreferences.self, forKey: .windowPreferences)
         // Existing installations did not encode shortcut preferences.
-        shortcutOverrides = try container.decodeIfPresent([ShortcutCommand: ShortcutBinding].self, forKey: .shortcutOverrides) ?? [:]
+        shortcutOverrides = try container.decodeIfPresent([ShortcutCommand: ShortcutOverride].self, forKey: .shortcutOverrides) ?? [:]
     }
 }
 

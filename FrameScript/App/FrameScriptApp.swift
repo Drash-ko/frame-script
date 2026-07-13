@@ -30,11 +30,11 @@ struct FrameScriptApp: App {
     private var appCommands: some Commands {
         CommandGroup(replacing: .newItem) {
             Button(appState.localized("menu.newProject")) { appState.requestNewProject() }
-                .keyboardShortcut(appState.settings.shortcut(for: .newProject).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .newProject))
             Button(appState.localized("menu.newProjectFromTemplate")) {
                 appState.requestNewProject(showsTemplateBrowser: true)
             }
-            .keyboardShortcut(appState.settings.shortcut(for: .newProjectFromTemplate).keyboardShortcut)
+            .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .newProjectFromTemplate))
             Menu(appState.localized("welcome.newFromTemplate")) {
                 ForEach(appState.scriptTemplates()) { template in
                     Button(appState.displayName(template)) {
@@ -44,7 +44,7 @@ struct FrameScriptApp: App {
             }
             Divider()
             Button(appState.localized("menu.open")) { appState.openProject() }
-                .keyboardShortcut(appState.settings.shortcut(for: .openProject).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .openProject))
             Menu(appState.localized("menu.openRecent")) {
                 if appState.recentProjectEntries.isEmpty {
                     Text(appState.localized("menu.noRecentProjects"))
@@ -79,10 +79,10 @@ struct FrameScriptApp: App {
 
         CommandGroup(replacing: .saveItem) {
             Button(appState.localized("project.save")) { appState.saveProject() }
-                .keyboardShortcut(appState.settings.shortcut(for: .save).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .save))
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("project.saveAs")) { appState.saveProjectAs() }
-                .keyboardShortcut(appState.settings.shortcut(for: .saveAs).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .saveAs))
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("menu.duplicateProject")) { appState.duplicateProject() }
                 .disabled(!appState.hasOpenProject)
@@ -100,9 +100,9 @@ struct FrameScriptApp: App {
 
         CommandGroup(replacing: .importExport) {
             Button(appState.localized("menu.import")) { appState.importProject() }
-                .keyboardShortcut(appState.settings.shortcut(for: .import).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .import))
             Button(appState.localized("project.export")) { appState.exportProject() }
-                .keyboardShortcut(appState.settings.shortcut(for: .export).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .export))
                 .disabled(!appState.hasOpenProject)
         }
 
@@ -111,53 +111,53 @@ struct FrameScriptApp: App {
                 appState.openSettings(tab: .general)
                 openSettings()
             }
-            .keyboardShortcut(appState.settings.shortcut(for: .openSettings).keyboardShortcut)
+            .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .openSettings))
         }
 
         CommandMenu(appState.localized("menu.view")) {
             Button(appState.localized("mode.script")) { appState.selectMode(.script) }
-                .keyboardShortcut(appState.settings.shortcut(for: .scriptMode).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .scriptMode))
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("mode.bRoll")) { appState.selectMode(.bRoll) }
-                .keyboardShortcut(appState.settings.shortcut(for: .visualsMode).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .visualsMode))
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("mode.editing")) { appState.selectMode(.editing) }
-                .keyboardShortcut(appState.settings.shortcut(for: .editingMode).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .editingMode))
                 .disabled(!appState.hasOpenProject)
             Divider()
             Button(appState.localized("command.toggleSidebar")) { appState.isSidebarVisible.toggle() }
-                .keyboardShortcut(appState.settings.shortcut(for: .toggleContentsPanel).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .toggleContentsPanel))
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("command.toggleAIReview")) {
                 appState.settings.editorPreferences.showAIReviewPanel.toggle()
             }
-            .keyboardShortcut(appState.settings.shortcut(for: .toggleAIReview).keyboardShortcut)
+            .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .toggleAIReview))
             .disabled(!appState.hasOpenProject)
             Button(appState.localized("command.toggleFocus")) { appState.isFocusModeEnabled.toggle() }
-                .keyboardShortcut(appState.settings.shortcut(for: .toggleFocusMode).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .toggleFocusMode))
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("toolbar.commandPalette")) { appState.isCommandPalettePresented = true }
-                .keyboardShortcut(appState.settings.shortcut(for: .commandPalette).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .commandPalette))
             Button(appState.localized("command.showShortcuts")) { appState.isShortcutsPresented = true }
-                .keyboardShortcut(appState.settings.shortcut(for: .showShortcuts).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .showShortcuts))
         }
 
         CommandMenu(appState.localized("menu.scene")) {
             Button(appState.localized("scene.add")) { appState.addScene() }
-                .keyboardShortcut(appState.settings.shortcut(for: .addScene).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .addScene))
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("scene.duplicate")) { appState.duplicateSelectedScene() }
-                .keyboardShortcut(appState.settings.shortcut(for: .duplicateScene).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .duplicateScene))
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("scene.delete")) { appState.deleteSelectedScene() }
-                .keyboardShortcut(appState.settings.shortcut(for: .deleteScene).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .deleteScene))
                 .disabled(!appState.hasOpenProject)
             Divider()
             Button(appState.localized("scene.moveUp")) { appState.moveSelectedSceneUp() }
-                .keyboardShortcut(appState.settings.shortcut(for: .moveSceneUp).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .moveSceneUp))
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("scene.moveDown")) { appState.moveSelectedSceneDown() }
-                .keyboardShortcut(appState.settings.shortcut(for: .moveSceneDown).keyboardShortcut)
+                .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .moveSceneDown))
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("scene.rename")) { appState.renameSelectedScene() }
                 .disabled(!appState.hasOpenProject)
@@ -168,7 +168,7 @@ struct FrameScriptApp: App {
                 appState.settings.editorPreferences.showAIReviewPanel = true
                 Task { await appState.analyzeSelectedScene() }
             }
-            .keyboardShortcut(appState.settings.shortcut(for: .analyzeCurrentScene).keyboardShortcut)
+            .configuredKeyboardShortcut(appState.settings.activeShortcut(for: .analyzeCurrentScene))
             .disabled(!appState.hasOpenProject)
             Button(appState.localized("menu.analyzeFullScript")) {
                 appState.settings.editorPreferences.showAIReviewPanel = true
@@ -179,6 +179,17 @@ struct FrameScriptApp: App {
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("menu.generateEditing")) { appState.generateEditingNotesForSelectedScene() }
                 .disabled(!appState.hasOpenProject)
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func configuredKeyboardShortcut(_ binding: ShortcutBinding?) -> some View {
+        if let binding {
+            keyboardShortcut(binding.keyboardShortcut)
+        } else {
+            self
         }
     }
 }

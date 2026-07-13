@@ -90,6 +90,31 @@ struct ShortcutBinding: Codable, Hashable {
     }
 }
 
+/// The persisted override for a command. Encoding assignments as their binding
+/// keeps the existing preferences format compatible; `null` is reserved for an
+/// explicit unassigned command.
+enum ShortcutOverride: Codable, Hashable {
+    case assigned(ShortcutBinding)
+    case unassigned
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .unassigned
+        } else {
+            self = .assigned(try container.decode(ShortcutBinding.self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .assigned(binding): try container.encode(binding)
+        case .unassigned: try container.encodeNil()
+        }
+    }
+}
+
 enum ShortcutCategory: String, CaseIterable, Hashable {
     case project, scenes, workspace, ai, application
 
@@ -148,11 +173,15 @@ enum ShortcutRegistry {
         definitions.first(where: { $0.command == command })!
     }
 
-    static func binding(for command: ShortcutCommand, overrides: [ShortcutCommand: ShortcutBinding]) -> ShortcutBinding {
-        overrides[command] ?? definition(for: command).factoryDefault
+    static func binding(for command: ShortcutCommand, overrides: [ShortcutCommand: ShortcutOverride]) -> ShortcutBinding? {
+        switch overrides[command] {
+        case let .assigned(binding): binding
+        case .unassigned: nil
+        case nil: definition(for: command).factoryDefault
+        }
     }
 
-    static func conflict(for binding: ShortcutBinding, excluding command: ShortcutCommand, overrides: [ShortcutCommand: ShortcutBinding]) -> ShortcutCommand? {
+    static func conflict(for binding: ShortcutBinding, excluding command: ShortcutCommand, overrides: [ShortcutCommand: ShortcutOverride]) -> ShortcutCommand? {
         ShortcutCommand.allCases.first { candidate in
             candidate != command && self.binding(for: candidate, overrides: overrides) == binding
         }
@@ -161,6 +190,12 @@ enum ShortcutRegistry {
 
 extension AppSettings {
     func shortcut(for command: ShortcutCommand) -> ShortcutBinding {
+        // Existing shortcut hints outside Settings retain their established
+        // appearance. Commands themselves use `activeShortcut(for:)`.
+        activeShortcut(for: command) ?? command.definition.factoryDefault
+    }
+
+    func activeShortcut(for command: ShortcutCommand) -> ShortcutBinding? {
         ShortcutRegistry.binding(for: command, overrides: shortcutOverrides)
     }
 
@@ -169,19 +204,49 @@ extension AppSettings {
         if let conflict = ShortcutRegistry.conflict(for: binding, excluding: command, overrides: shortcutOverrides) {
             return conflict
         }
-        if binding == command.definition.factoryDefault {
-            shortcutOverrides.removeValue(forKey: command)
-        } else {
-            shortcutOverrides[command] = binding
-        }
+        applyShortcut(binding, for: command)
         return nil
     }
 
-    mutating func resetShortcut(_ command: ShortcutCommand) {
+    mutating func reassignShortcut(_ binding: ShortcutBinding, for command: ShortcutCommand) -> ShortcutCommand? {
+        guard binding.isValid else { return command }
+        let displacedCommand = ShortcutRegistry.conflict(for: binding, excluding: command, overrides: shortcutOverrides)
+        applyShortcut(binding, for: command)
+        if let displacedCommand {
+            shortcutOverrides[displacedCommand] = .unassigned
+        }
+        return displacedCommand
+    }
+
+    func resetConflict(for command: ShortcutCommand) -> ShortcutCommand? {
+        ShortcutRegistry.conflict(
+            for: command.definition.factoryDefault,
+            excluding: command,
+            overrides: shortcutOverrides
+        )
+    }
+
+    mutating func resetShortcut(_ command: ShortcutCommand) -> ShortcutCommand? {
+        if let conflict = resetConflict(for: command) { return conflict }
         shortcutOverrides.removeValue(forKey: command)
+        return nil
+    }
+
+    mutating func reassignFactoryDefault(to command: ShortcutCommand) -> ShortcutCommand? {
+        reassignShortcut(command.definition.factoryDefault, for: command)
     }
 
     mutating func resetAllShortcuts() {
+        // Factory defaults are registry-validated as unique, so this is an
+        // atomic restoration of the complete active shortcut set.
         shortcutOverrides.removeAll()
+    }
+
+    private mutating func applyShortcut(_ binding: ShortcutBinding, for command: ShortcutCommand) {
+        if binding == command.definition.factoryDefault {
+            shortcutOverrides.removeValue(forKey: command)
+        } else {
+            shortcutOverrides[command] = .assigned(binding)
+        }
     }
 }
