@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -11,6 +12,8 @@ struct FrameScriptApp: App {
                 AppRootView()
             }
             .environment(appState)
+            .onAppear { shortcutRouter.start(using: appState) }
+            .onDisappear { shortcutRouter.stop() }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1180, height: 760)
@@ -25,6 +28,8 @@ struct FrameScriptApp: App {
                 .environment(appState)
         }
     }
+
+    @State private var shortcutRouter = AppKitPhysicalShortcutCommandRouter()
 
     @CommandsBuilder
     private var appCommands: some Commands {
@@ -177,6 +182,101 @@ struct FrameScriptApp: App {
                 .disabled(!appState.hasOpenProject)
             Button(appState.localized("menu.generateEditing")) { appState.generateEditingNotesForSelectedScene() }
                 .disabled(!appState.hasOpenProject)
+        }
+    }
+}
+
+/// Routes configurable commands by their physical ANSI key while leaving the
+/// actual command invocation to AppKit's existing menu key-equivalent path.
+@MainActor
+final class AppKitPhysicalShortcutCommandRouter {
+    private weak var appState: AppState?
+    private var monitor: Any?
+
+    func start(using appState: AppState) {
+        self.appState = appState
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  !ShortcutCaptureSession.isAnySessionActive,
+                  let appState = self.appState,
+                  let menu = NSApp.mainMenu
+            else { return event }
+            return PhysicalShortcutMenuDispatcher.dispatch(event, settings: appState.settings, menu: menu) ? nil : event
+        }
+    }
+
+    func stop() {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
+        appState = nil
+    }
+
+}
+
+/// Normalizes the physical key before asking AppKit to perform its normal menu
+/// key-equivalent dispatch. Keeping this separate from the event monitor makes
+/// the command layer directly integration-testable.
+enum PhysicalShortcutMenuDispatcher {
+    static func dispatch(_ event: NSEvent, settings: AppSettings, menu: NSMenu) -> Bool {
+        let modifiers = shortcutModifiers(from: event.modifierFlags)
+        guard !modifiers.isEmpty,
+              let binding = ShortcutPhysicalKeyMapper.binding(for: event.keyCode, modifiers: modifiers),
+              binding.isValid,
+              ShortcutRegistry.isAssignable(binding),
+              ShortcutCommand.allCases.contains(where: { settings.activeShortcut(for: $0) == binding }),
+              let canonicalEvent = canonicalEvent(from: event, binding: binding)
+        else { return false }
+        guard hasEnabledMatchingMenuItem(for: canonicalEvent, in: menu) else { return false }
+        return menu.performKeyEquivalent(with: canonicalEvent)
+    }
+
+    private static func hasEnabledMatchingMenuItem(for event: NSEvent, in menu: NSMenu) -> Bool {
+        menu.items.contains { item in
+            if item.keyEquivalent == event.charactersIgnoringModifiers,
+               item.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask) == event.modifierFlags {
+                return item.isEnabled && !item.isHidden
+            }
+            return item.submenu.map { hasEnabledMatchingMenuItem(for: event, in: $0) } ?? false
+        }
+    }
+
+    private static func shortcutModifiers(from flags: NSEvent.ModifierFlags) -> Set<ShortcutModifier> {
+        var modifiers: Set<ShortcutModifier> = []
+        if flags.contains(.control) { modifiers.insert(.control) }
+        if flags.contains(.option) { modifiers.insert(.option) }
+        if flags.contains(.shift) { modifiers.insert(.shift) }
+        if flags.contains(.command) { modifiers.insert(.command) }
+        return modifiers
+    }
+
+    private static func canonicalEvent(from event: NSEvent, binding: ShortcutBinding) -> NSEvent? {
+        guard let characters = canonicalCharacters(for: binding) else { return nil }
+        return NSEvent.keyEvent(
+            with: .keyDown,
+            location: event.locationInWindow,
+            modifierFlags: event.modifierFlags.intersection(.deviceIndependentFlagsMask),
+            timestamp: event.timestamp,
+            windowNumber: event.windowNumber,
+            context: nil,
+            characters: characters,
+            charactersIgnoringModifiers: characters,
+            isARepeat: event.isARepeat,
+            keyCode: event.keyCode
+        )
+    }
+
+    private static func canonicalCharacters(for binding: ShortcutBinding) -> String? {
+        switch binding.key {
+        case .character: binding.character
+        case .upArrow: String(UnicodeScalar(NSUpArrowFunctionKey)!)
+        case .downArrow: String(UnicodeScalar(NSDownArrowFunctionKey)!)
+        case .leftArrow: String(UnicodeScalar(NSLeftArrowFunctionKey)!)
+        case .rightArrow: String(UnicodeScalar(NSRightArrowFunctionKey)!)
+        case .delete: "\u{08}"
+        case .forwardDelete: String(UnicodeScalar(NSDeleteFunctionKey)!)
         }
     }
 }

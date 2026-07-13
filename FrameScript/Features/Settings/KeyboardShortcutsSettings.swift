@@ -82,9 +82,12 @@ struct KeyboardShortcutsSettings: View {
             }
         }
         .onDisappear { lifecycle.viewDidDisappear(); clearRecordingState() }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
-            lifecycle.settingsWindowDidClose()
-            clearRecordingState()
+        .background {
+            SettingsWindowCloseTrackingView {
+                lifecycle.settingsWindowDidClose()
+                clearRecordingState()
+            }
+            .frame(width: 0, height: 0)
         }
     }
 
@@ -369,6 +372,83 @@ private struct ShortcutRecordingField: NSViewRepresentable {
     }
 }
 
+/// Tracks only the Settings window that hosts this view. It deliberately does
+/// not observe unrelated windows, sheets, panels, or alerts.
+private struct SettingsWindowCloseTrackingView: NSViewRepresentable {
+    let onClose: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> SettingsWindowTrackingView {
+        let view = SettingsWindowTrackingView()
+        view.windowChanged = { [weak coordinator = context.coordinator] window in
+            coordinator?.observe(window: window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: SettingsWindowTrackingView, context: Context) {
+        context.coordinator.onClose = onClose
+        context.coordinator.observe(window: nsView.window)
+    }
+
+    static func dismantleNSView(_ nsView: SettingsWindowTrackingView, coordinator: Coordinator) {
+        coordinator.stop()
+    }
+
+    final class Coordinator {
+        let observer = SettingsWindowCloseObserver()
+        var onClose: (() -> Void)?
+
+        init() {
+            observer.onClose = { [weak self] in self?.onClose?() }
+        }
+
+        func observe(window: NSWindow?) { observer.observe(window: window) }
+        func stop() { observer.stop() }
+    }
+}
+
+private final class SettingsWindowTrackingView: NSView {
+    var windowChanged: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        windowChanged?(window)
+    }
+}
+
+/// Notification ownership is scoped to one weakly held Settings window.
+final class SettingsWindowCloseObserver: @unchecked Sendable {
+    weak private(set) var window: NSWindow?
+    var onClose: (() -> Void)?
+    private var token: NSObjectProtocol?
+
+    func observe(window: NSWindow?) {
+        guard self.window !== window else { return }
+        stop()
+        guard let window else { return }
+        self.window = window
+        token = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.onClose?()
+        }
+    }
+
+    func stop() {
+        if let token {
+            NotificationCenter.default.removeObserver(token)
+            self.token = nil
+        }
+        window = nil
+    }
+
+    deinit { stop() }
+}
+
 private struct ShortcutReassignPrompt: Identifiable {
     enum Action {
         case assign(ShortcutBinding)
@@ -465,6 +545,8 @@ final class ShortcutCaptureSession: @unchecked Sendable {
     private var monitorToken: Any?
 
     private(set) var isActive = false
+
+    static var isAnySessionActive: Bool { activeSession?.isActive == true }
 
     init(
         eventMonitor: ShortcutCaptureEventMonitoring = AppKitShortcutCaptureEventMonitor.shared,

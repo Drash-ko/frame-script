@@ -104,20 +104,90 @@ final class ShortcutRegistryTests: XCTestCase {
         XCTAssertEqual(ShortcutRecordingCoordinator.result(for: russianW), .reserved)
     }
 
-    func testConfiguredCommandUsesOneCanonicalPathWhenInputLayoutsSwitch() throws {
-        let configuredBinding = try XCTUnwrap(AppSettings.defaults.activeShortcut(for: .openProject))
-        let events = [
-            try keyEvent(keyCode: 31, characters: "o", modifiers: .command),
-            try keyEvent(keyCode: 31, characters: "щ", modifiers: .command)
-        ]
+    func testPhysicalOpenProjectCommandDispatchesThroughAppKitAcrossInputLayouts() throws {
+        let target = TestMenuCommandTarget()
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Open Project", action: #selector(TestMenuCommandTarget.performCommand(_:)), keyEquivalent: "o")
+        item.keyEquivalentModifierMask = .command
+        item.target = target
+        menu.addItem(item)
 
-        for event in events {
-            var executions = 0
-            if ShortcutCaptureParser.binding(from: event) == configuredBinding { executions += 1 }
-            XCTAssertEqual(executions, 1)
+        XCTAssertTrue(menu.performKeyEquivalent(with: try keyEvent(keyCode: 31, characters: "o", modifiers: .command)))
+        XCTAssertEqual(target.executions, 1)
+        // Native key-equivalent matching follows the produced character, so the
+        // Russian event proves the fallback router is required.
+        XCTAssertFalse(menu.performKeyEquivalent(with: try keyEvent(keyCode: 31, characters: "щ", modifiers: .command)))
+        XCTAssertEqual(target.executions, 1)
+        XCTAssertTrue(PhysicalShortcutMenuDispatcher.dispatch(
+            try keyEvent(keyCode: 31, characters: "щ", modifiers: .command),
+            settings: .defaults,
+            menu: menu
+        ))
+        XCTAssertEqual(target.executions, 2)
+        XCTAssertFalse(PhysicalShortcutMenuDispatcher.dispatch(
+            try keyEvent(keyCode: 32, characters: "u", modifiers: .command),
+            settings: .defaults,
+            menu: menu
+        ))
+        XCTAssertEqual(target.executions, 2)
+    }
+
+    func testPhysicalPunctuationCommandDispatchesThroughAppKitAcrossInputLayouts() throws {
+        let target = TestMenuCommandTarget()
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Open Settings", action: #selector(TestMenuCommandTarget.performCommand(_:)), keyEquivalent: ",")
+        item.keyEquivalentModifierMask = .command
+        item.target = target
+        menu.addItem(item)
+
+        for characters in [",", "б"] {
+            XCTAssertTrue(PhysicalShortcutMenuDispatcher.dispatch(
+                try keyEvent(keyCode: 43, characters: characters, modifiers: .command),
+                settings: .defaults,
+                menu: menu
+            ))
         }
-        XCTAssertEqual(ShortcutCaptureParser.binding(from: events[0]), ShortcutCaptureParser.binding(from: events[1]))
-        XCTAssertNotEqual(events[1].charactersIgnoringModifiers, configuredBinding.character)
+        XCTAssertEqual(target.executions, 2)
+    }
+
+    func testPhysicalCommandDispatcherUsesCurrentReassignedBindingAndLeavesUnassignedCommandsInactive() throws {
+        let target = TestMenuCommandTarget()
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Open Project", action: #selector(TestMenuCommandTarget.performCommand(_:)), keyEquivalent: "p")
+        item.keyEquivalentModifierMask = .command
+        item.target = target
+        menu.addItem(item)
+        var settings = AppSettings.defaults
+
+        XCTAssertNil(settings.reassignShortcut(.init("p", modifiers: [.command]), for: .openProject))
+        XCTAssertFalse(PhysicalShortcutMenuDispatcher.dispatch(
+            try keyEvent(keyCode: 31, characters: "o", modifiers: .command), settings: settings, menu: menu
+        ))
+        XCTAssertTrue(PhysicalShortcutMenuDispatcher.dispatch(
+            try keyEvent(keyCode: 35, characters: "p", modifiers: .command), settings: settings, menu: menu
+        ))
+        XCTAssertEqual(target.executions, 1)
+
+        settings.shortcutOverrides[.openProject] = .unassigned
+        XCTAssertFalse(PhysicalShortcutMenuDispatcher.dispatch(
+            try keyEvent(keyCode: 35, characters: "p", modifiers: .command), settings: settings, menu: menu
+        ))
+        XCTAssertEqual(target.executions, 1)
+    }
+
+    func testPhysicalCommandDispatcherPreservesDisabledMenuCommands() throws {
+        let target = TestMenuCommandTarget()
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "Open Project", action: #selector(TestMenuCommandTarget.performCommand(_:)), keyEquivalent: "o")
+        item.keyEquivalentModifierMask = .command
+        item.target = target
+        item.isEnabled = false
+        menu.addItem(item)
+
+        XCTAssertFalse(PhysicalShortcutMenuDispatcher.dispatch(
+            try keyEvent(keyCode: 31, characters: "щ", modifiers: .command), settings: .defaults, menu: menu
+        ))
+        XCTAssertEqual(target.executions, 0)
     }
 
     func testFactoryDefaultsAreUniqueAndModifierOrderIsMacStandard() {
@@ -533,8 +603,72 @@ final class ShortcutRegistryTests: XCTestCase {
         assertLifecycleReleasesCapture { $0.viewDidDisappear() }
     }
 
-    func testSettingsWindowClosureReleasesItsCaptureSessionThroughTheLifecycle() {
-        assertLifecycleReleasesCapture { $0.settingsWindowDidClose() }
+    @MainActor
+    func testClosingAnUnrelatedWindowDoesNotStopSettingsRecording() {
+        let monitor = TestShortcutEventMonitor()
+        let lifecycle = ShortcutRecordingLifecycle()
+        lifecycle.start(ShortcutCaptureSession(eventMonitor: monitor, onRecord: { _ in }, onCancel: {}))
+        let observer = SettingsWindowCloseObserver()
+        let settingsWindow = NSWindow()
+        let unrelatedWindow = NSWindow()
+        observer.onClose = { lifecycle.settingsWindowDidClose() }
+        observer.observe(window: settingsWindow)
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: unrelatedWindow)
+
+        XCTAssertTrue(lifecycle.isCaptureActive)
+        XCTAssertEqual(monitor.removedCount, 0)
+    }
+
+    @MainActor
+    func testClosingTheOwningSettingsWindowStopsAndClearsRecording() {
+        let monitor = TestShortcutEventMonitor()
+        let lifecycle = ShortcutRecordingLifecycle()
+        lifecycle.start(ShortcutCaptureSession(eventMonitor: monitor, onRecord: { _ in }, onCancel: {}))
+        let observer = SettingsWindowCloseObserver()
+        let settingsWindow = NSWindow()
+        var recording: ShortcutCommand? = .openProject
+        observer.onClose = {
+            lifecycle.settingsWindowDidClose()
+            recording = nil
+        }
+        observer.observe(window: settingsWindow)
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: settingsWindow)
+
+        XCTAssertFalse(lifecycle.isCaptureActive)
+        XCTAssertNil(recording)
+        XCTAssertEqual(monitor.removedCount, 1)
+    }
+
+    func testDismissingReservedWarningResumesCaptureWithExactlyOneMonitor() {
+        let monitor = TestShortcutEventMonitor()
+        let lifecycle = ShortcutRecordingLifecycle()
+        lifecycle.start(ShortcutCaptureSession(eventMonitor: monitor, onRecord: { _ in }, onCancel: {}))
+        lifecycle.stopForAlert()
+
+        lifecycle.start(ShortcutCaptureSession(eventMonitor: monitor, onRecord: { _ in }, onCancel: {}))
+
+        XCTAssertTrue(lifecycle.isCaptureActive)
+        XCTAssertEqual(monitor.installedCount, 2)
+        XCTAssertEqual(monitor.removedCount, 1)
+    }
+
+    @MainActor
+    func testClosingAnAlertDoesNotTriggerSettingsWindowCleanup() {
+        let monitor = TestShortcutEventMonitor()
+        let lifecycle = ShortcutRecordingLifecycle()
+        lifecycle.start(ShortcutCaptureSession(eventMonitor: monitor, onRecord: { _ in }, onCancel: {}))
+        let observer = SettingsWindowCloseObserver()
+        let settingsWindow = NSWindow()
+        let alertWindow = NSWindow()
+        observer.onClose = { lifecycle.settingsWindowDidClose() }
+        observer.observe(window: settingsWindow)
+
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: alertWindow)
+
+        XCTAssertTrue(lifecycle.isCaptureActive)
+        XCTAssertEqual(monitor.removedCount, 0)
     }
 
     func testLifecycleDeinitializationReleasesItsCaptureSession() {
@@ -593,9 +727,11 @@ final class ShortcutRegistryTests: XCTestCase {
 private final class TestShortcutEventMonitor: ShortcutCaptureEventMonitoring {
     private var handler: ((NSEvent) -> NSEvent?)?
     private var token: NSObject?
+    private(set) var installedCount = 0
     private(set) var removedCount = 0
 
     func addLocalKeyDownMonitor(_ handler: @escaping (NSEvent) -> NSEvent?) -> Any {
+        installedCount += 1
         self.handler = handler
         let token = NSObject()
         self.token = token
@@ -611,5 +747,13 @@ private final class TestShortcutEventMonitor: ShortcutCaptureEventMonitoring {
     func send(_ event: NSEvent) -> NSEvent? {
         guard let handler else { return event }
         return handler(event)
+    }
+}
+
+private final class TestMenuCommandTarget: NSObject {
+    private(set) var executions = 0
+
+    @objc func performCommand(_ sender: Any?) {
+        executions += 1
     }
 }
